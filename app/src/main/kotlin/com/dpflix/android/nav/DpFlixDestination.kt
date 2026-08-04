@@ -1,5 +1,7 @@
 package com.dpflix.android.nav
 
+import android.net.Uri
+
 /**
  * Routes des écrans de navigation (§7 étapes 6a et 7a).
  *
@@ -56,7 +58,17 @@ sealed class DpFlixDestination(val route: String) {
     object PlayerFullscreen : DpFlixDestination("player/{$ARG_CHANNEL_ID}") {
         const val ARG_CHANNEL_ID = "channelId"
 
-        fun createRoute(channelId: String): String = "player/$channelId"
+        // Fix (4 août 2026) : channelId peut contenir '/' et ':' quand la chaîne n'a pas
+        // de tvg-id (ChannelMapper.stableId retombe alors sur streamUrl, une URL complète
+        // du type "https://host/chemin"). Sans encodage, ces caractères cassent le
+        // découpage en segments de route de Navigation Compose ("player/{channelId}"
+        // n'attend qu'un seul segment) -> IllegalArgumentException, crash immédiat au
+        // passage en plein écran, mais uniquement pour ces chaînes-là (celles avec
+        // tvg-id restent de simples chaînes sans '/' ni ':', donc jamais affectées).
+        // Uri.encode encode notamment '/' (%2F) et ':' (%3A) ; Navigation Compose décode
+        // automatiquement chaque segment capturé en argument de route, donc aucun décodage
+        // manuel n'est nécessaire côté lecture (backStackEntry.arguments?.getString(...)).
+        fun createRoute(channelId: String): String = "player/${Uri.encode(channelId)}"
     }
 
     companion object {
