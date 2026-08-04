@@ -1,6 +1,7 @@
 package com.dpflix.android.player
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
@@ -91,18 +92,25 @@ data class QualityOption(val height: Int) {
  * (retries automatiques + watchdog de blocage, §6) branchée depuis l'étape 5d — voir
  * [ResilientLoadErrorHandlingPolicy] et la section watchdog plus bas.
  *
- * [settings] est un instantané de [PlayerSettings] lu UNE fois à la création (voir
- * [create]), car `DefaultLoadControl` (tampon) se configure au moment de la construction
- * de l'`ExoPlayer` et ne peut pas être changé à chaud sur un player déjà construit. Si les
- * réglages changent pendant la lecture, ils s'appliquent au prochain `PlayerController`
- * créé (prochain écran lecteur ouvert) — pas de reconfiguration en direct à cette
- * sous-étape, ce qui reste un cas d'usage marginal (l'utilisateur regarde rarement en
- * changeant les réglages de tampon en simultané).
+ * [settings] part d'un instantané de [PlayerSettings] lu à la création (voir [create]),
+ * mais N'EST PLUS figé pour toute la durée de vie du contrôleur : Fix (2026-08-04),
+ * voir [updateSettings]. `DefaultLoadControl` (tampon) et le `CacheDataSource` du tampon
+ * hybride se configurent au moment de la construction de l'`ExoPlayer`/du
+ * `MediaSource.Factory` et ne peuvent pas être changés à chaud sur des instances déjà
+ * construites — [updateSettings] reconstruit donc un nouvel `ExoPlayer` (voir
+ * [buildExoPlayer]) plutôt que de tenter une mise à jour en place, ce qui reste la seule
+ * façon fiable d'appliquer réellement de nouveaux réglages de tampon/cache pendant que
+ * l'utilisateur regarde (Réglages → Lecteur ouvert en incrustation par-dessus le lecteur,
+ * voir [PlayerScreen]).
  *
  * Instancié et détenu par l'écran qui l'utilise (voir [PlayerScreen]) ; `release()` DOIT
  * être appelé quand cet écran disparaît, sous peine de fuite du décodeur vidéo.
  */
-class PlayerController(context: Context, private val settings: PlayerSettings, playlist: com.dpflix.android.model.Playlist? = null) {
+class PlayerController(
+    private val context: Context,
+    private var settings: PlayerSettings,
+    private val playlist: com.dpflix.android.model.Playlist? = null
+) {
 
     private val _uiState = MutableStateFlow<PlayerUiState>(PlayerUiState.Idle)
     val uiState: StateFlow<PlayerUiState> = _uiState
@@ -268,6 +276,17 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
     // une Error finale, comme n'importe quelle PlaybackException fatale.
     private var hardReloadAttempts = 0
 
+    // Fix (2026-08-04) : ancrage horloge murale pour estimer l'ecart au direct sur les
+    // flux JAMAIS reconnus "live" par Media3 (typiquement .ts brut, voir la doc de
+    // currentLiveEdgeOffsetSeconds) - currentLiveOffset y reste C.TIME_UNSET pour
+    // toujours, quels que soient les reglages. liveAnchorElapsedRealtimeMs/
+    // liveAnchorPositionMs figent l'instant (SystemClock.elapsedRealtime(), insensible
+    // aux changements d'heure systeme) et la position de lecture au premier vrai demarrage
+    // de la session en cours (STATE_READY, voir updateStateFromPlayer) ; remis a null a
+    // chaque playChannel comme les autres etats "par chaine" ci-dessus.
+    private var liveAnchorElapsedRealtimeMs: Long? = null
+    private var liveAnchorPositionMs: Long? = null
+
     private fun alternateContainerUri(uri: String): String? = when {
         uri.endsWith(".m3u8", ignoreCase = true) -> uri.dropLast(5) + ".ts"
         uri.endsWith(".ts", ignoreCase = true) -> uri.dropLast(3) + ".m3u8"
@@ -298,12 +317,15 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
      * Désactivé (réglage par défaut) : comportement identique aux étapes 5a/5b, direct
      * OkHttp → ExoPlayer, sans disque.
      */
-    private val dataSourceFactory: DataSource.Factory = run {
+    // Fix (2026-08-04) : transformé en fonction de [settings] (plutôt qu'un `val` figé à la
+    // construction) pour pouvoir être rappelé par [buildExoPlayer] à chaque
+    // [updateSettings] — voir la doc de la classe.
+    private fun buildDataSourceFactory(currentSettings: PlayerSettings): DataSource.Factory {
         val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
-        if (!settings.hybridBufferEnabled) {
+        return if (!currentSettings.hybridBufferEnabled) {
             upstreamFactory
         } else {
-            val maxSizeBytes = settings.diskCacheMaxSizeMb.coerceAtLeast(0) * BYTES_PER_MB
+            val maxSizeBytes = currentSettings.diskCacheMaxSizeMb.coerceAtLeast(0) * BYTES_PER_MB
             CacheDataSource.Factory()
                 .setCache(MediaCacheProvider.get(context, maxSizeBytes))
                 .setUpstreamDataSourceFactory(upstreamFactory)
@@ -326,7 +348,11 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
      * ([availableQualities]) reste en revanche dérivée directement des pistes annoncées par
      * le `Player` (`onTracksChanged`, §8d6), pas du `trackSelector` lui-même.
      */
-    private val trackSelector = DefaultTrackSelector(context)
+    // Fix (2026-08-04) : `var`, reconstruit à chaque [buildExoPlayer] — une instance de
+    // `DefaultTrackSelector` est liée au cycle de vie d'un `ExoPlayer` précis, elle ne se
+    // partage pas entre deux instances successives. [setQualityOverride] lit toujours
+    // l'instance courante via ce champ.
+    private lateinit var trackSelector: DefaultTrackSelector
 
     /**
      * Tampon (§5.1/§6 "grand tampon avant, taille cible réglable, plafond élevé permis
@@ -335,18 +361,36 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
      * (`setPrioritizeTimeOverSizeThresholds(false)`, comportement par défaut d'ExoPlayer)
      * pour protéger la mémoire même si la durée cible n'est pas encore atteinte.
      *
-     * Les seuils de démarrage (`bufferForPlaybackMs`/`...AfterRebufferMs`) ne sont pas
-     * pilotés par le cahier des charges : valeurs pragmatiques (démarrage rapide, un peu
-     * plus prudent après un rebuffer), bornées par le tampon cible de l'utilisateur.
+     * Fix (2026-08-04) : `bufferForPlaybackMs` (seuil de démarrage, "combien de temps on
+     * accumule avant de lancer la lecture") est maintenant piloté par
+     * `settings.liveDelaySeconds` — le "retard cible" volontaire du cahier des charges
+     * (§6 "jamais de rattrapage forcé... toujours revenir au retard cible") — plutôt que
+     * figé à [DEFAULT_BUFFER_FOR_PLAYBACK_MS] (2,5s). Sur un flux HLS/DASH réellement
+     * reconnu "live" par Media3, ce même `liveDelaySeconds` pilotait déjà le retard cible
+     * via `LiveConfiguration.targetOffsetMs` (voir [startPlayback]) ; mais cette
+     * `LiveConfiguration` ne s'applique JAMAIS à un flux `.ts` brut lu en simple
+     * progressif (voir la doc de [mimeTypeForUri]/[currentLiveEdgeOffsetSeconds]) —
+     * `bufferForPlaybackMs` est en revanche un réglage bas niveau d'ExoPlayer qui
+     * s'applique à tout `MediaSource`, live reconnu ou non : c'est donc le seul levier qui
+     * fait réellement démarrer la lecture après le délai voulu (5 à 10s, valeur par
+     * défaut 6s) sur ce type de flux, en accumulant les segments avant la première image
+     * plutôt qu'en démarrant quasi immédiatement puis en essayant de rattraper un retard —
+     * ce rattrapage n'existe d'ailleurs pas ici : sans `LiveConfiguration` reconnue, aucun
+     * mécanisme d'accélération de lecture ne s'active jamais côté ExoPlayer, la lecture
+     * reste à vitesse normale du début à la fin, quoi qu'il arrive (blocages compris).
      */
-    private val loadControl: DefaultLoadControl = run {
-        val maxBufferMs = (settings.bufferDurationSeconds * 1000).coerceAtLeast(MIN_MAX_BUFFER_MS)
+    private fun buildLoadControl(currentSettings: PlayerSettings): DefaultLoadControl {
+        val maxBufferMs = (currentSettings.bufferDurationSeconds * 1000).coerceAtLeast(MIN_MAX_BUFFER_MS)
         val minBufferMs = (maxBufferMs / 2).coerceAtMost(maxBufferMs)
-        val bufferForPlaybackMs = DEFAULT_BUFFER_FOR_PLAYBACK_MS.coerceAtMost(minBufferMs)
-        val bufferForPlaybackAfterRebufferMs = DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS.coerceAtMost(maxBufferMs)
-        val targetBufferBytes = (settings.ramCacheSizeMb.coerceAtLeast(0) * BYTES_PER_MB)
+        val bufferForPlaybackMs = (currentSettings.liveDelaySeconds * 1000)
+            .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_MS)
+            .coerceAtMost(minBufferMs)
+        val bufferForPlaybackAfterRebufferMs = bufferForPlaybackMs
+            .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
+            .coerceAtMost(maxBufferMs)
+        val targetBufferBytes = (currentSettings.ramCacheSizeMb.coerceAtLeast(0) * BYTES_PER_MB)
 
-        DefaultLoadControl.Builder()
+        return DefaultLoadControl.Builder()
             .setBufferDurationsMs(minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs)
             .setTargetBufferBytes(if (targetBufferBytes > 0) targetBufferBytes.toInt() else C.LENGTH_UNSET)
             .setPrioritizeTimeOverSizeThresholds(false)
@@ -361,15 +405,71 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
      * `setLoadErrorHandlingPolicy` (§6 "retries automatiques sur segments/manifeste/
      * niveaux avant tout arrêt visible", étape 5d) : voir [ResilientLoadErrorHandlingPolicy].
      */
-    val exoPlayer: ExoPlayer = ExoPlayer.Builder(context)
-        .setMediaSourceFactory(
-            DefaultMediaSourceFactory(dataSourceFactory)
-                .setLoadErrorHandlingPolicy(ResilientLoadErrorHandlingPolicy())
-        )
-        .setTrackSelector(trackSelector)
-        .setLoadControl(loadControl)
-        .build()
-        .apply {
+    // Fix (2026-08-04) : `_exoPlayer`/[player] remplacent l'ancien `val exoPlayer` figé —
+    // [updateSettings] doit pouvoir substituer une nouvelle instance en cours de vie du
+    // contrôleur (voir sa doc). [exoPlayer] reste le point d'accès utilisé par tout le
+    // reste de ce fichier (watchdog, togglePlayPause, currentBufferedSeconds...), inchangé
+    // syntaxiquement — seul [PlayerScreen] a besoin de [player] (StateFlow) pour rebrancher
+    // sa `PlayerView` quand l'instance change.
+    private var _exoPlayer: ExoPlayer = buildExoPlayer()
+    private val _player = MutableStateFlow(_exoPlayer)
+    val player: StateFlow<ExoPlayer> = _player
+    val exoPlayer: ExoPlayer get() = _exoPlayer
+
+    /** Construit un nouvel `ExoPlayer` à partir des [settings] courants et y attache les
+     *  écouteurs habituels (§7/§5.5, voir [attachListeners]). Appelé à la construction du
+     *  contrôleur et par [updateSettings] à chaque reconfiguration de tampon/cache. */
+    private fun buildExoPlayer(): ExoPlayer {
+        trackSelector = DefaultTrackSelector(context)
+        val newPlayer = ExoPlayer.Builder(context)
+            .setMediaSourceFactory(
+                DefaultMediaSourceFactory(buildDataSourceFactory(settings))
+                    .setLoadErrorHandlingPolicy(ResilientLoadErrorHandlingPolicy())
+            )
+            .setTrackSelector(trackSelector)
+            .setLoadControl(buildLoadControl(settings))
+            .build()
+        attachListeners(newPlayer)
+        return newPlayer
+    }
+
+    /**
+     * Applique à chaud un changement de [PlayerSettings] survenu pendant que l'utilisateur
+     * regarde (Réglages → Lecteur ouvert en incrustation, voir [PlayerScreen]) — Fix
+     * (2026-08-04), voir la doc de la classe pour le "pourquoi" (tampon/cache figés à la
+     * construction côté ExoPlayer, aucune API de reconfiguration à chaud). Sans effet si
+     * [newSettings] est identique aux réglages déjà appliqués (évite une reconstruction
+     * inutile — [PlayerScreen] rappelle cette fonction à chaque émission du DataStore,
+     * y compris celle, redondante, qui suit immédiatement la création du contrôleur).
+     *
+     * Reconstruit un nouvel `ExoPlayer` (nouveau tampon/cache/track selector), le publie
+     * via [player] pour que [PlayerScreen] rebranche sa `PlayerView`, PUIS libère l'ancien
+     * — dans cet ordre, pour qu'aucune vue ne se retrouve un instant sans player attaché.
+     * Rejoue ensuite la chaîne en cours via [playChannel] (repart du direct avec la
+     * nouvelle configuration ; une position figée n'aurait de sens que pour du VOD, jamais
+     * pour un flux live) — réutilise donc telle quelle la remise à zéro qualités/
+     * diagnostics/file de repli déjà validée pour un zap normal, plutôt qu'en dupliquer
+     * une partie ici.
+     */
+    fun updateSettings(newSettings: PlayerSettings) {
+        if (newSettings == settings) return
+        settings = newSettings
+        val oldPlayer = _exoPlayer
+        val resumeChannel = currentChannel
+        _exoPlayer = buildExoPlayer()
+        _player.value = _exoPlayer
+        oldPlayer.release()
+        if (resumeChannel != null) {
+            playChannel(resumeChannel)
+        }
+    }
+
+    /** Écouteurs Player/Analytics (§7 étape 5a-5d, §5.5 étape 10) — extraits dans une
+     *  fonction dédiée (2026-08-04) pour être ré-attachés identiques à chaque nouvel
+     *  `ExoPlayer` construit par [buildExoPlayer], et pas seulement à la construction
+     *  initiale du contrôleur. */
+    private fun attachListeners(target: ExoPlayer) {
+        target.apply {
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     updateStateFromPlayer()
@@ -511,6 +611,7 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
                 }
             })
         }
+    }
 
     private fun updateStateFromPlayer() {
         // Une erreur déjà affichée ne doit pas être écrasée par un changement d'état
@@ -545,6 +646,15 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
         // tentative va reussir).
         if (newState is PlayerUiState.Ready) {
             hardReloadAttempts = 0
+            // Fix (2026-08-04) : voir la doc de liveAnchorElapsedRealtimeMs. Posé une
+            // seule fois par session (le null-check protège des passages Ready répétés,
+            // ex. play/pause) : c'est bien le PREMIER vrai démarrage qui sert de référence,
+            // pas le dernier - sans quoi un blocage/rebuffer effacerait le retard déjà
+            // accumulé au lieu de le refléter dans l'estimation.
+            if (liveAnchorElapsedRealtimeMs == null) {
+                liveAnchorElapsedRealtimeMs = SystemClock.elapsedRealtime()
+                liveAnchorPositionMs = exoPlayer.currentPosition
+            }
         }
     }
 
@@ -649,6 +759,12 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
         containerFallbackQueue.clear()
         containerFallbackQueue.addAll(buildContainerFallbackQueue(channel.streamUrl))
         behindLiveWindowRecoveries = 0
+        // Fix (2026-08-04) : voir la doc de liveAnchorElapsedRealtimeMs - nouvelle chaine
+        // (ou reconfiguration via updateSettings, qui rappelle playChannel) = nouvel
+        // ancrage a poser au prochain vrai demarrage, pas l'ancien (qui daterait d'une
+        // session/configuration precedente).
+        liveAnchorElapsedRealtimeMs = null
+        liveAnchorPositionMs = null
         scheduleWatchdog()
         startPlayback(channel.streamUrl)
     }
@@ -691,20 +807,41 @@ class PlayerController(context: Context, private val settings: PlayerSettings, p
      * `null` si le flux n'est pas (encore) reconnu comme live ou si l'écart n'est pas
      * encore connu (`C.TIME_UNSET`, ex. juste après `playChannel`, avant `STATE_READY`).
      *
-     * Repose sur `Player.getCurrentLiveOffset()`, natif à Media3 pour tout flux dont le
-     * `MediaItem` porte une `LiveConfiguration` (voir [playChannel]) : aucune
-     * instrumentation supplémentaire (`AnalyticsListener`) n'est nécessaire pour cette
-     * seule métrique, contrairement aux autres champs de `DiagnosticState` (débit,
-     * bitrate, segments...) qui restent non câblés — voir le README de 8b.
+     * Repose d'abord sur `Player.getCurrentLiveOffset()`, natif à Media3 pour tout flux
+     * dont le `MediaItem` porte une `LiveConfiguration` EXPLOITÉE par un `MediaSource`
+     * qui la reconnaît (HLS/DASH live, voir [playChannel]) : aucune instrumentation
+     * supplémentaire n'est nécessaire pour cette métrique dans ce cas.
      *
-     * Arrondi au dixième de seconde : affiché tel quel à la fois dans l'OSD ([PlayerOsd])
-     * et dans Diagnostic (`DiagnosticState.liveEdgeOffsetSeconds`, via [PlayerMetricsBridge]),
-     * une précision à la milliseconde n'y apporterait rien d'utile.
+     * Fix (2026-08-04) : limitation structurelle identifiée — beaucoup de flux IPTV sont
+     * servis en `.ts` brut, lu par ExoPlayer comme un simple flux progressif continu, qui
+     * ne construit jamais de fenêtre live : `currentLiveOffset` y reste `C.TIME_UNSET`
+     * pour toujours, quels que soient les réglages, ce n'est pas réparable côté
+     * `Player`/réglages. Repli dans ce cas : estimation maison à partir de l'ancrage
+     * horloge murale posé au premier `STATE_READY` de la session en cours (voir
+     * [liveAnchorElapsedRealtimeMs]) — l'écart estimé est le retard cible visé au
+     * démarrage ([PlayerSettings.liveDelaySeconds], voir [buildLoadControl]) plus tout
+     * temps mur écoulé depuis sans avancée équivalente de la position de lecture
+     * (blocages/rebuffers inclus). Ne peut jamais diminuer, cohérent avec l'absence de
+     * rattrapage volontaire du direct sur ce type de flux (aucun mécanisme d'accélération
+     * de lecture ne s'y applique, voir la doc de [buildLoadControl]).
+     *
+     * Arrondi au dixième de seconde dans les deux cas : affiché tel quel à la fois dans
+     * l'OSD ([PlayerOsd]) et dans Diagnostic (`DiagnosticState.liveEdgeOffsetSeconds`, via
+     * [PlayerMetricsBridge]), une précision à la milliseconde n'y apporterait rien d'utile.
      */
     fun currentLiveEdgeOffsetSeconds(): Float? {
         val offsetMs = exoPlayer.currentLiveOffset
-        if (offsetMs == C.TIME_UNSET) return null
-        return kotlin.math.round(offsetMs / 100f) / 10f
+        if (offsetMs != C.TIME_UNSET) {
+            return kotlin.math.round(offsetMs / 100f) / 10f
+        }
+
+        val anchorWallClockMs = liveAnchorElapsedRealtimeMs ?: return null
+        val anchorPositionMs = liveAnchorPositionMs ?: return null
+        val elapsedWallClockMs = SystemClock.elapsedRealtime() - anchorWallClockMs
+        val elapsedPlaybackMs = exoPlayer.currentPosition - anchorPositionMs
+        val estimatedMs = (settings.liveDelaySeconds * 1000L) + (elapsedWallClockMs - elapsedPlaybackMs)
+        if (estimatedMs < 0) return null
+        return kotlin.math.round(estimatedMs / 100f) / 10f
     }
 
     /**

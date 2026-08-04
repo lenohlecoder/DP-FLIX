@@ -345,6 +345,26 @@ fun PlayerScreen(
         controller = created
     }
 
+    // Fix (2026-08-04) : Réglages → Lecteur (tampon, cache RAM, tampon hybride, retard
+    // cible) s'ouvre en incrustation PAR-DESSUS ce même écran (voir settingsOverlayVisible
+    // plus haut) sans jamais recréer controller ([remember(channel.id)]) — jusqu'ici, un
+    // changement de réglage pendant que la même chaîne jouait n'avait donc AUCUN effet
+    // avant le prochain zap ou le prochain lancement de l'appli, puisque
+    // `PlayerController` lisait ces réglages une seule fois à sa création
+    // (`PlayerController.create`, juste au-dessus). On observe ici en continu le
+    // `SettingsRepository` réellement modifié par l'incrustation Réglages et on répercute
+    // chaque changement sur le contrôleur déjà en place via `updateSettings` (no-op si la
+    // valeur émise est identique à celle déjà appliquée, voir sa doc) plutôt que d'en
+    // recréer un.
+    if (appRepository != null) {
+        LaunchedEffect(controller) {
+            val activeController = controller ?: return@LaunchedEffect
+            appRepository.settings.playerSettings.collect { newSettings ->
+                activeController.updateSettings(newSettings)
+            }
+        }
+    }
+
     // Minuteur d'auto-masquage (8a) : redemarre a chaque nouvelle interaction grace a
     // osdShowToken (voir la doc de la fonction). Si l'OSD a ete masque manuellement
     // entre-temps (toggleOsd), osdVisible est deja false et ce delai n'a plus rien a
@@ -557,15 +577,28 @@ fun PlayerScreen(
         val availableQualities by currentController.availableQualities.collectAsState()
         val selectedQuality by currentController.selectedQuality.collectAsState()
 
+        // Fix (2026-08-04) : `currentController.exoPlayer` peut désormais changer
+        // d'instance en cours de vie de cet écran (voir PlayerController.updateSettings,
+        // rappelé quand Réglages → Lecteur change pendant la lecture) — la lire via ce
+        // StateFlow collecté, plutôt qu'une seule fois dans `factory` ci-dessous, permet à
+        // `update` de rebrancher la PlayerView sur la nouvelle instance dès qu'elle change,
+        // au lieu de rester accrochée à un ExoPlayer libéré entre-temps (écran figé/noir).
+        val activePlayer by currentController.player.collectAsState()
+
         AndroidView(
             modifier = Modifier.fillMaxSize(),
+            update = { view ->
+                if (view.player !== activePlayer) {
+                    view.player = activePlayer
+                }
+            },
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
-                    player = currentController.exoPlayer
+                    player = activePlayer
                     // Controles Media3 integres desactives au profit de PlayerOsd - voir
                     // la doc de la fonction (8a).
                     useController = false
