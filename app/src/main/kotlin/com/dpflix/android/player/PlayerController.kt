@@ -447,7 +447,7 @@ class PlayerController(
             // d'ExoPlayer deja a 0, mais un defaut peut changer d'une version de Media3 a
             // l'autre - ce comportement est ici une exigence du cahier des charges, pas un
             // hasard de configuration).
-            .setBackBufferDurationMs(0, false)
+            .setBackBuffer(0, false)
             .build()
     }
 
