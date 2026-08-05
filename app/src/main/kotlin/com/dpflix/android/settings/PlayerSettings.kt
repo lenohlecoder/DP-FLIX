@@ -12,7 +12,23 @@ data class PlayerSettings(
     val liveDelaySeconds: Int = DEFAULT_LIVE_DELAY_SECONDS,
     val hybridBufferEnabled: Boolean = false,
     /** Sous-réglage affiché uniquement si `hybridBufferEnabled` (§5.1), mais toujours stocké. */
-    val diskCacheMaxSizeMb: Long = DEFAULT_DISK_CACHE_MAX_SIZE_MB
+    val diskCacheMaxSizeMb: Long = DEFAULT_DISK_CACHE_MAX_SIZE_MB,
+    /**
+     * Fix (2026-08-05) : "Mode direct" — désactive d'un coup toute la gestion de
+     * tampon/retard volontaire/dérive (§5.1/§6) : `bufferDurationSeconds`,
+     * `ramCacheSizeMb`, `liveDelaySeconds` et la surveillance de dérive
+     * ([com.dpflix.android.player.PlayerController.scheduleDriftGuard]) sont ignorés tant
+     * que ce mode est actif — voir [com.dpflix.android.player.PlayerController.buildLoadControl]/
+     * [com.dpflix.android.player.PlayerController.startPlayback]. Le lecteur retombe alors
+     * sur un tampon minimal proche des valeurs par défaut d'ExoPlayer (démarrage le plus
+     * rapide possible, aucun retard volontaire visé), en échange d'une tolérance plus
+     * faible aux coupures/instabilités réseau — compromis assumé et explicite demandé par
+     * l'utilisateur plutôt qu'imposé silencieusement. Le watchdog de blocage
+     * ([com.dpflix.android.player.PlayerController.scheduleWatchdog]) reste actif dans ce
+     * mode : ce n'est pas de la gestion de tampon/retard, seulement une récupération de
+     * dernier recours sur un vrai blocage, jugée utile même en mode direct.
+     */
+    val directModeEnabled: Boolean = false
 ) {
     init {
         require(bufferDurationSeconds >= 0) { "La durée du tampon ne peut pas être négative" }

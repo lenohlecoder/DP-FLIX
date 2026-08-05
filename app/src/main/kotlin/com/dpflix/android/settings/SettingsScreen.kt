@@ -145,7 +145,8 @@ fun SettingsScreen(
                         onLiveDelayChange = viewModel::setLiveDelaySeconds,
                         onHybridBufferToggled = viewModel::setHybridBufferEnabled,
                         onDiskCacheMaxChange = viewModel::setDiskCacheMaxSizeMb,
-                        onClearDiskCache = viewModel::clearDiskCache
+                        onClearDiskCache = viewModel::clearDiskCache,
+                        onDirectModeToggled = viewModel::setDirectModeEnabled
                     )
                     SettingsSection.Playlists -> PlaylistsSectionBody(
                         appRepository = appRepository,
@@ -365,7 +366,8 @@ private fun PlayerSectionBody(
     onLiveDelayChange: (Int) -> Unit,
     onHybridBufferToggled: (Boolean) -> Unit,
     onDiskCacheMaxChange: (Long) -> Unit,
-    onClearDiskCache: () -> Unit
+    onClearDiskCache: () -> Unit,
+    onDirectModeToggled: (Boolean) -> Unit
 ) {
     val settings = uiState.playerSettings
     var lastClearedTick by remember { mutableStateOf(uiState.cacheClearedTick) }
@@ -382,32 +384,41 @@ private fun PlayerSectionBody(
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(28.dp)
     ) {
-        StepperSetting(
-            title = "Durée du tampon",
-            subtitle = "Quantité de vidéo mise en avance avant lecture.",
-            value = settings.bufferDurationSeconds,
-            step = 5,
-            unit = "s",
-            onValueChange = onBufferDurationChange
-        )
+        SettingBlock(
+            title = "Mode direct",
+            subtitle = "Désactive tout le tampon/retard volontaire ci-dessous : lecture la plus rapide possible, aucune marge, tolérance réduite aux coupures réseau."
+        ) {
+            Switch(checked = settings.directModeEnabled, onCheckedChange = onDirectModeToggled)
+        }
 
-        StepperSetting(
-            title = "Cache RAM",
-            subtitle = "Plafond mémoire dédié au tampon de lecture.",
-            value = settings.ramCacheSizeMb,
-            step = 25,
-            unit = "Mo",
-            onValueChange = onRamCacheChange
-        )
+        if (!settings.directModeEnabled) {
+            StepperSetting(
+                title = "Durée du tampon",
+                subtitle = "Quantité de vidéo mise en avance avant lecture.",
+                value = settings.bufferDurationSeconds,
+                step = 5,
+                unit = "s",
+                onValueChange = onBufferDurationChange
+            )
 
-        StepperSetting(
-            title = "Retard sur le direct",
-            subtitle = "Décalage volontaire par rapport au direct réel, pour absorber les à-coups réseau.",
-            value = settings.liveDelaySeconds,
-            step = 1,
-            unit = "s",
-            onValueChange = onLiveDelayChange
-        )
+            StepperSetting(
+                title = "Cache RAM",
+                subtitle = "Plancher mémoire minimum réservé au tampon (s'ajuste automatiquement à la hausse si \"Durée du tampon\" ou \"Retard sur le direct\" l'exigent).",
+                value = settings.ramCacheSizeMb,
+                step = 25,
+                unit = "Mo",
+                onValueChange = onRamCacheChange
+            )
+
+            StepperSetting(
+                title = "Retard sur le direct",
+                subtitle = "Décalage volontaire par rapport au direct réel, pour absorber les à-coups réseau.",
+                value = settings.liveDelaySeconds,
+                step = 1,
+                unit = "s",
+                onValueChange = onLiveDelayChange
+            )
+        }
 
         SettingBlock(
             title = "Tampon hybride",

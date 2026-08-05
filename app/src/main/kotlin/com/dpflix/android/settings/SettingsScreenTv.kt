@@ -161,7 +161,8 @@ fun SettingsScreenTv(
                         onLiveDelayChange = viewModel::setLiveDelaySeconds,
                         onHybridBufferToggled = viewModel::setHybridBufferEnabled,
                         onDiskCacheMaxChange = viewModel::setDiskCacheMaxSizeMb,
-                        onClearDiskCache = viewModel::clearDiskCache
+                        onClearDiskCache = viewModel::clearDiskCache,
+                        onDirectModeToggled = viewModel::setDirectModeEnabled
                     )
                     SettingsSection.Playlists -> PlaylistsSectionBodyTv(
                         appRepository = appRepository,
@@ -390,7 +391,8 @@ private fun PlayerSectionBodyTv(
     onLiveDelayChange: (Int) -> Unit,
     onHybridBufferToggled: (Boolean) -> Unit,
     onDiskCacheMaxChange: (Long) -> Unit,
-    onClearDiskCache: () -> Unit
+    onClearDiskCache: () -> Unit,
+    onDirectModeToggled: (Boolean) -> Unit
 ) {
     val settings = uiState.playerSettings
     var lastClearedTick by remember { mutableStateOf(uiState.cacheClearedTick) }
@@ -407,38 +409,51 @@ private fun PlayerSectionBodyTv(
             .padding(horizontal = 48.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(32.dp)
     ) {
-        StepperSettingTv(
-            title = "Durée du tampon",
-            subtitle = "Quantité de vidéo mise en avance avant lecture.",
-            value = settings.bufferDurationSeconds.toLong(),
-            step = 5L,
-            unit = "s",
-            unlimitedAtZero = false,
-            firstItemFocusRequester = firstItemFocusRequester,
-            onValueChange = { onBufferDurationChange(it.toInt()) }
-        )
+        SettingBlockTv(
+            title = "Mode direct",
+            subtitle = "Désactive tout le tampon/retard volontaire ci-dessous : lecture la plus rapide possible, aucune marge, tolérance réduite aux coupures réseau."
+        ) {
+            Switch(
+                checked = settings.directModeEnabled,
+                onCheckedChange = onDirectModeToggled,
+                modifier = Modifier.focusRequester(firstItemFocusRequester)
+            )
+        }
 
-        StepperSettingTv(
-            title = "Cache RAM",
-            subtitle = "Plafond mémoire dédié au tampon de lecture.",
-            value = settings.ramCacheSizeMb.toLong(),
-            step = 25L,
-            unit = "Mo",
-            unlimitedAtZero = false,
-            firstItemFocusRequester = null,
-            onValueChange = { onRamCacheChange(it.toInt()) }
-        )
+        if (!settings.directModeEnabled) {
+            StepperSettingTv(
+                title = "Durée du tampon",
+                subtitle = "Quantité de vidéo mise en avance avant lecture.",
+                value = settings.bufferDurationSeconds.toLong(),
+                step = 5L,
+                unit = "s",
+                unlimitedAtZero = false,
+                firstItemFocusRequester = null,
+                onValueChange = { onBufferDurationChange(it.toInt()) }
+            )
 
-        StepperSettingTv(
-            title = "Retard sur le direct",
-            subtitle = "Décalage volontaire par rapport au direct réel, pour absorber les à-coups réseau.",
-            value = settings.liveDelaySeconds.toLong(),
-            step = 1L,
-            unit = "s",
-            unlimitedAtZero = false,
-            firstItemFocusRequester = null,
-            onValueChange = { onLiveDelayChange(it.toInt()) }
-        )
+            StepperSettingTv(
+                title = "Cache RAM",
+                subtitle = "Plancher mémoire minimum réservé au tampon (s'ajuste automatiquement à la hausse si \"Durée du tampon\" ou \"Retard sur le direct\" l'exigent).",
+                value = settings.ramCacheSizeMb.toLong(),
+                step = 25L,
+                unit = "Mo",
+                unlimitedAtZero = false,
+                firstItemFocusRequester = null,
+                onValueChange = { onRamCacheChange(it.toInt()) }
+            )
+
+            StepperSettingTv(
+                title = "Retard sur le direct",
+                subtitle = "Décalage volontaire par rapport au direct réel, pour absorber les à-coups réseau.",
+                value = settings.liveDelaySeconds.toLong(),
+                step = 1L,
+                unit = "s",
+                unlimitedAtZero = false,
+                firstItemFocusRequester = null,
+                onValueChange = { onLiveDelayChange(it.toInt()) }
+            )
+        }
 
         SettingBlockTv(title = "Tampon hybride", subtitle = "Écrit les segments sur le disque avant lecture, en plus du cache RAM.") {
             Switch(checked = settings.hybridBufferEnabled, onCheckedChange = onHybridBufferToggled)

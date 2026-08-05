@@ -14,7 +14,8 @@ fun Preferences.toPlayerSettings(): PlayerSettings = PlayerSettings(
         ?: PlayerSettings.DEFAULT_LIVE_DELAY_SECONDS,
     hybridBufferEnabled = this[SettingsKeys.HYBRID_BUFFER_ENABLED] ?: false,
     diskCacheMaxSizeMb = this[SettingsKeys.DISK_CACHE_MAX_SIZE_MB]
-        ?: PlayerSettings.DEFAULT_DISK_CACHE_MAX_SIZE_MB
+        ?: PlayerSettings.DEFAULT_DISK_CACHE_MAX_SIZE_MB,
+    directModeEnabled = this[SettingsKeys.DIRECT_MODE_ENABLED] ?: false
 )
 
 fun PlayerSettings.writeTo(prefs: MutablePreferences) {
@@ -23,6 +24,7 @@ fun PlayerSettings.writeTo(prefs: MutablePreferences) {
     prefs[SettingsKeys.LIVE_DELAY_SECONDS] = liveDelaySeconds
     prefs[SettingsKeys.HYBRID_BUFFER_ENABLED] = hybridBufferEnabled
     prefs[SettingsKeys.DISK_CACHE_MAX_SIZE_MB] = diskCacheMaxSizeMb
+    prefs[SettingsKeys.DIRECT_MODE_ENABLED] = directModeEnabled
 }
 
 /** `null` = "pas encore défini", distinct de toute valeur par défaut (contrairement à `PlayerSettings`,

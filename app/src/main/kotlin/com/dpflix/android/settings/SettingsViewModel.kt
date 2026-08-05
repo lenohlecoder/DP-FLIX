@@ -243,6 +243,13 @@ class SettingsViewModel(
         }
     }
 
+    /** Fix (2026-08-05) — voir la doc de [com.dpflix.android.settings.PlayerSettings.directModeEnabled]. */
+    fun setDirectModeEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            appRepository.settings.updatePlayerSettings { it.copy(directModeEnabled = enabled) }
+        }
+    }
+
     /** `mb <= 0` = illimité (voir `MediaCacheProvider.get` : `NoOpCacheEvictor` dans ce cas). */
     fun setDiskCacheMaxSizeMb(mb: Long) {
         val clamped = mb.coerceIn(0L, DISK_CACHE_MAX)

@@ -418,6 +418,14 @@ class PlayerController(
     // accidentel de la taille de tampon choisie par ailleurs, les deux reglages sont
     // decouples comme l'utilisateur s'y attend.
     private fun buildLoadControl(currentSettings: PlayerSettings): DefaultLoadControl {
+        // Fix (2026-08-05) — Mode direct : plus aucun réglage de tampon/retard personnalisé,
+        // on repart des valeurs par défaut d'ExoPlayer (DefaultLoadControl.Builder().build()
+        // sans surcharge) — démarrage le plus rapide possible, aucune cible de retard. Voir
+        // la doc de [PlayerSettings.directModeEnabled].
+        if (currentSettings.directModeEnabled) {
+            return DefaultLoadControl.Builder().build()
+        }
+
         val requestedDelayMs = (currentSettings.liveDelaySeconds * 1000).coerceAtLeast(0)
         val maxBufferMs = (currentSettings.bufferDurationSeconds * 1000)
             .coerceAtLeast(MIN_MAX_BUFFER_MS)
@@ -441,7 +449,26 @@ class PlayerController(
         val minBufferMs = (maxBufferMs / 2)
             .coerceAtLeast(bufferForPlaybackAfterRebufferMs)
             .coerceAtMost(maxBufferMs)
-        val targetBufferBytes = (currentSettings.ramCacheSizeMb.coerceAtLeast(0) * BYTES_PER_MB)
+
+        // Fix (2026-08-05) — vrai plafond en octets (targetBufferBytes) qui, avec
+        // setPrioritizeTimeOverSizeThresholds(false), l'EMPORTE sur maxBufferMs des qu'il
+        // est atteint en premier : sur un flux a fort debit (constate ~50 Mbps chez
+        // l'utilisateur), l'ancien calcul (uniquement `ramCacheSizeMb` tel quel, 100 Mo par
+        // defaut) plafonnait reellement le tampon a ~15s quel que soit le reglage "Duree du
+        // tampon" en secondes - les deux reglages n'etaient pas cohérents entre eux, l'un
+        // pouvant silencieusement annuler l'autre. Desormais le Cache RAM effectif est le
+        // MAXIMUM entre la valeur choisie par l'utilisateur (`ramCacheSizeMb`, toujours
+        // respectee comme PLANCHER, ex. pour reserver volontairement plus de memoire) et
+        // une estimation automatique de ce qu'il faut pour tenir `maxBufferMs` sur un flux a
+        // fort debit (ASSUMED_PEAK_BITRATE_KBPS, marge large au-dessus des ~50 Mbps
+        // constates pour couvrir aussi des flux encore plus lourds) : "Cache RAM" suit donc
+        // desormais automatiquement "Duree du tampon"/"Retard sur le direct" au lieu de
+        // pouvoir les contredire silencieusement, conformement a la demande explicite.
+        // requiredBits = (maxBufferMs / 1000s) * (ASSUMED_PEAK_BITRATE_KBPS * 1000 bits/kbit)
+        //              = maxBufferMs * ASSUMED_PEAK_BITRATE_KBPS (le /1000 et le *1000 s'annulent)
+        val autoRequiredBytes = (maxBufferMs.toLong() * ASSUMED_PEAK_BITRATE_KBPS) / 8L
+        val manualBytes = currentSettings.ramCacheSizeMb.coerceAtLeast(0) * BYTES_PER_MB
+        val targetBufferBytes = maxOf(manualBytes, autoRequiredBytes)
 
         return DefaultLoadControl.Builder()
             .setBufferDurationsMs(minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs)
@@ -866,11 +893,18 @@ class PlayerController(
         val mediaItem = MediaItem.Builder()
             .setUri(uri)
             .apply { (forcedMimeType ?: mimeTypeForUri(uri))?.let { setMimeType(it) } }
-            .setLiveConfiguration(
-                MediaItem.LiveConfiguration.Builder()
-                    .setTargetOffsetMs(settings.liveDelaySeconds * 1000L)
-                    .build()
-            )
+            .apply {
+                // Fix (2026-08-05) — Mode direct : aucun retard volontaire visé, on ne pose
+                // pas de LiveConfiguration personnalisée (Media3 garde son comportement natif
+                // par défaut). Voir la doc de [PlayerSettings.directModeEnabled].
+                if (!settings.directModeEnabled) {
+                    setLiveConfiguration(
+                        MediaItem.LiveConfiguration.Builder()
+                            .setTargetOffsetMs(settings.liveDelaySeconds * 1000L)
+                            .build()
+                    )
+                }
+            }
             .build()
         exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
@@ -1110,6 +1144,9 @@ class PlayerController(
      * secondes, déclenche encore la reconnexion préventive.
      */
     private fun scheduleDriftGuard() {
+        // Fix (2026-08-05) — Mode direct : aucune reconnexion préventive, on laisse le
+        // flux jouer tel quel. Voir la doc de [PlayerSettings.directModeEnabled].
+        if (settings.directModeEnabled) return
         if (driftGuardJob?.isActive == true) return
         driftGuardJob = controllerScope.launch {
             while (true) {
@@ -1194,6 +1231,13 @@ class PlayerController(
     companion object {
         private const val BYTES_PER_MB = 1024L * 1024L
         private const val MIN_MAX_BUFFER_MS = 5_000
+
+        // Fix (2026-08-05) — voir buildLoadControl : débit maximal supposé (kbit/s) pour
+        // dimensionner automatiquement le Cache RAM (targetBufferBytes) sur la durée de
+        // tampon demandée. Marge large au-dessus des ~50 Mbps réellement constatés par
+        // l'utilisateur sur certains flux .ts bruts non ré-encodés, pour rester valable
+        // même sur un flux encore plus lourd.
+        private const val ASSUMED_PEAK_BITRATE_KBPS = 80_000L
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_MS = 2_500
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5_000
 
