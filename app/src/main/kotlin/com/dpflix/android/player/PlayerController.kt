@@ -422,12 +422,24 @@ class PlayerController(
         val maxBufferMs = (currentSettings.bufferDurationSeconds * 1000)
             .coerceAtLeast(MIN_MAX_BUFFER_MS)
             .coerceAtLeast(requestedDelayMs + LIVE_DELAY_HEADROOM_MS)
-        val minBufferMs = (maxBufferMs / 2).coerceAtMost(maxBufferMs)
         val bufferForPlaybackMs = requestedDelayMs
             .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_MS)
             .coerceAtMost(maxBufferMs)
         val bufferForPlaybackAfterRebufferMs = bufferForPlaybackMs
             .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
+            .coerceAtMost(maxBufferMs)
+        // Fix (2026-08-05) : minBufferMs etait calcule independamment (maxBufferMs / 2)
+        // AVANT que bufferForPlaybackMs/bufferForPlaybackAfterRebufferMs ne soient connus,
+        // sans jamais verifier qu'il restait au-dessus - Media3 exige pourtant
+        // minBufferMs >= bufferForPlaybackAfterRebufferMs (qui est lui-meme toujours >=
+        // bufferForPlaybackMs, voir ci-dessus), sans quoi setBufferDurationsMs leve
+        // IllegalArgumentException("minBufferMs cannot be less than bufferForPlaybackMs")
+        // au tout premier appel a buildExoPlayer (donc au premier clic sur une chaine).
+        // Reproduit avec les reglages par defaut actuels : maxBufferMs=30000 ->
+        // minBufferMs=15000 par l'ancien calcul, mais bufferForPlaybackMs=20000
+        // (liveDelaySeconds=20s, v4) - 15000 < 20000, crash systematique.
+        val minBufferMs = (maxBufferMs / 2)
+            .coerceAtLeast(bufferForPlaybackAfterRebufferMs)
             .coerceAtMost(maxBufferMs)
         val targetBufferBytes = (currentSettings.ramCacheSizeMb.coerceAtLeast(0) * BYTES_PER_MB)
 
