@@ -212,6 +212,15 @@ class PlayerController(
     // qu'un blocage visible ne survienne.
     private var driftGuardJob: Job? = null
 
+    // Fix (2026-08-05) : compteur de lectures consecutives sous le seuil bas sans
+    // reprise (voir scheduleDriftGuard) - la persistance evite de confondre un drainage
+    // normal (tampon qui redescend vers liveDelaySeconds apres un episode ou il l'a
+    // depasse, ex. apres une pause volontaire prolongee) avec une vraie panne de
+    // rechargement. previousBufferedSeconds sert a detecter la reprise (tampon qui
+    // regagne du terrain d'une lecture a l'autre).
+    private var driftLowBufferStreak: Int = 0
+    private var previousBufferedSeconds: Float? = null
+
     // Fix (2026-08-05) : evite deux reconnexions rapprochees (ex. driftGuard et watchdog
     // qui reagiraient tous les deux a la meme derive a quelques centaines de ms
     // d'intervalle) - une reconnexion qui vient de partir a droit a
@@ -426,6 +435,19 @@ class PlayerController(
             .setBufferDurationsMs(minBufferMs, maxBufferMs, bufferForPlaybackMs, bufferForPlaybackAfterRebufferMs)
             .setTargetBufferBytes(if (targetBufferBytes > 0) targetBufferBytes.toInt() else C.LENGTH_UNSET)
             .setPrioritizeTimeOverSizeThresholds(false)
+            // Fix (2026-08-05, v3) : back buffer explicitement a zero - les segments deja
+            // joues sont TOUJOURS liberes immediatement (jamais retenus "au cas ou"),
+            // pendant que le chargeur continue en permanence d'accumuler de nouveaux
+            // segments jusqu'a maxBufferMs. Couple a l'ordre de livraison strictement
+            // sequentiel d'un flux HTTP progressif/HLS (Media3 ne peut pas melanger
+            // l'ordre des echantillons), ceci garantit le mouvement demande : liberer les
+            // anciens et recuperer les nouveaux en continu, jamais les deux en meme temps
+            // sur le meme segment, jamais de pause dans l'accumulation tant qu'il reste de
+            // la place sous le plafond. Explicite plutot qu'implicite (valeur par defaut
+            // d'ExoPlayer deja a 0, mais un defaut peut changer d'une version de Media3 a
+            // l'autre - ce comportement est ici une exigence du cahier des charges, pas un
+            // hasard de configuration).
+            .setBackBufferDurationMs(0, false)
             .build()
     }
 
@@ -802,6 +824,8 @@ class PlayerController(
         // que la tache de la chaine precedente continue de reagir sur le nouveau player.
         cancelDriftGuard()
         lastReconnectAtElapsedRealtimeMs = 0L
+        driftLowBufferStreak = 0
+        previousBufferedSeconds = null
         scheduleWatchdog()
         scheduleDriftGuard()
         startPlayback(channel.streamUrl)
@@ -1040,17 +1064,69 @@ class PlayerController(
      * celui-ci gère déjà nativement la convergence vers `targetOffsetMs`, cette
      * surveillance ferait doublon (voire interférerait) avec ce mécanisme natif.
      */
+    /**
+     * Surveillance continue du tampon (§6 "le tampon doit augmenter et diminuer
+     * progressivement sans exagérer... jamais de rattrapage forcé, toujours revenir au
+     * retard cible") pour les flux .ts progressifs : contrairement au watchdog
+     * ([scheduleWatchdog]), qui ne réagit qu'à un blocage DÉJÀ visible
+     * (`PlayerUiState.Buffering` prolongé), cette tâche tourne en permanence pendant la
+     * lecture et agit AVANT que le tampon ne soit totalement épuisé — reconnecte dès que
+     * le niveau de tampon descend sous un seuil bas ([DRIFT_LOW_WATERMARK_RATIO] du
+     * retard cible), pendant que la lecture est encore fluide côté utilisateur.
+     *
+     * Sans effet sur un flux réellement reconnu live par Media3 ([isRealLiveWindow]) :
+     * celui-ci gère déjà nativement la convergence vers `targetOffsetMs`, cette
+     * surveillance ferait doublon (voire interférerait) avec ce mécanisme natif.
+     *
+     * Fix (2026-08-05, régression identifiée après une pause volontaire prolongée) : une
+     * lecture normale sur un flux live 1x temps réel voit son tampon redescendre
+     * PROGRESSIVEMENT vers `liveDelaySeconds` après tout épisode où il a dépassé la
+     * cible (ex. pause volontaire qui laisse le temps au tampon de gonfler bien au-delà
+     * du retard cible, voir §6 "augmente et diminue progressivement sans exagérer") — ce
+     * drainage normal traverse forcément le seuil bas à un moment donné, sans qu'il
+     * s'agisse d'une vraie panne de rechargement. Réagir à une SEULE lecture sous le
+     * seuil confondait ce drainage naturel avec un vrai risque de blocage, et
+     * reconnectait inutilement (donc vidait le tampon d'un coup) en plein milieu d'une
+     * lecture par ailleurs saine. Deux garde-fous ajoutés :
+     * - Persistance ([DRIFT_SUSTAINED_CHECKS]) : le tampon doit rester sous le seuil
+     *   PLUSIEURS lectures consécutives, pas une seule.
+     * - Tendance : la streak est réinitialisée dès que le tampon regagne du terrain
+     *   d'une lecture à l'autre (`bufferedSeconds > previousBufferedSeconds`) — un
+     *   tampon qui recharge, même lentement, n'est jamais un motif de reconnexion tant
+     *   qu'il ne stagne pas ou ne s'aggrave pas.
+     * Seul un tampon RÉELLEMENT bloqué ou en aggravation continue, sur plusieurs
+     * secondes, déclenche encore la reconnexion préventive.
+     */
     private fun scheduleDriftGuard() {
         if (driftGuardJob?.isActive == true) return
         driftGuardJob = controllerScope.launch {
             while (true) {
                 delay(DRIFT_CHECK_INTERVAL_MS)
-                if (isRealLiveWindow()) continue
-                if (_uiState.value !is PlayerUiState.Ready) continue
-                val bufferedSeconds = currentBufferedSeconds() ?: continue
+                if (isRealLiveWindow() || !exoPlayer.isPlaying) {
+                    driftLowBufferStreak = 0
+                    previousBufferedSeconds = null
+                    continue
+                }
+                val bufferedSeconds = currentBufferedSeconds()
+                if (bufferedSeconds == null) {
+                    driftLowBufferStreak = 0
+                    previousBufferedSeconds = null
+                    continue
+                }
                 val lowWatermarkSeconds = (settings.liveDelaySeconds * DRIFT_LOW_WATERMARK_RATIO)
                     .coerceAtLeast(MIN_LOW_WATERMARK_SECONDS)
-                if (bufferedSeconds <= lowWatermarkSeconds) {
+                val isRecovering = previousBufferedSeconds?.let { bufferedSeconds > it } == true
+                previousBufferedSeconds = bufferedSeconds
+
+                if (bufferedSeconds <= lowWatermarkSeconds && !isRecovering) {
+                    driftLowBufferStreak += 1
+                } else {
+                    driftLowBufferStreak = 0
+                }
+
+                if (driftLowBufferStreak >= DRIFT_SUSTAINED_CHECKS) {
+                    driftLowBufferStreak = 0
+                    previousBufferedSeconds = null
                     reconnectProgressiveStream()
                 }
             }
@@ -1060,6 +1136,8 @@ class PlayerController(
     private fun cancelDriftGuard() {
         driftGuardJob?.cancel()
         driftGuardJob = null
+        driftLowBufferStreak = 0
+        previousBufferedSeconds = null
     }
 
     /**
@@ -1121,15 +1199,44 @@ class PlayerController(
         // solliciter le Player inutilement.
         private const val DRIFT_CHECK_INTERVAL_MS = 1_000L
 
-        // Fix (2026-08-05) — voir scheduleDriftGuard : reconnecte des que le tampon
-        // restant descend sous cette fraction du retard cible, PENDANT que la lecture
-        // est encore fluide - "libere" alors le flux en cours (nouvelle connexion) avant
-        // qu'il ne s'assèche completement et ne force un blocage visible.
-        private const val DRIFT_LOW_WATERMARK_RATIO = 0.35f
+        // Fix (2026-08-05, v3) — voir scheduleDriftGuard : le seuil bas est desormais la
+        // CONCORDANCE stricte avec le retard cible (100%, plus le seuil n'etait qu'une
+        // fraction de 35%) - "si le retard cible est de 5-10s, le tampon ne doit jamais se
+        // vider en dessous de 5-10s" (exigence explicite). Reconnecte des que le tampon
+        // restant descend sous le retard cible lui-meme, PENDANT que la lecture est
+        // encore fluide - "libere" alors le flux en cours (nouvelle connexion) avant qu'il
+        // ne s'approche de zero et ne force un blocage visible. Sans risque de sur-
+        // reaction sur un simple frémissement reseau normal : couple a DRIFT_SUSTAINED_CHECKS
+        // (il faut rester sous le seuil plusieurs secondes d'affilee, pas une seule mesure)
+        // et a la detection de reprise (previousBufferedSeconds) - seul un tampon qui NE
+        // regagne jamais de terrain pendant toute la fenetre de persistance declenche la
+        // reconnexion.
+        private const val DRIFT_LOW_WATERMARK_RATIO = 1.0f
+
+        // Fix (2026-08-05, v4) — voir scheduleDriftGuard : nombre de lectures CONSECUTIVES
+        // sous le seuil bas, sans reprise entre-temps, avant de reconnecter. Relevé de 6 à
+        // 15 (soit ~15s a DRIFT_CHECK_INTERVAL_MS = 1s) suite a un cas reel signale : le
+        // fournisseur IPTV coupe parfois la diffusion source net pendant 5 a 10s (pas un
+        // probleme reseau cote client, une vraie coupure a la source) avant de reprendre
+        // normalement. Avec l'ancien seuil de 6s, une coupure de 10s declenchait une
+        // reconnexion PENDANT la coupure elle-meme - juste avant que la source ne
+        // reprenne naturellement - videant le tampon protecteur pile au mauvais moment et
+        // rendant visible ce qui aurait du rester invisible. A 15s, une coupure connue de
+        // 5-10s se resorbe seule (le tampon draine puis regagne du terrain des la reprise,
+        // ce qui reinitialise le compteur avant meme d'atteindre le seuil de persistance) :
+        // la reconnexion ne se declenche plus que pour un drainage qui depasse reellement
+        // ce qu'une coupure habituelle de ce fournisseur provoque - donc une vraie panne
+        // plus longue, pas le cas courant qu'on cherche justement a rendre invisible.
+        // Suppose un retard cible (liveDelaySeconds) regle avec une marge reelle au-dessus
+        // de la coupure la plus longue observee (voir DEFAULT_LIVE_DELAY_SECONDS) : sans
+        // cette marge, le tampon peut atteindre zero avant meme que ce delai de
+        // persistance ne s'ecoule, quel qu'il soit.
+        private const val DRIFT_SUSTAINED_CHECKS = 15
 
         // Fix (2026-08-05) — voir scheduleDriftGuard : plancher absolu du seuil bas,
-        // pour un retard cible tres court (ex. 0-2s) ou 35% representerait une marge
-        // ridiculement faible en secondes reelles.
+        // pour un retard cible tres court (ex. 0-2s) ou le tenir a 100% de la cible
+        // laisserait une marge ridiculement faible en secondes reelles pour amortir le
+        // moindre frémissement reseau.
         private const val MIN_LOW_WATERMARK_SECONDS = 1.5f
 
         // Fix (2026-08-05) — voir reconnectProgressiveStream : intervalle minimal entre

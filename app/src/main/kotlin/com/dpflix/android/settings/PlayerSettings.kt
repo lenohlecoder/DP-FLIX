@@ -26,7 +26,16 @@ data class PlayerSettings(
         // à affiner à l'étape 5 lors de l'intégration réelle d'ExoPlayer (`DefaultLoadControl`).
         const val DEFAULT_BUFFER_DURATION_SECONDS = 30
         const val DEFAULT_RAM_CACHE_SIZE_MB = 100
-        const val DEFAULT_LIVE_DELAY_SECONDS = 6
+        // Fix (2026-08-05, v4) : relevé de 6 à 20s suite à un cas réel signalé — le
+        // fournisseur IPTV coupe parfois la diffusion source net pendant 5 à 10s avant de
+        // reprendre. `liveDelaySeconds` fixe la seule marge réellement garantie avant le
+        // début de la lecture (`bufferForPlaybackMs`, voir PlayerController.buildLoadControl)
+        // et défendue en continu ensuite (scheduleDriftGuard, seuil bas = 100% de cette
+        // valeur depuis le correctif v3) : 20s laisse une marge x2 par rapport à la coupure
+        // la plus longue observée, pour qu'une coupure habituelle se résorbe sans jamais
+        // vider complètement le tampon ni se faire sentir à l'écran. Réglable dans
+        // Réglages → Lecteur si la valeur ne convient pas à un flux donné (0-60s).
+        const val DEFAULT_LIVE_DELAY_SECONDS = 20
         const val DEFAULT_DISK_CACHE_MAX_SIZE_MB = 500L
     }
 }
