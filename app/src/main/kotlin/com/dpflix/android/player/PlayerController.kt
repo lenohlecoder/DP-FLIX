@@ -199,6 +199,26 @@ class PlayerController(
     /** Dernière chaîne demandée via [playChannel], nécessaire au rechargement complet du watchdog. */
     private var currentChannel: Channel? = null
 
+    // Fix (2026-08-05) : URI/mimeType reellement en cours de lecture (voir [startPlayback]),
+    // necessaires a [reconnectProgressiveStream] pour rouvrir la MEME tentative (post
+    // eventuel fallback de conteneur) plutot que l'URI d'origine de la chaine.
+    private var currentPlaybackUri: String? = null
+    private var currentPlaybackMimeType: String? = null
+
+    // Fix (2026-08-05) : tache de surveillance continue de la derive/du tampon sur les
+    // flux .ts progressifs (voir [scheduleDriftGuard]) - separee du watchdog de blocage
+    // ([scheduleWatchdog]) car elle tourne EN PERMANENCE pendant la lecture (pas
+    // seulement pendant un Buffering deja visible) : son role est justement d'agir avant
+    // qu'un blocage visible ne survienne.
+    private var driftGuardJob: Job? = null
+
+    // Fix (2026-08-05) : evite deux reconnexions rapprochees (ex. driftGuard et watchdog
+    // qui reagiraient tous les deux a la meme derive a quelques centaines de ms
+    // d'intervalle) - une reconnexion qui vient de partir a droit a
+    // MIN_RECONNECT_INTERVAL_MS pour re-remplir le tampon avant qu'une autre soit
+    // autorisee a se declencher.
+    private var lastReconnectAtElapsedRealtimeMs: Long = 0L
+
     // Fix (2026-07-22, second passage ; generalise 2026-07-23, quatrieme passage) :
     // plusieurs panels annoncent un container_extension (m3u8 ou ts) qui ne correspond
     // pas a ce qu'ils servent reellement sur cette URL, et d'autres (playlists M3U
@@ -379,12 +399,24 @@ class PlayerController(
      * mécanisme d'accélération de lecture ne s'active jamais côté ExoPlayer, la lecture
      * reste à vitesse normale du début à la fin, quoi qu'il arrive (blocages compris).
      */
+    // Fix (2026-08-05) : l'ancien calcul coercait bufferForPlaybackMs a `minBufferMs`
+    // (= maxBufferMs / 2). Avec un maxBufferMs proche du minimum (bufferDurationSeconds
+    // faible), un retard cible de 5-10s se retrouvait tronque en dessous de ce qui etait
+    // demande - le tampon n'avait alors structurellement pas la place de contenir le
+    // retard voulu, qui derivait des le premier stall. `maxBufferMs` est desormais
+    // remonte pour TOUJOURS pouvoir contenir requestedDelayMs + une marge de securite
+    // (LIVE_DELAY_HEADROOM_MS) : le retard demande n'est plus jamais un sous-produit
+    // accidentel de la taille de tampon choisie par ailleurs, les deux reglages sont
+    // decouples comme l'utilisateur s'y attend.
     private fun buildLoadControl(currentSettings: PlayerSettings): DefaultLoadControl {
-        val maxBufferMs = (currentSettings.bufferDurationSeconds * 1000).coerceAtLeast(MIN_MAX_BUFFER_MS)
+        val requestedDelayMs = (currentSettings.liveDelaySeconds * 1000).coerceAtLeast(0)
+        val maxBufferMs = (currentSettings.bufferDurationSeconds * 1000)
+            .coerceAtLeast(MIN_MAX_BUFFER_MS)
+            .coerceAtLeast(requestedDelayMs + LIVE_DELAY_HEADROOM_MS)
         val minBufferMs = (maxBufferMs / 2).coerceAtMost(maxBufferMs)
-        val bufferForPlaybackMs = (currentSettings.liveDelaySeconds * 1000)
+        val bufferForPlaybackMs = requestedDelayMs
             .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_MS)
-            .coerceAtMost(minBufferMs)
+            .coerceAtMost(maxBufferMs)
         val bufferForPlaybackAfterRebufferMs = bufferForPlaybackMs
             .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
             .coerceAtMost(maxBufferMs)
@@ -765,7 +797,13 @@ class PlayerController(
         // session/configuration precedente).
         liveAnchorElapsedRealtimeMs = null
         liveAnchorPositionMs = null
+        // Fix (2026-08-05) : nouvelle chaine = nouvelle surveillance de derive (comme le
+        // watchdog juste au-dessus) - cancelDriftGuard() avant de la reprogrammer evite
+        // que la tache de la chaine precedente continue de reagir sur le nouveau player.
+        cancelDriftGuard()
+        lastReconnectAtElapsedRealtimeMs = 0L
         scheduleWatchdog()
+        scheduleDriftGuard()
         startPlayback(channel.streamUrl)
     }
 
@@ -782,6 +820,13 @@ class PlayerController(
      * PARSING_CONTAINER_UNSUPPORTED initial même sans changement d'extension.
      */
     private fun startPlayback(uri: String, forcedMimeType: String? = null) {
+        // Fix (2026-08-05) : retenus pour [reconnectProgressiveStream] - reconnecter un
+        // flux .ts progressif doit rouvrir EXACTEMENT la meme URI/mimeType que la
+        // tentative en cours (celle eventuellement issue de containerFallbackQueue), pas
+        // reculer vers channel.streamUrl d'origine qui pourrait etre l'URI qui a
+        // justement echoue au sniffing de conteneur.
+        currentPlaybackUri = uri
+        currentPlaybackMimeType = forcedMimeType
         val mediaItem = MediaItem.Builder()
             .setUri(uri)
             .apply { (forcedMimeType ?: mimeTypeForUri(uri))?.let { setMimeType(it) } }
@@ -928,9 +973,93 @@ class PlayerController(
      * inefficacité sur un vrai blocage réseau est sans risque — le second palier
      * ([performHardReload]) prend alors le relais.
      */
+    // Fix (2026-08-05) : `seekToDefaultPosition()` ne "revient au retard cible" que s'il
+    // existe une vraie fenetre live exploitee par Media3 (HLS/DASH reconnu). Sur un flux
+    // .ts brut lu en simple progressif, LiveConfiguration/targetOffsetMs ne s'applique
+    // JAMAIS (voir la doc de [currentLiveEdgeOffsetSeconds]) : `seekToDefaultPosition()`
+    // y revient a la position 0 du buffer DEJA telecharge depuis l'ouverture de la
+    // connexion HTTP en cours - c'est-a-dire recule dans le temps au lieu d'avancer.
+    // Symptome observe avant ce fix : lecture -> tampon epuise -> blocage -> soft retry
+    // -> rembobinage au debut du buffer -> rejoue le meme passage -> re-blocage au meme
+    // point relatif -> boucle infinie, avec un ecart au direct qui ne fait qu'augmenter
+    // puisque la lecture ne progresse jamais au-dela du point de blocage initial.
+    private fun isRealLiveWindow(): Boolean = exoPlayer.currentLiveOffset != C.TIME_UNSET
+
     private fun performSoftRetry() {
-        exoPlayer.seekToDefaultPosition()
-        exoPlayer.playWhenReady = true
+        if (isRealLiveWindow()) {
+            exoPlayer.seekToDefaultPosition()
+            exoPlayer.playWhenReady = true
+        } else {
+            reconnectProgressiveStream()
+        }
+    }
+
+    // Fix (2026-08-05) : sur un flux .ts progressif, la SEULE facon reelle de "revenir
+    // pres du direct" est d'ouvrir une NOUVELLE connexion HTTP vers la meme URI - un
+    // panel/CDN IPTV sert en direct depuis "maintenant" a toute nouvelle connexion,
+    // contrairement a la connexion existante qui continue de livrer le flux depuis le
+    // point ou elle a ete ouverte a l'origine. Reutilise [startPlayback] (pas
+    // [playChannel]) : garde les qualites/diagnostics/watchdog de la session en cours,
+    // seul le MediaItem est reouvert - coherent avec "garde le tampon" du premier palier
+    // watchdog (ici, on ne garde plus l'ANCIEN tampon puisqu'il est justement la cause du
+    // probleme, mais on garde tout le reste de l'etat de session).
+    //
+    // Nouvel ancrage horloge murale (liveAnchor*) : la nouvelle connexion redemarre a un
+    // retard proche de settings.liveDelaySeconds (via bufferForPlaybackMs, voir
+    // [buildLoadControl]) - l'estimation d'ecart au direct doit repartir de cette
+    // nouvelle reference plutot que de continuer a additionner l'ancien ecart deja
+    // derive, sans quoi [currentLiveEdgeOffsetSeconds] resterait bloque sur la valeur
+    // (fausse) accumulee avant la reconnexion.
+    //
+    // `MIN_RECONNECT_INTERVAL_MS` : protege contre un enchainement de reconnexions
+    // rapprochees (driftGuard + watchdog reagissant tous les deux a la meme derive, ou un
+    // reseau si degrade qu'aucune reconnexion n'a le temps de re-remplir le tampon avant
+    // la suivante) - dans ce dernier cas, laisser le watchdog/hardReload prendre le relais
+    // normalement plutot que de boucler encore plus vite.
+    private fun reconnectProgressiveStream() {
+        val uri = currentPlaybackUri ?: return
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastReconnectAtElapsedRealtimeMs < MIN_RECONNECT_INTERVAL_MS) return
+        lastReconnectAtElapsedRealtimeMs = now
+        liveAnchorElapsedRealtimeMs = null
+        liveAnchorPositionMs = null
+        startPlayback(uri, forcedMimeType = currentPlaybackMimeType)
+    }
+
+    /**
+     * Surveillance continue du tampon (§6 "le tampon doit augmenter et diminuer
+     * progressivement sans exagérer... jamais de rattrapage forcé, toujours revenir au
+     * retard cible") pour les flux .ts progressifs : contrairement au watchdog
+     * ([scheduleWatchdog]), qui ne réagit qu'à un blocage DÉJÀ visible
+     * (`PlayerUiState.Buffering` prolongé), cette tâche tourne en permanence pendant la
+     * lecture et agit AVANT que le tampon ne soit totalement épuisé — reconnecte dès que
+     * le niveau de tampon descend sous un seuil bas ([DRIFT_LOW_WATERMARK_RATIO] du
+     * retard cible), pendant que la lecture est encore fluide côté utilisateur.
+     *
+     * Sans effet sur un flux réellement reconnu live par Media3 ([isRealLiveWindow]) :
+     * celui-ci gère déjà nativement la convergence vers `targetOffsetMs`, cette
+     * surveillance ferait doublon (voire interférerait) avec ce mécanisme natif.
+     */
+    private fun scheduleDriftGuard() {
+        if (driftGuardJob?.isActive == true) return
+        driftGuardJob = controllerScope.launch {
+            while (true) {
+                delay(DRIFT_CHECK_INTERVAL_MS)
+                if (isRealLiveWindow()) continue
+                if (_uiState.value !is PlayerUiState.Ready) continue
+                val bufferedSeconds = currentBufferedSeconds() ?: continue
+                val lowWatermarkSeconds = (settings.liveDelaySeconds * DRIFT_LOW_WATERMARK_RATIO)
+                    .coerceAtLeast(MIN_LOW_WATERMARK_SECONDS)
+                if (bufferedSeconds <= lowWatermarkSeconds) {
+                    reconnectProgressiveStream()
+                }
+            }
+        }
+    }
+
+    private fun cancelDriftGuard() {
+        driftGuardJob?.cancel()
+        driftGuardJob = null
     }
 
     /**
@@ -967,6 +1096,7 @@ class PlayerController(
     /** À appeler impérativement quand l'écran qui détient ce controller disparaît. */
     fun release() {
         cancelWatchdog()
+        cancelDriftGuard()
         controllerScope.cancel()
         exoPlayer.release()
     }
@@ -976,6 +1106,37 @@ class PlayerController(
         private const val MIN_MAX_BUFFER_MS = 5_000
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_MS = 2_500
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5_000
+
+        // Fix (2026-08-05) — voir buildLoadControl : marge ajoutee au-dela du retard
+        // demande pour garantir que maxBufferMs peut TOUJOURS le contenir entierement,
+        // avec un peu de reserve pour absorber les micro-variations de debit normales
+        // (le tampon "augmente et diminue progressivement" sans se vider au moindre
+        // ralentissement transitoire).
+        private const val LIVE_DELAY_HEADROOM_MS = 10_000
+
+        // Fix (2026-08-05) — voir scheduleDriftGuard : frequence de verification du
+        // tampon sur les flux .ts progressifs. Assez frequent pour reagir avant un
+        // veritable stall (le watchdog, lui, ne se declenche qu'apres
+        // SOFT_RETRY_AFTER_STALL_MS de blocage DEJA visible), assez espace pour ne pas
+        // solliciter le Player inutilement.
+        private const val DRIFT_CHECK_INTERVAL_MS = 1_000L
+
+        // Fix (2026-08-05) — voir scheduleDriftGuard : reconnecte des que le tampon
+        // restant descend sous cette fraction du retard cible, PENDANT que la lecture
+        // est encore fluide - "libere" alors le flux en cours (nouvelle connexion) avant
+        // qu'il ne s'assèche completement et ne force un blocage visible.
+        private const val DRIFT_LOW_WATERMARK_RATIO = 0.35f
+
+        // Fix (2026-08-05) — voir scheduleDriftGuard : plancher absolu du seuil bas,
+        // pour un retard cible tres court (ex. 0-2s) ou 35% representerait une marge
+        // ridiculement faible en secondes reelles.
+        private const val MIN_LOW_WATERMARK_SECONDS = 1.5f
+
+        // Fix (2026-08-05) — voir reconnectProgressiveStream : intervalle minimal entre
+        // deux reconnexions du flux progressif, pour eviter un enchainement de
+        // reconnexions rapprochees quand plusieurs mecanismes (driftGuard, watchdog)
+        // reagissent a la meme derive.
+        private const val MIN_RECONNECT_INTERVAL_MS = 8_000L
 
         /** Fix (2026-07-23) — voir onPlayerError/behindLiveWindowRecoveries. */
         private const val BEHIND_LIVE_WINDOW_MAX_RECOVERIES = 3
