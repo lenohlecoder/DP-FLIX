@@ -111,7 +111,7 @@ sealed class DpFlixDestination(val route: String) {
      * — même raison que le fix du 4 août sur [PlayerFullscreen.createRoute] pour `channelId`.
      */
     object PlayerFullscreenReplay : DpFlixDestination(
-        "player_replay/{$ARG_CHANNEL_ID}/{$ARG_PROGRAM_START_MILLIS}/{$ARG_PROGRAM_END_MILLIS}/{$ARG_PROGRAM_TITLE}"
+        "player_replay/{$ARG_CHANNEL_ID}/{programStartMillis}/{programEndMillis}/{programTitle}"
     ) {
         const val ARG_PROGRAM_START_MILLIS = "programStartMillis"
         const val ARG_PROGRAM_END_MILLIS = "programEndMillis"
