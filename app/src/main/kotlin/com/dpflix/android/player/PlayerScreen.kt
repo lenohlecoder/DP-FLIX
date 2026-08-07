@@ -47,7 +47,6 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.ui.PlayerView
 import com.dpflix.android.settings.SettingsScreen
 import com.dpflix.android.model.Channel
-import com.dpflix.android.model.EpgLoadResult
 import com.dpflix.android.model.ReplayProgram
 import com.dpflix.android.repository.AppRepository
 import kotlin.math.abs
