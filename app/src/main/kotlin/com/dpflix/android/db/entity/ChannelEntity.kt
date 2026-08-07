@@ -24,6 +24,13 @@ import androidx.room.PrimaryKey
  * playlists IPTV gratuites) ne s'écrasent pas silencieusement l'une l'autre lors de
  * l'upsert (voir détail et justification dans `ChannelMapper`). Le champ `id` du modèle
  * métier issu du parseur n'est donc jamais persisté tel quel ; voir `ChannelMapper`.
+ *
+ * ## Colonnes replay/catch-up (version 6, § Étape R1)
+ * `tvArchive`/`tvArchiveDurationDays`/`xtreamStreamId` ajoutées pour détecter les chaînes
+ * dont le panel Xtream annonce un historique disponible (`tv_archive`/`tv_archive_duration`
+ * de `get_live_streams`) — voir la doc de ces mêmes champs sur `Channel` (modèle métier)
+ * pour le détail. Toutes trois par défaut à leur valeur "pas de replay" pour rester
+ * compatibles avec une chaîne M3U, qui n'a aucune source équivalente.
  */
 @Entity(
     tableName = "channels",
@@ -45,12 +52,21 @@ data class ChannelEntity(
     val logoUrl: String?,
     val category: String?,
 
-    /** Rattachement EPG (`tvg-id` M3U / `epg_channel_id` Xtream), §4.6. */
+    /** Identifiant fourni par la source (`tvg-id` M3U / `epg_channel_id` Xtream), voir `ChannelMapper.stableId`. */
     val tvgId: String?,
 
     /** Numéro fourni par la source (ordre playlist / `tvg-chno`). */
     val originalNumber: Int?,
 
     /** Numéro personnalisé (§5.3), prioritaire sur `originalNumber`. Préservé d'un rafraîchissement à l'autre. */
-    val customNumber: Int?
+    val customNumber: Int?,
+
+    /** Replay/catch-up (§ Étape R1), voir `Channel.tvArchive`. Colonne ajoutée en version 6. */
+    val tvArchive: Boolean = false,
+
+    /** Voir `Channel.tvArchiveDurationDays`. Colonne ajoutée en version 6. */
+    val tvArchiveDurationDays: Int? = null,
+
+    /** Voir `Channel.xtreamStreamId`. Colonne ajoutée en version 6. */
+    val xtreamStreamId: String? = null
 )

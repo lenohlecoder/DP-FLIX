@@ -6,12 +6,17 @@ import androidx.datastore.preferences.core.Preferences
 /** Lecture avec repli sur les valeurs par défaut de [PlayerSettings] si une clé est absente
  *  (première ouverture de l'app, ou réglage jamais modifié par l'utilisateur). */
 fun Preferences.toPlayerSettings(): PlayerSettings = PlayerSettings(
-    bufferDurationSeconds = this[SettingsKeys.BUFFER_DURATION_SECONDS]
-        ?: PlayerSettings.DEFAULT_BUFFER_DURATION_SECONDS,
+    // Fusion (2026-08-06, étape 2) : BUFFER_SAFETY_MARGIN_SECONDS si déjà écrite par cette
+    // version de l'app, sinon migration depuis l'ancienne LIVE_DELAY_SECONDS (le "retard
+    // cible" garanti — voir la doc de [PlayerSettings.bufferSafetyMarginSeconds] sur
+    // pourquoi c'est elle, et non l'ancienne BUFFER_DURATION_SECONDS, qui porte le sens
+    // conservé) si l'utilisateur avait déjà personnalisé ce réglage avant la mise à jour,
+    // sinon la valeur par défaut pour une toute première installation.
+    bufferSafetyMarginSeconds = this[SettingsKeys.BUFFER_SAFETY_MARGIN_SECONDS]
+        ?: this[SettingsKeys.LIVE_DELAY_SECONDS]
+        ?: PlayerSettings.DEFAULT_BUFFER_SAFETY_MARGIN_SECONDS,
     ramCacheSizeMb = this[SettingsKeys.RAM_CACHE_SIZE_MB]
         ?: PlayerSettings.DEFAULT_RAM_CACHE_SIZE_MB,
-    liveDelaySeconds = this[SettingsKeys.LIVE_DELAY_SECONDS]
-        ?: PlayerSettings.DEFAULT_LIVE_DELAY_SECONDS,
     hybridBufferEnabled = this[SettingsKeys.HYBRID_BUFFER_ENABLED] ?: false,
     diskCacheMaxSizeMb = this[SettingsKeys.DISK_CACHE_MAX_SIZE_MB]
         ?: PlayerSettings.DEFAULT_DISK_CACHE_MAX_SIZE_MB,
@@ -19,9 +24,8 @@ fun Preferences.toPlayerSettings(): PlayerSettings = PlayerSettings(
 )
 
 fun PlayerSettings.writeTo(prefs: MutablePreferences) {
-    prefs[SettingsKeys.BUFFER_DURATION_SECONDS] = bufferDurationSeconds
+    prefs[SettingsKeys.BUFFER_SAFETY_MARGIN_SECONDS] = bufferSafetyMarginSeconds
     prefs[SettingsKeys.RAM_CACHE_SIZE_MB] = ramCacheSizeMb
-    prefs[SettingsKeys.LIVE_DELAY_SECONDS] = liveDelaySeconds
     prefs[SettingsKeys.HYBRID_BUFFER_ENABLED] = hybridBufferEnabled
     prefs[SettingsKeys.DISK_CACHE_MAX_SIZE_MB] = diskCacheMaxSizeMb
     prefs[SettingsKeys.DIRECT_MODE_ENABLED] = directModeEnabled
@@ -31,7 +35,8 @@ fun PlayerSettings.writeTo(prefs: MutablePreferences) {
  *  aucun repli arbitraire n'aurait de sens pour un id de playlist ou une qualité vidéo). */
 fun Preferences.toGeneralSettings(): GeneralSettings = GeneralSettings(
     defaultVideoQualityCap = this[SettingsKeys.DEFAULT_VIDEO_QUALITY_CAP],
-    defaultPlaylistId = this[SettingsKeys.DEFAULT_PLAYLIST_ID]
+    defaultPlaylistId = this[SettingsKeys.DEFAULT_PLAYLIST_ID],
+    filmsSeriesUrl = this[SettingsKeys.FILMS_SERIES_URL]
 )
 
 fun GeneralSettings.writeTo(prefs: MutablePreferences) {
@@ -44,5 +49,10 @@ fun GeneralSettings.writeTo(prefs: MutablePreferences) {
         prefs[SettingsKeys.DEFAULT_PLAYLIST_ID] = defaultPlaylistId
     } else {
         prefs.remove(SettingsKeys.DEFAULT_PLAYLIST_ID)
+    }
+    if (filmsSeriesUrl != null) {
+        prefs[SettingsKeys.FILMS_SERIES_URL] = filmsSeriesUrl
+    } else {
+        prefs.remove(SettingsKeys.FILMS_SERIES_URL)
     }
 }

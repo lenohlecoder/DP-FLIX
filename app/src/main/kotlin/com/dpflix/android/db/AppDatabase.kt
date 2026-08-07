@@ -29,8 +29,20 @@ import com.dpflix.android.db.entity.PlaylistEntity
  * TOUTES au premier lancement de cette version (table recréée de zéro, pas juste les
  * nouvelles colonnes). Playlists (Xtream : serveur/identifiants ; M3U : URL) à
  * ressaisir après mise à jour, ce n'est pas un effet de bord silencieux à négliger.
+ *
+ * Version 5 (purge EPG, 2026-08-06) : suppression des colonnes `manualEpgUrl`,
+ * `manualEpgLocalFileUri`, `autoDetectedEpgUrl` et `lastEpgUpdateMillis` de
+ * `PlaylistEntity` (guide TV retiré du projet). Bump obligatoire malgré
+ * `fallbackToDestructiveMigration()` : sans lui, Room détecterait un schéma stocké
+ * différent du schéma attendu pour la même version et lèverait une
+ * `IllegalStateException` au lieu de déclencher la migration destructive.
+ *
+ * Version 6 (Étape R1, replay/catch-up) : ajout de `ChannelEntity.tvArchive`/
+ * `tvArchiveDurationDays`/`xtreamStreamId` (détection des chaînes dont le panel Xtream
+ * annonce un historique disponible). Même justification qu'aux versions précédentes pour
+ * l'absence de `Migration` écrite — voir `AppContainer.fallbackToDestructiveMigration()`.
  */
-@Database(entities = [PlaylistEntity::class, ChannelEntity::class], version = 4, exportSchema = false)
+@Database(entities = [PlaylistEntity::class, ChannelEntity::class], version = 6, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
 

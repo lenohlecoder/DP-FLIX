@@ -1,6 +1,7 @@
 package com.dpflix.android.network
 
 import com.dpflix.android.model.Channel
+import com.dpflix.android.model.ReplayProgram
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
@@ -31,8 +32,6 @@ import org.json.JSONObject
  * - l'usage de `includeTvChannels` (case à cocher §4.2) : ce client récupère toujours
  *   les chaînes live si on le lui demande, c'est à la couche repository (étape 4) de
  *   décider d'appeler [fetchLiveChannels] ou non selon la playlist ;
- * - la récupération de l'EPG lui-même (juste son URL, via [buildEpgUrl]) : le
- *   téléchargement + parsing XMLTV arrivent à l'étape 3d ;
  * - VOD / séries : hors périmètre du projet (§1, §4.2).
  */
 class XtreamClient(
@@ -179,7 +178,6 @@ class XtreamClient(
             XtreamResult.Success(
                 XtreamLiveChannelsData(
                     channels = channels,
-                    detectedEpgUrl = buildEpgUrl(credentials),
                     rawStreamCount = rawStreamCount
                 )
             )
@@ -259,7 +257,6 @@ class XtreamClient(
             XtreamResult.Success(
                 XtreamLiveChannelsData(
                     channels = channels,
-                    detectedEpgUrl = buildEpgUrl(credentials),
                     rawStreamCount = rawStreamCount
                 )
             )
@@ -268,6 +265,56 @@ class XtreamClient(
             // extrême : on abandonne proprement plutôt que de boucler indéfiniment sur
             // les catégories restantes avec une mémoire déjà sous pression.
             null
+        }
+    }
+
+    /**
+     * Étape R2 (replay/catch-up) : programmes déjà diffusés (+ en cours/à venir, filtrés par
+     * l'appelant) pour une chaîne à catch-up donnée. Appel isolé, indépendant de
+     * [fetchLiveChannels] — pas de ré-authentification ici (contrairement à
+     * [fetchLiveChannels], cet appel est fait ponctuellement pour UNE chaîne déjà connue,
+     * pas au (re)chargement de toute la playlist), donc pas d'`InvalidCredentials`/
+     * `AccountInactive` possible en retour : un identifiant erroné remontera comme
+     * [XtreamResult.ServerError] ou une liste vide selon ce que répond le panel.
+     *
+     * Deux actions Xtream tentées dans l'ordre (comme discuté à l'Étape R2 du cahier des
+     * charges) :
+     * - `get_short_epg` d'abord : la plus légère, supportée par la quasi-totalité des
+     *   panels, mais certains ne renvoient par ce biais qu'une poignée d'entrées centrées
+     *   sur le direct (programme en cours + quelques suivants), jamais de passé.
+     * - `get_simple_data_table` en repli, UNIQUEMENT si le premier appel n'a rien donné
+     *   d'exploitable : grille complète du jour pour ce `stream_id` (passé + futur) chez
+     *   les panels qui la supportent. On ne le tente pas systématiquement pour ne pas
+     *   doubler le nombre de requêtes sur les panels où `get_short_epg` suffit déjà.
+     */
+    suspend fun fetchShortEpg(
+        credentials: XtreamCredentials,
+        streamId: String,
+        limit: Int = SHORT_EPG_LIMIT
+    ): XtreamResult<List<ReplayProgram>> = withContext(Dispatchers.IO) {
+        val shortEpgOutcome = executeGet(
+            playerApiUrl(credentials, action = "get_short_epg", streamId = streamId, limit = limit)
+        )
+        val shortPrograms = (shortEpgOutcome as? GetOutcome.Body)?.let { parseEpgListings(it.text) }
+        if (!shortPrograms.isNullOrEmpty()) {
+            return@withContext XtreamResult.Success(shortPrograms)
+        }
+
+        when (
+            val simpleOutcome = executeGet(
+                playerApiUrl(credentials, action = "get_simple_data_table", streamId = streamId)
+            )
+        ) {
+            is GetOutcome.NetworkError -> if (shortEpgOutcome is GetOutcome.NetworkError) {
+                XtreamResult.NetworkError(simpleOutcome.message)
+            } else {
+                // Le premier appel a au moins joint le serveur (Body ou HttpError) : le
+                // replay est simplement indisponible pour cette chaîne côté panel, pas une
+                // panne réseau — succès vide plutôt qu'une erreur trompeuse.
+                XtreamResult.Success(emptyList())
+            }
+            is GetOutcome.HttpError -> XtreamResult.ServerError(httpErrorMessage(simpleOutcome.code))
+            is GetOutcome.Body -> XtreamResult.Success(parseEpgListings(simpleOutcome.text) ?: emptyList())
         }
     }
 
@@ -290,24 +337,72 @@ class XtreamClient(
         // ce "+" reste un caractere litteral pour la plupart des serveurs, jamais decode en
         // espace : un identifiant Xtream contenant un espace ou certains caracteres
         // speciaux produisait donc une URL de flux invalide (chaine injouable), alors que
-        // playerApiUrl/buildEpgUrl (query strings) n'etaient eux pas concernes.
+        // playerApiUrl (query string) n'etait lui pas concerne.
         return "${baseUrl(credentials.serverUrl)}/live/${encodePathSegment(credentials.username)}/${encodePathSegment(credentials.password)}/$streamId.$ext"
     }
 
     /**
-     * URL de l'EPG "lié au compte" (§4.6, priorité 2 pour une playlist Xtream) :
-     * route standard `xmltv.php`. Le téléchargement/parsing de cette URL arrive à
-     * l'étape 3d ; ici on ne fait que la construire.
+     * Étape R3 (replay) : URL de lecture en différé pour un point précis dans le temps,
+     * au format `timeshift.php/{user}/{pass}/{durée}/{date:heure}/{stream_id}.{ext}` — même
+     * convention de chemin que [buildStreamUrl] pour `{user}`/`{pass}` (voir sa doc pour le
+     * choix d'`encodePathSegment` plutôt que `encode`).
+     *
+     * - `{durée}` : minutes ENTIÈRES (convention Xtream), [durationMinutes] arrondi au moins
+     *   à 1 — jamais 0, qui ne jouerait rien.
+     * - `{date:heure}` : format `yyyy-MM-dd:HH-mm`, [startMillis] formaté dans le fuseau
+     *   horaire PAR DÉFAUT DE L'APPAREIL — même convention assumée que le repli de parsing
+     *   `start`/`end` de l'Étape R2 (voir `epgMillis`). C'est le point le plus susceptible de
+     *   nécessiter un ajustement une fois testé sur un panel réel (voir le test VLC de cette
+     *   étape) : si l'heure jouée est décalée d'un nombre rond d'heures par rapport au
+     *   programme demandé, c'est probablement que le panel attend l'heure serveur (pas
+     *   forcément celle de l'appareil) dans ce champ.
+     *
+     * Fonction pure (pas de suspend, pas d'IO) : peut être appelée directement depuis la
+     * couche UI pour composer l'URL, puis testée telle quelle (copier/coller dans VLC) sans
+     * dépendre du reste de l'app.
      */
-    fun buildEpgUrl(credentials: XtreamCredentials): String =
-        "${baseUrl(credentials.serverUrl)}/xmltv.php?username=${encode(credentials.username)}&password=${encode(credentials.password)}"
+    fun buildTimeshiftUrl(
+        credentials: XtreamCredentials,
+        streamId: String,
+        startMillis: Long,
+        durationMinutes: Int,
+        containerExtension: String = DEFAULT_STREAM_EXTENSION
+    ): String {
+        val ext = containerExtension.trim().trimStart('.').ifBlank { DEFAULT_STREAM_EXTENSION }
+        val safeDurationMinutes = durationMinutes.coerceAtLeast(1)
+        val dateTime = java.text.SimpleDateFormat("yyyy-MM-dd:HH-mm", java.util.Locale.US)
+            .format(java.util.Date(startMillis))
+        return "${baseUrl(credentials.serverUrl)}/timeshift.php/${encodePathSegment(credentials.username)}/" +
+            "${encodePathSegment(credentials.password)}/$safeDurationMinutes/$dateTime/$streamId.$ext"
+    }
+
+    /**
+     * Variante pratique de [buildTimeshiftUrl] à partir d'un [ReplayProgram] déjà connu
+     * (Étape R2, `XtreamClient.fetchShortEpg`/`ReplayRepository.fetchPastPrograms`) : calcule
+     * la durée en minutes depuis `startMillis`/`endMillis` (arrondie au SUPÉRIEUR, pour ne
+     * jamais couper la fin réelle du programme par un arrondi trop court) plutôt que de la
+     * faire recalculer par chaque appelant.
+     */
+    fun buildTimeshiftUrl(
+        credentials: XtreamCredentials,
+        streamId: String,
+        program: ReplayProgram,
+        containerExtension: String = DEFAULT_STREAM_EXTENSION
+    ): String {
+        val durationMinutes = kotlin.math.ceil(
+            (program.endMillis - program.startMillis) / 60_000.0
+        ).toInt()
+        return buildTimeshiftUrl(credentials, streamId, program.startMillis, durationMinutes, containerExtension)
+    }
 
     // --- Requête HTTP ---------------------------------------------------------------
 
     private fun playerApiUrl(
         credentials: XtreamCredentials,
         action: String? = null,
-        categoryId: String? = null
+        categoryId: String? = null,
+        streamId: String? = null,
+        limit: Int? = null
     ): String {
         val builder = StringBuilder(baseUrl(credentials.serverUrl))
             .append("/player_api.php")
@@ -318,6 +413,12 @@ class XtreamClient(
         }
         if (categoryId != null) {
             builder.append("&category_id=").append(encode(categoryId))
+        }
+        if (streamId != null) {
+            builder.append("&stream_id=").append(encode(streamId))
+        }
+        if (limit != null) {
+            builder.append("&limit=").append(limit)
         }
         return builder.toString()
     }
@@ -505,6 +606,19 @@ class XtreamClient(
             val categoryId = obj.optStringOrNull("category_id")
             val sequentialNumber = i + 1
 
+            // Étape R1 (replay/catch-up) : `tv_archive` vaut "1"/"0" chez la plupart des
+            // panels, mais certains renvoient un entier JSON natif plutôt qu'une chaîne —
+            // optIntFlexible (déjà utilisé pour `num` ci-dessous) couvre les deux cas.
+            // `tv_archive_duration` est le nombre de jours d'historique conservés ; absent
+            // ou 0 chez un panel qui annonce `tv_archive=1` sans préciser la durée ne doit
+            // pas être confondu avec "pas de replay" (tvArchive reste déterminé par
+            // tv_archive seul) — mais un `tv_archive_duration` de 0 associé à
+            // `tv_archive=1` n'apporte aucune borne exploitable pour l'Étape R2 : ramené à
+            // `null` dans ce cas plutôt que de propager un "0 jour" trompeur.
+            val tvArchive = obj.optIntFlexible("tv_archive") == 1
+            val tvArchiveDurationDays = obj.optIntFlexible("tv_archive_duration")
+                .takeIf { tvArchive && it > 0 }
+
             channels += Channel(
                 // Id déterministe (plutôt qu'un UUID aléatoire comme M3uParser) : un
                 // rafraîchissement Xtream doit retrouver la même chaîne pour ne pas
@@ -517,10 +631,86 @@ class XtreamClient(
                 logoUrl = obj.optStringOrNull("stream_icon"),
                 category = categoryId?.let { categoryNames[it] },
                 tvgId = obj.optStringOrNull("epg_channel_id"),
-                originalNumber = obj.optIntFlexible("num").takeIf { it > 0 } ?: sequentialNumber
+                originalNumber = obj.optIntFlexible("num").takeIf { it > 0 } ?: sequentialNumber,
+                tvArchive = tvArchive,
+                tvArchiveDurationDays = tvArchiveDurationDays,
+                // Retenu séparément de streamUrl (voir la doc de Channel.xtreamStreamId) :
+                // l'URL de replay (Étape R3) aura besoin de ce même stream_id sur un chemin
+                // différent (timeshift.php), pas la peine de re-parser streamUrl plus tard.
+                xtreamStreamId = streamId
             )
         }
         return channels to array.length()
+    }
+
+    /**
+     * Parse la réponse `get_short_epg`/`get_simple_data_table` (même clé `epg_listings`
+     * chez les deux actions) en [ReplayProgram]. `null` = réponse illisible (distinct
+     * d'une liste vide légitime), pour laisser [fetchShortEpg] décider s'il faut tenter le
+     * repli sur l'autre action.
+     */
+    private fun parseEpgListings(body: String): List<ReplayProgram>? {
+        val trimmed = body.trim()
+        if (trimmed.isEmpty() || trimmed == "{}" || trimmed.equals("null", ignoreCase = true)) {
+            return emptyList()
+        }
+
+        val listings = try {
+            JSONObject(trimmed).optJSONArray("epg_listings")
+        } catch (e: JSONException) {
+            // Repli : certains panels renvoient directement un tableau, sans objet
+            // enveloppe `{"epg_listings": [...]}`.
+            try {
+                JSONArray(trimmed)
+            } catch (e2: JSONException) {
+                null
+            }
+        } ?: return null
+
+        val programs = mutableListOf<ReplayProgram>()
+        for (i in 0 until listings.length()) {
+            val obj = listings.optJSONObject(i) ?: continue
+            val title = obj.optStringOrNull("title")?.let { decodeEpgText(it) } ?: continue
+            val startMillis = epgMillis(obj, "start_timestamp", "start")
+            val endMillis = epgMillis(obj, "stop_timestamp", "end")
+            if (startMillis == null || endMillis == null || endMillis <= startMillis) continue
+            programs += ReplayProgram(title = title, startMillis = startMillis, endMillis = endMillis)
+        }
+        return programs
+    }
+
+    /**
+     * Horodatage d'un champ EPG : essaie d'abord [timestampKey] (epoch secondes, présent
+     * chez la plupart des panels — insensible au fuseau horaire), puis retombe sur
+     * [dateTimeKey] (chaîne `"yyyy-MM-dd HH:mm:ss"`, interprétée dans le fuseau horaire par
+     * défaut de l'appareil faute de mieux — un panel qui n'expose QUE ce format sans
+     * timestamp n'indique de toute façon jamais le sien).
+     */
+    private fun epgMillis(obj: JSONObject, timestampKey: String, dateTimeKey: String): Long? {
+        obj.optStringOrNull(timestampKey)?.toLongOrNull()?.let { return it * 1000L }
+        val dateTime = obj.optStringOrNull(dateTimeKey) ?: return null
+        return try {
+            java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).parse(dateTime)?.time
+        } catch (e: java.text.ParseException) {
+            null
+        }
+    }
+
+    /**
+     * Le titre d'un programme EPG Xtream est très souvent encodé en base64 (comme pour
+     * l'EPG XMLTV classique, voir `EpgXmlParser`) — mais pas systématiquement selon le
+     * panel. `Base64.decode` rejette (IllegalArgumentException) tout ce qui n'est pas un
+     * base64 valide (espace, accents, longueur non multiple de 4...), ce qui couvre en
+     * pratique la plupart des titres déjà en clair : on garde alors la valeur brute plutôt
+     * que de perdre le titre. À vérifier sur un panel réel (voir README) : un panel qui
+     * encoderait un titre déjà "base64-compatible" par coïncidence resterait mal décodé.
+     */
+    private fun decodeEpgText(raw: String): String = try {
+        String(android.util.Base64.decode(raw, android.util.Base64.DEFAULT), Charsets.UTF_8)
+            .trim()
+            .ifBlank { raw.trim() }
+    } catch (e: IllegalArgumentException) {
+        raw.trim()
     }
 
     /**
@@ -542,7 +732,7 @@ class XtreamClient(
     // même la première requête ("expected scheme") ; avec un chemin/une query en trop,
     // playerApiUrl produirait une URL invalide (double player_api.php, ?username=...
     // dupliqué). On normalise donc une bonne fois ici, seul point de passage commun à
-    // authenticate/fetchLiveChannels/buildStreamUrl/buildEpgUrl.
+    // authenticate/fetchLiveChannels/buildStreamUrl.
     private fun baseUrl(server: String): String {
         var normalized = server.trim().trimEnd('/')
         // Schéma manquant : http:// par défaut (le cas très largement majoritaire pour
@@ -583,5 +773,11 @@ class XtreamClient(
 
     private companion object {
         const val DEFAULT_STREAM_EXTENSION = "m3u8"
+
+        /** Nombre d'entrées demandées à `get_short_epg` (Étape R2) — généreux : la plupart
+         *  des panels annoncent quelques jours d'historique (voir `Channel.tvArchiveDurationDays`,
+         *  Étape R1), largement plus que le nombre par défaut (souvent 4) que renverrait
+         *  un appel sans `limit`. */
+        const val SHORT_EPG_LIMIT = 200
     }
 }

@@ -1,13 +1,10 @@
 package com.dpflix.android.settings
 
 import android.content.Context
-import android.content.Intent
-import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.dpflix.android.model.Channel
-import com.dpflix.android.model.EpgLoadResult
 import com.dpflix.android.model.Playlist
 import com.dpflix.android.player.MediaCacheProvider
 import com.dpflix.android.player.PlayerMetricsBridge
@@ -26,11 +23,9 @@ import kotlinx.coroutines.launch
 
 /**
  * Logique de l'écran Réglages (§5.6 "Général" depuis 6d, §5.1 "Lecteur" depuis 6e, §5.2
- * "Playlists" + §5.3 "Numérotation des chaînes" depuis 6f). §5.4 a un contenu réel depuis
- * 6g-1 (statut, lecture seule), 6g-2-1 (saisie/persistance de la source manuelle — voir
- * [setManualEpgUrl]/[setManualEpgLocalFile]) et 6g-2-2 (rafraîchissement réel — voir
- * [refreshEpg]). §5.5 a un contenu réel depuis 6g-3 (cache disque, écart au direct) et
- * 6g-4 (structure + rafraîchissement périodique côté écran, [refreshDiagnostics]) ; toutes
+ * "Playlists" + §5.3 "Numérotation des chaînes" depuis 6f). §5.5 a un contenu réel depuis
+ * 6g-3 (cache disque, écart au direct) et 6g-4 (structure + rafraîchissement périodique
+ * côté écran, [refreshDiagnostics]) ; toutes
  * les métriques restantes (débit, tampon, résolution/bitrate, segments, journal d'erreurs)
  * sont réellement câblées depuis l'étape 10, via [diagnosticState] et l'`AnalyticsListener`
  * de `PlayerController` — voir [PlayerMetricsBridge] pour le pont entre les deux écrans.
@@ -45,17 +40,14 @@ import kotlinx.coroutines.launch
  * réglages "au démarrage de l'app", et la playlist active est justement celle qui
  * determinera ce démarrage tant que l'utilisateur n'en change pas.
  *
- * ## Combinaison de flux en deux temps (6f, étendu en 6g-1)
+ * ## Combinaison de flux en deux temps (6f)
  * `combine` (Kotlin) n'a une surcharge typée que jusqu'à 5 flux. Les sections 6d/6e
  * utilisaient déjà les 4 flux de [BaseSnapshot]. Y ajouter [channelCountsFlow] (§4.3,
  * "nombre de chaînes") ET le flux de la section Numérotation (§5.3) au même niveau
  * dépasserait cette limite. Plutôt que de basculer sur la surcharge
  * `combine(Iterable<Flow<T>>, ...)` (qui perd le typage par position), le flux de base est
  * combiné une première fois, puis recombiné avec les deux flux 6f dans un second `combine`
- * à 3 arguments. [_epgPlaylistId] (§5.4, 6g-1) occupe le 5e et dernier slot disponible de
- * ce premier `combine` — la section EPG n'a pas besoin d'un second niveau comme 6f
- * puisqu'elle ne dérive aucune collection propre (voir la doc de
- * [SettingsUiState.epgPlaylistId]).
+ * à 3 arguments.
  *
  * [channelCountsFlow] réutilise `ChannelRepository.observeByPlaylist` (déjà utilisé
  * ailleurs, ex. l'accueil 6c) plutôt qu'une requête `COUNT` dédiée dans `ChannelDao` :
@@ -77,20 +69,15 @@ class SettingsViewModel(
      *  pas encore de choix explicite → repli sur la playlist active (voir [numberingFlow]). */
     private val _numberingPlaylistId = MutableStateFlow<String?>(null)
 
-    /** Playlist choisie par l'utilisateur pour la section Guide TV / EPG (§5.4, 6g-1).
-     *  Même sémantique que [_numberingPlaylistId] : `null` → repli sur la playlist active. */
-    private val _epgPlaylistId = MutableStateFlow<String?>(null)
-
     init {
         viewModelScope.launch {
             val baseFlow = combine(
                 appRepository.settings.generalSettings,
                 appRepository.settings.playerSettings,
                 appRepository.playlists.observeAll(),
-                appRepository.playlists.observeActive(),
-                _epgPlaylistId
-            ) { general, player, playlists, active, epgPlaylistId ->
-                BaseSnapshot(general, player, playlists, active, epgPlaylistId)
+                appRepository.playlists.observeActive()
+            ) { general, player, playlists, active ->
+                BaseSnapshot(general, player, playlists, active)
             }
 
             combine(baseFlow, channelCountsFlow(), numberingFlow()) { base, counts, numbering ->
@@ -103,7 +90,6 @@ class SettingsViewModel(
                         channelCounts = counts,
                         numberingPlaylistId = numbering.first,
                         numberingChannels = numbering.second,
-                        epgPlaylistId = base.epgPlaylistId,
                         diagnosticState = diagnosticState(base.player)
                     )
                 }
@@ -194,8 +180,7 @@ class SettingsViewModel(
         val general: GeneralSettings,
         val player: PlayerSettings,
         val playlists: List<Playlist>,
-        val active: Playlist?,
-        val epgPlaylistId: String?
+        val active: Playlist?
     )
 
     fun setDefaultVideoQualityCap(value: String?) {
@@ -210,16 +195,30 @@ class SettingsViewModel(
         }
     }
 
+    /** Section "Films et Séries" (remplace l'ancien Guide TV) : URL modifiable, `null`/vide
+     *  remet la valeur par défaut codée en dur ([GeneralSettings.DEFAULT_FILMS_SERIES_URL]). */
+    fun setFilmsSeriesUrl(value: String?) {
+        viewModelScope.launch {
+            appRepository.settings.updateGeneralSettings {
+                it.copy(filmsSeriesUrl = value?.trim()?.takeIf { trimmed -> trimmed.isNotEmpty() })
+            }
+        }
+    }
+
     // --- §5.1 Lecteur (étape 6e) ---
     // Toutes ces valeurs sont globales à l'app (voir la doc de `PlayerSettings`) et ne
     // prennent effet que sur la prochaine lecture ouverte : `PlayerController` (5b/5c)
     // les lit à la création d'un `ExoPlayer`/`DataSource.Factory`, il n'y a pas de
     // lecteur déjà ouvert à reconfigurer à chaud depuis cet écran.
 
-    fun setBufferDurationSeconds(seconds: Int) {
-        val clamped = seconds.coerceIn(BUFFER_DURATION_MIN, BUFFER_DURATION_MAX)
+    // Fusion (2026-08-06, étape 2) de setBufferDurationSeconds/setLiveDelaySeconds — voir
+    // la doc de [PlayerSettings.bufferSafetyMarginSeconds]. Bornes reprises de l'ancien
+    // LIVE_DELAY (0-60s) : c'est elles qui s'appliquaient déjà de fait au retard cible
+    // garanti, la seule des deux valeurs qui subsiste dans le réglage fusionné.
+    fun setBufferSafetyMarginSeconds(seconds: Int) {
+        val clamped = seconds.coerceIn(BUFFER_SAFETY_MARGIN_MIN, BUFFER_SAFETY_MARGIN_MAX)
         viewModelScope.launch {
-            appRepository.settings.updatePlayerSettings { it.copy(bufferDurationSeconds = clamped) }
+            appRepository.settings.updatePlayerSettings { it.copy(bufferSafetyMarginSeconds = clamped) }
         }
     }
 
@@ -227,13 +226,6 @@ class SettingsViewModel(
         val clamped = mb.coerceIn(RAM_CACHE_MIN, RAM_CACHE_MAX)
         viewModelScope.launch {
             appRepository.settings.updatePlayerSettings { it.copy(ramCacheSizeMb = clamped) }
-        }
-    }
-
-    fun setLiveDelaySeconds(seconds: Int) {
-        val clamped = seconds.coerceIn(LIVE_DELAY_MIN, LIVE_DELAY_MAX)
-        viewModelScope.launch {
-            appRepository.settings.updatePlayerSettings { it.copy(liveDelaySeconds = clamped) }
         }
     }
 
@@ -360,9 +352,6 @@ class SettingsViewModel(
             if (_numberingPlaylistId.value == id) {
                 _numberingPlaylistId.value = null
             }
-            if (_epgPlaylistId.value == id) {
-                _epgPlaylistId.value = null
-            }
             _uiState.update { it.copy(pendingDeletePlaylistId = null) }
         }
     }
@@ -377,108 +366,6 @@ class SettingsViewModel(
     fun setCustomChannelNumber(channel: Channel, number: Int?) {
         viewModelScope.launch {
             appRepository.channels.setCustomNumber(channel.id, number)
-        }
-    }
-
-    // --- §5.4 Guide TV / EPG (étape 6g-1 : statut en lecture seule) ---
-
-    /** Voir la doc de [SettingsUiState.epgRefreshError] : une erreur affichée ne doit pas
-     *  survivre à un changement de playlist sélectionnée dans cette section. */
-    fun selectEpgPlaylist(id: String) {
-        _epgPlaylistId.value = id
-        _uiState.update { it.copy(epgRefreshError = null) }
-    }
-
-    /**
-     * Enregistre une URL EPG manuelle (§5.4, 6g-2-1) pour [playlistId] — mutuellement
-     * exclusive avec un fichier local déjà importé (voir [setManualEpgLocalFile]) : la
-     * définir efface [Playlist.manualEpgLocalFileUri] le cas échéant, cohérent avec le
-     * formulaire M3U de l'onboarding (§4.2, "en alternative"). Une URL vide efface la
-     * source manuelle (repli auto-détecté/aucun, voir [Playlist.epgStatus]).
-     */
-    /** [EpgRepository.invalidate] (étape 9a) : une nouvelle source manuelle rend
-     *  immédiatement obsolète tout guide déjà en cache pour cette playlist (l'ancien
-     *  contenu n'a plus rien à voir) — sans ça, l'OSD/la grille continueraient d'afficher
-     *  l'ancien guide jusqu'au prochain "Rafraîchir" explicite. */
-    fun setManualEpgUrl(playlistId: String, url: String) {
-        val trimmed = url.trim()
-        viewModelScope.launch {
-            appRepository.playlists.setManualEpgSource(
-                playlistId = playlistId,
-                url = trimmed.takeIf { it.isNotBlank() },
-                localFileUri = null
-            )
-            appRepository.epg.invalidate(playlistId)
-        }
-    }
-
-    /**
-     * Enregistre un fichier EPG local importé via le sélecteur système (§5.4, 6g-2-1).
-     * Prend une permission de lecture **persistante** sur l'`Uri` : contrairement au M3U
-     * (recopié immédiatement dans le stockage privé de l'app, voir `OnboardingViewModel`),
-     * ce fichier n'est lu qu'au moment du rafraîchissement (6g-2-2, pas encore implémenté),
-     * potentiellement bien après le redémarrage de l'app — sans cette prise de permission,
-     * l'`Uri` `OpenDocument` deviendrait illisible dès que le processus est tué.
-     * Mutuellement exclusif avec une URL manuelle (voir [setManualEpgUrl]).
-     */
-    fun setManualEpgLocalFile(playlistId: String, uri: Uri) {
-        try {
-            appContext.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        } catch (e: SecurityException) {
-            // Certains fournisseurs ne supportent pas les permissions persistantes : l'Uri
-            // reste utilisable dans l'immédiat (jusqu'au prochain redémarrage de l'app),
-            // on l'enregistre quand même plutôt que de bloquer l'utilisateur ici.
-        }
-        viewModelScope.launch {
-            appRepository.playlists.setManualEpgSource(
-                playlistId = playlistId,
-                url = null,
-                localFileUri = uri.toString()
-            )
-            appRepository.epg.invalidate(playlistId)
-        }
-    }
-
-    /** Efface la source EPG manuelle (URL ou fichier) de [playlistId], sans confirmation
-     *  supplémentaire — geste symétrique et peu risqué (l'auto-détection, si elle existe,
-     *  reprend immédiatement la main, voir [Playlist.epgStatus]). Invalide aussi le cache
-     *  EPG (étape 9a, voir la doc de [setManualEpgUrl]) — la playlist retombe alors sur
-     *  l'auto-détection dès la prochaine consultation (`getOrLoad`, pas de rechargement
-     *  immédiat forcé ici). */
-    fun clearManualEpgSource(playlistId: String) {
-        viewModelScope.launch {
-            appRepository.playlists.setManualEpgSource(playlistId = playlistId, url = null, localFileUri = null)
-            appRepository.epg.invalidate(playlistId)
-        }
-    }
-
-    /**
-     * Bouton "Rafraîchir l'EPG" (§5.4, 6g-2-2) : délègue à
-     * [com.dpflix.android.repository.EpgRepository.refresh] (étape 9a) — téléchargement/
-     * lecture + parsing + mise en cache mémoire, partagé avec l'OSD "programme en cours"
-     * (§4.6/8b, `PlayerScreen`) et le futur écran de grille EPG (9b+). Marque le succès
-     * via [PlaylistRepository.setLastEpgUpdateMillis]. Échec → [SettingsUiState.epgRefreshError]
-     * renseigné, `lastEpgUpdateMillis` **inchangé** (voir la doc de ce champ côté repository).
-     *
-     * Avant 9a, cette méthode dupliquait sa propre orchestration réseau/SAF (téléchargement
-     * OkHttp, lecture `ContentResolver`) sans rien garder du résultat une fois validé — voir
-     * la doc d'[EpgRepository] pour le détail de cette généralisation.
-     */
-    fun refreshEpg(playlistId: String) {
-        val playlist = _uiState.value.playlists.firstOrNull { it.id == playlistId } ?: return
-
-        viewModelScope.launch {
-            _uiState.update { it.copy(epgRefreshInProgress = true, epgRefreshError = null) }
-
-            when (val result = appRepository.epg.refresh(playlist)) {
-                is EpgLoadResult.Success -> {
-                    appRepository.playlists.setLastEpgUpdateMillis(playlistId, System.currentTimeMillis())
-                    _uiState.update { it.copy(epgRefreshInProgress = false, epgRefreshError = null) }
-                }
-                is EpgLoadResult.Unavailable -> {
-                    _uiState.update { it.copy(epgRefreshInProgress = false, epgRefreshError = result.reason) }
-                }
-            }
         }
     }
 
@@ -503,7 +390,6 @@ class SettingsViewModel(
             appRepository.resetAll()
             MediaCacheProvider.clear(appContext, 0)
             _numberingPlaylistId.value = null
-            _epgPlaylistId.value = null
             _uiState.update { it.copy(showResetConfirmation = false) }
             onDone()
         }
@@ -524,11 +410,10 @@ class SettingsViewModelFactory(
 
 /** Pas de bornes du cahier des charges pour §5.1 : plages raisonnables côté UI, cohérentes
  *  avec les valeurs par défaut de `PlayerSettings`. */
-private const val BUFFER_DURATION_MIN = 5
-private const val BUFFER_DURATION_MAX = 180
+// Fusion (2026-08-06, étape 2) — voir [SettingsViewModel.setBufferSafetyMarginSeconds].
+private const val BUFFER_SAFETY_MARGIN_MIN = 0
+private const val BUFFER_SAFETY_MARGIN_MAX = 60
 private const val RAM_CACHE_MIN = 25
 private const val RAM_CACHE_MAX = 1000
-private const val LIVE_DELAY_MIN = 0
-private const val LIVE_DELAY_MAX = 60
 private const val DISK_CACHE_MAX = 10_000L
 private const val BYTES_PER_MB = 1024L * 1024L

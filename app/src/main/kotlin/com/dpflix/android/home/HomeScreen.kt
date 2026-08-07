@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,16 +68,19 @@ import com.dpflix.android.ui.theme.DpFlixTheme
  * est absent sur la chaîne ou si aucun guide EPG n'est disponible pour la playlist,
  * équivalent au cas "EPG indisponible" du cahier des charges.
  *
- * ## Bouton Guide TV retiré (25 juillet 2026)
+ * ## Bouton Guide TV retiré (25 juillet 2026), remplacé par Films et Séries (07/08)
  * L'accès au Guide TV ([com.dpflix.android.epg.EpgGuideScreen], §4.6) qui vivait ici
  * depuis l'étape 9b1 a été retiré à la demande de l'utilisateur (latence/gels sur une
  * playlist de 20000+ chaînes) — voir la doc de `DpFlixDestination` pour le détail de ce
- * qui reste de la gestion EPG (OSD, Réglages) indépendamment de cet écran.
+ * qui reste de la gestion EPG (OSD, Réglages) indépendamment de cet écran. Son
+ * emplacement (à côté de l'icône Réglages) est désormais repris par le bouton d'accès à
+ * la section "Films et Séries" ([com.dpflix.android.filmsseries.FilmsSeriesScreen]).
  */
 @Composable
 fun HomeScreen(
     appRepository: AppRepository,
     onNavigateToSettings: () -> Unit,
+    onNavigateToFilmsSeries: () -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -139,6 +143,13 @@ fun HomeScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Row {
+                        IconButton(onClick = onNavigateToFilmsSeries) {
+                            Icon(
+                                imageVector = Icons.Filled.Movie,
+                                contentDescription = "Films et Séries",
+                                tint = DpFlixColors.OnBackground
+                            )
+                        }
                         IconButton(onClick = onNavigateToSettings) {
                             Icon(
                                 imageVector = Icons.Filled.Settings,

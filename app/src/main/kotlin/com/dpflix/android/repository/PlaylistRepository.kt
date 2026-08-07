@@ -42,7 +42,7 @@ class PlaylistRepository(private val playlistDao: PlaylistDao) {
      * OnConflictStrategy.REPLACE`, qui fait un DELETE+INSERT et effaçait en cascade
      * toutes les chaînes de la playlist à chaque appel — voir la doc de
      * `PlaylistDao.update` pour le détail du bug et son impact concret observé
-     * (EPG manuel, rafraîchissement EPG, import Xtream initial, renommage...).
+     * (renommage, réglages réseau avancés, etc.).
      */
     suspend fun updatePlaylist(playlist: Playlist) {
         playlistDao.update(playlist.toEntity())
@@ -75,32 +75,6 @@ class PlaylistRepository(private val playlistDao: PlaylistDao) {
     suspend fun setResumeLastChannelOnStart(playlistId: String, enabled: Boolean) {
         val current = playlistDao.getById(playlistId)?.toDomain() ?: return
         updatePlaylist(current.copy(resumeLastChannelOnStart = enabled))
-    }
-
-    /**
-     * Enregistre la source EPG manuelle d'une playlist (§5.4, sous-étape 6g-2-1) : [url]
-     * et [localFileUri] sont mutuellement exclusifs (même contrat que le formulaire M3U,
-     * appliqué côté appelant — voir `SettingsViewModel.setManualEpgUrl`/`setManualEpgLocalFile`),
-     * passer les deux à `null` efface la source manuelle (repli sur l'EPG auto-détecté ou
-     * "aucun", voir `Playlist.epgStatus`). Ne touche jamais à `lastEpgUpdateMillis` : changer
-     * la source ne constitue pas un chargement réussi, ça arrive avec le rafraîchissement
-     * (6g-2-2).
-     */
-    suspend fun setManualEpgSource(playlistId: String, url: String?, localFileUri: String?) {
-        val current = playlistDao.getById(playlistId)?.toDomain() ?: return
-        updatePlaylist(current.copy(manualEpgUrl = url, manualEpgLocalFileUri = localFileUri))
-    }
-
-    /**
-     * Marque un rafraîchissement EPG réussi pour [playlistId] (§5.4, sous-étape 6g-2-2),
-     * appelé après un chargement + parsing réussis (voir `SettingsViewModel.refreshEpg`).
-     * Jamais appelé en cas d'échec : `lastEpgUpdateMillis` doit rester la date du dernier
-     * succès, pas de la dernière tentative — sans quoi "Dernière mise à jour" mentirait sur
-     * la fraîcheur réelle du guide après un échec de rafraîchissement.
-     */
-    suspend fun setLastEpgUpdateMillis(playlistId: String, millis: Long) {
-        val current = playlistDao.getById(playlistId)?.toDomain() ?: return
-        updatePlaylist(current.copy(lastEpgUpdateMillis = millis))
     }
 
     /** Réinitialisation complète (§5.6) : supprime toutes les playlists (cascade → chaînes, 4b). */

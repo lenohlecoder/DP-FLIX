@@ -61,4 +61,16 @@ object PlayerZapping {
         val ordered = appRepository.channels.observeByPlaylist(playlistId).first()
         return ordered.firstOrNull { it.displayNumber == number }
     }
+
+    /**
+     * Chaînes de la même catégorie que [currentChannel] (menu pendant la lecture, touche
+     * Menu télécommande) : même clé de regroupement qu'à l'accueil
+     * (`ChannelRepository.observeGroupedByCategory`, `category ?: ""`) pour que "catégorie
+     * en cours" corresponde exactement à la rangée dont provient la chaîne affichée.
+     */
+    suspend fun sameCategory(appRepository: AppRepository, currentChannel: Channel): List<Channel> {
+        val ordered = appRepository.channels.observeByPlaylist(currentChannel.playlistId).first()
+        val categoryKey = currentChannel.category ?: ""
+        return ordered.filter { (it.category ?: "") == categoryKey }
+    }
 }

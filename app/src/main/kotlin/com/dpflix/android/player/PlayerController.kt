@@ -22,6 +22,7 @@ import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
 import com.dpflix.android.model.Channel
+import com.dpflix.android.model.ReplayProgram
 import com.dpflix.android.repository.SettingsRepository
 import com.dpflix.android.settings.DiagnosticErrorEntry
 import com.dpflix.android.settings.PlayerSettings
@@ -60,6 +61,24 @@ sealed class PlayerUiState {
     /** Erreur de lecture (réseau, flux invalide, etc.). Le message reste technique à ce stade ;
      *  sa traduction en message utilisateur lisible arrivera avec l'UI (étape 6/7). */
     data class Error(val message: String) : PlayerUiState()
+}
+
+/**
+ * Étape R5a (1/4) — Distingue une lecture en direct d'une lecture en différé (catch-up,
+ * Étape R2/R3). [PlayerController] expose ce mode via [PlayerController.playbackMode] ;
+ * c'est la SEULE information que consultent les parties suivantes de R5a (accumulation de
+ * tampon avant démarrage, calcul d'écart au direct, zapping séquentiel — toutes les trois
+ * n'ont de sens qu'en [LIVE]) ainsi que R5b (OSD replay) et R5c (barre de progression +
+ * seekTo, qui n'a elle de sens qu'en [REPLAY]) : aucune de ces parties n'a besoin de
+ * redériver elle-même la nature du flux en cours.
+ */
+enum class PlaybackMode {
+    /** Flux live habituel (§4.5 et suivants) — retard volontaire, zapping séquentiel, etc. */
+    LIVE,
+
+    /** Lecture d'un [com.dpflix.android.model.ReplayProgram] en différé (Étape R5,
+     *  timeshift.php — voir [PlayerController.playReplay]). */
+    REPLAY
 }
 
 /**
@@ -114,6 +133,47 @@ class PlayerController(
 
     private val _uiState = MutableStateFlow<PlayerUiState>(PlayerUiState.Idle)
     val uiState: StateFlow<PlayerUiState> = _uiState
+
+    /**
+     * Étape R5a (1/4) — voir la doc de [PlaybackMode]. `LIVE` par défaut : un
+     * [PlayerController] fraîchement créé sert d'abord [playChannel] dans l'immense
+     * majorité des cas (accueil, zapping) ; [playReplay] le fait basculer explicitement.
+     */
+    private val _playbackMode = MutableStateFlow(PlaybackMode.LIVE)
+    val playbackMode: StateFlow<PlaybackMode> = _playbackMode
+
+    /**
+     * Programme actuellement en lecture différée (Étape R2), `null` en mode [PlaybackMode.LIVE].
+     * Posé par [playReplay] — R5b (OSD replay) et R5c (barre de progression) le lisent pour
+     * afficher titre/horaires et calculer la position dans le programme, sans avoir à
+     * transporter cette information séparément jusqu'à eux.
+     */
+    private val _replayProgram = MutableStateFlow<ReplayProgram?>(null)
+    val replayProgram: StateFlow<ReplayProgram?> = _replayProgram
+
+    /**
+     * Dernière URL `timeshift.php` demandée via [playReplay] — nécessaire à [retry] et au
+     * rechargement complet du watchdog ([performHardReload]) pour reconstruire la MÊME
+     * session de replay plutôt que de retomber sur [playChannel] (qui rebasculerait à tort
+     * sur le direct de la chaîne). Symétrique de [currentPlaybackUri]/[currentChannel] pour
+     * le direct, mais tenu séparément : [currentPlaybackUri] change aussi au fil des
+     * tentatives de repli conteneur ([containerFallbackQueue]), alors que ce champ-ci
+     * retient l'URL timeshift D'ORIGINE demandée par l'appelant, seule valable pour
+     * reconstruire l'appel à [playReplay] (qui reconstruit lui-même sa propre file de
+     * repli à partir d'elle).
+     */
+    private var currentReplayUri: String? = null
+
+    /**
+     * Étape R5a (4/4) — [PlaybackMode] utilisé pour construire le [DefaultLoadControl] de
+     * l'`ExoPlayer` actuellement actif (voir [buildLoadControl]/[buildExoPlayer]) : `LIVE`
+     * à la construction du contrôleur, comme [_playbackMode]. Sert uniquement à détecter
+     * une VRAIE transition de profil de tampon dans [rebuildExoPlayerIfModeChanged] — un
+     * zap direct→direct ou replay→replay ne change jamais cette valeur, donc ne
+     * reconstruit jamais l'`ExoPlayer` pour autant (seul un changement direct↔replay le
+     * fait, voir sa doc).
+     */
+    private var currentLoadControlMode: PlaybackMode = PlaybackMode.LIVE
 
     /**
      * Résolutions vidéo disponibles pour la chaîne en cours (§8d6) — voir [QualityOption]
@@ -205,25 +265,22 @@ class PlayerController(
     private var currentPlaybackUri: String? = null
     private var currentPlaybackMimeType: String? = null
 
-    // Fix (2026-08-05) : tache de surveillance continue de la derive/du tampon sur les
-    // flux .ts progressifs (voir [scheduleDriftGuard]) - separee du watchdog de blocage
-    // ([scheduleWatchdog]) car elle tourne EN PERMANENCE pendant la lecture (pas
-    // seulement pendant un Buffering deja visible) : son role est justement d'agir avant
-    // qu'un blocage visible ne survienne.
-    private var driftGuardJob: Job? = null
+    // Fix (2026-08-06) : la surveillance de derive preventive (scheduleDriftGuard) a ete
+    // supprimee - diagnostic complet : elle exigeait un tampon reste a 100% de
+    // bufferSafetyMarginSeconds (ex-liveDelaySeconds) pendant plusieurs lectures consecutives pour ne PAS
+    // se declencher, alors qu'un tampon reseau varie legitimement sous sa cible en usage
+    // normal (§6 "le tampon doit augmenter et diminuer progressivement sans exagerer").
+    // Cette exigence de concordance stricte confondait ce mouvement normal avec une
+    // panne, et la reconnexion qu'elle declenchait pour "corriger" la situation videait
+    // le tampon d'un coup - produisant exactement la boucle lecture/coupure/redemarrage
+    // qu'elle etait censee prevenir. Le tampon naturel (buildLoadControl, sans
+    // rattrapage volontaire ni retention artificielle, voir setBackBuffer(0, false)) et
+    // le watchdog de blocage ([scheduleWatchdog], qui ne reagit qu'a un blocage DEJA
+    // visible et prolonge) suffisent a couvrir respectivement l'usage normal et les
+    // vraies pannes.
 
-    // Fix (2026-08-05) : compteur de lectures consecutives sous le seuil bas sans
-    // reprise (voir scheduleDriftGuard) - la persistance evite de confondre un drainage
-    // normal (tampon qui redescend vers liveDelaySeconds apres un episode ou il l'a
-    // depasse, ex. apres une pause volontaire prolongee) avec une vraie panne de
-    // rechargement. previousBufferedSeconds sert a detecter la reprise (tampon qui
-    // regagne du terrain d'une lecture a l'autre).
-    private var driftLowBufferStreak: Int = 0
-    private var previousBufferedSeconds: Float? = null
-
-    // Fix (2026-08-05) : evite deux reconnexions rapprochees (ex. driftGuard et watchdog
-    // qui reagiraient tous les deux a la meme derive a quelques centaines de ms
-    // d'intervalle) - une reconnexion qui vient de partir a droit a
+    // Fix (2026-08-05) : evite deux reconnexions rapprochees (le watchdog pouvant
+    // reagir a une derive deja en cours) - une reconnexion qui vient de partir a droit a
     // MIN_RECONNECT_INTERVAL_MS pour re-remplir le tampon avant qu'une autre soit
     // autorisee a se declencher.
     private var lastReconnectAtElapsedRealtimeMs: Long = 0L
@@ -279,7 +336,7 @@ class PlayerController(
 
     // Fix (2026-07-23) : ERROR_CODE_BEHIND_LIVE_WINDOW survient quand la fenetre live
     // (DVR) reellement servie par le panel/l'origine est plus courte que le retard cible
-    // configure (settings.liveDelaySeconds) : ExoPlayer essaie de tenir une position qui
+    // configure (settings.bufferSafetyMarginSeconds) : ExoPlayer essaie de tenir une position qui
     // vient de sortir de la fenetre disponible -> PlaybackException fatale immediate, hors
     // watchdog (ce n'est pas un blocage/stall, c'est une exception directe a la
     // preparation). Compteur borne (pas juste illimite) : un flux dont la fenetre est
@@ -385,19 +442,28 @@ class PlayerController(
 
     /**
      * Tampon (§5.1/§6 "grand tampon avant, taille cible réglable, plafond élevé permis
-     * quand le réseau est bon") : `bufferDurationSeconds` pilote la durée cible
-     * (`maxBufferMs`) ; `ramCacheSizeMb` reste un plafond dur en octets
+     * quand le réseau est bon") : `ramCacheSizeMb` reste un plafond dur en octets
      * (`setPrioritizeTimeOverSizeThresholds(false)`, comportement par défaut d'ExoPlayer)
      * pour protéger la mémoire même si la durée cible n'est pas encore atteinte.
      *
+     * Fusion (2026-08-06, étape 2) : `bufferDurationSeconds` (l'ancien plafond de tampon
+     * saisi séparément, `maxBufferMs`) et `liveDelaySeconds` (le retard cible) sont
+     * remplacés par un seul réglage, `settings.bufferSafetyMarginSeconds` — voir la doc de
+     * [PlayerSettings.bufferSafetyMarginSeconds] pour le diagnostic complet qui motive la
+     * fusion. `maxBufferMs` n'est donc plus lu directement dans les réglages : il est
+     * désormais TOUJOURS dérivé de `bufferSafetyMarginSeconds + LIVE_DELAY_HEADROOM_MS`
+     * (voir plus bas), au lieu d'être une valeur indépendante seulement recoercée vers ce
+     * plancher quand elle tombait en dessous (comportement du fix 2026-08-05 qui rendait
+     * déjà les deux réglages redondants dans la quasi-totalité des configurations réelles).
+     *
      * Fix (2026-08-04) : `bufferForPlaybackMs` (seuil de démarrage, "combien de temps on
-     * accumule avant de lancer la lecture") est maintenant piloté par
-     * `settings.liveDelaySeconds` — le "retard cible" volontaire du cahier des charges
-     * (§6 "jamais de rattrapage forcé... toujours revenir au retard cible") — plutôt que
-     * figé à [DEFAULT_BUFFER_FOR_PLAYBACK_MS] (2,5s). Sur un flux HLS/DASH réellement
-     * reconnu "live" par Media3, ce même `liveDelaySeconds` pilotait déjà le retard cible
-     * via `LiveConfiguration.targetOffsetMs` (voir [startPlayback]) ; mais cette
-     * `LiveConfiguration` ne s'applique JAMAIS à un flux `.ts` brut lu en simple
+     * accumule avant de lancer la lecture") est piloté par
+     * `settings.bufferSafetyMarginSeconds` — le "retard cible" volontaire du cahier des
+     * charges (§6 "jamais de rattrapage forcé... toujours revenir au retard cible") —
+     * plutôt que figé à [DEFAULT_BUFFER_FOR_PLAYBACK_MS] (2,5s). Sur un flux HLS/DASH
+     * réellement reconnu "live" par Media3, ce même `bufferSafetyMarginSeconds` pilote déjà
+     * le retard cible via `LiveConfiguration.targetOffsetMs` (voir [startPlayback]) ; mais
+     * cette `LiveConfiguration` ne s'applique JAMAIS à un flux `.ts` brut lu en simple
      * progressif (voir la doc de [mimeTypeForUri]/[currentLiveEdgeOffsetSeconds]) —
      * `bufferForPlaybackMs` est en revanche un réglage bas niveau d'ExoPlayer qui
      * s'applique à tout `MediaSource`, live reconnu ou non : c'est donc le seul levier qui
@@ -412,24 +478,38 @@ class PlayerController(
     // (= maxBufferMs / 2). Avec un maxBufferMs proche du minimum (bufferDurationSeconds
     // faible), un retard cible de 5-10s se retrouvait tronque en dessous de ce qui etait
     // demande - le tampon n'avait alors structurellement pas la place de contenir le
-    // retard voulu, qui derivait des le premier stall. `maxBufferMs` est desormais
-    // remonte pour TOUJOURS pouvoir contenir requestedDelayMs + une marge de securite
-    // (LIVE_DELAY_HEADROOM_MS) : le retard demande n'est plus jamais un sous-produit
-    // accidentel de la taille de tampon choisie par ailleurs, les deux reglages sont
-    // decouples comme l'utilisateur s'y attend.
-    private fun buildLoadControl(currentSettings: PlayerSettings): DefaultLoadControl {
+    // retard voulu, qui derivait des le premier stall. Depuis la fusion (2026-08-06),
+    // `maxBufferMs` est TOUJOURS calcule comme requestedDelayMs + une marge de securite
+    // (LIVE_DELAY_HEADROOM_MS) : le retard demande n'est structurellement plus jamais un
+    // sous-produit accidentel d'un plafond de tampon choisi separement, puisque ce plafond
+    // separe n'existe plus.
+    private fun buildLoadControl(currentSettings: PlayerSettings, mode: PlaybackMode): DefaultLoadControl {
         // Fix (2026-08-05) — Mode direct : plus aucun réglage de tampon/retard personnalisé,
         // on repart des valeurs par défaut d'ExoPlayer (DefaultLoadControl.Builder().build()
         // sans surcharge) — démarrage le plus rapide possible, aucune cible de retard. Voir
         // la doc de [PlayerSettings.directModeEnabled].
-        if (currentSettings.directModeEnabled) {
+        //
+        // Étape R5a (4/4) — Mode replay : même raisonnement, même repli. Un flux
+        // `timeshift.php` n'est plus un direct : il n'y a ni "retard cible sur le direct" à
+        // maintenir ni risque de rattraper un vrai bord live, donc aucune raison d'imposer
+        // l'accumulation volontaire de tampon avant démarrage (`bufferForPlaybackMs`
+        // dérivé de `bufferSafetyMarginSeconds` plus bas) qui n'a de sens qu'en direct. Ce
+        // réglage bas niveau d'ExoPlayer est figé à la construction du `LoadControl` — donc
+        // de l'`ExoPlayer` lui-même — et ne peut pas être changé à chaud sur une instance
+        // déjà construite (contrairement à `LiveConfiguration`, une propriété du
+        // `MediaItem`, voir [startPlayback]) : [rebuildExoPlayerIfModeChanged] est le
+        // mécanisme qui garantit qu'une VRAIE transition direct↔replay reconstruit bien
+        // l'`ExoPlayer` pour que ce court-circuit s'applique réellement.
+        if (currentSettings.directModeEnabled || mode == PlaybackMode.REPLAY) {
             return DefaultLoadControl.Builder().build()
         }
 
-        val requestedDelayMs = (currentSettings.liveDelaySeconds * 1000).coerceAtLeast(0)
-        val maxBufferMs = (currentSettings.bufferDurationSeconds * 1000)
+        val requestedDelayMs = (currentSettings.bufferSafetyMarginSeconds * 1000).coerceAtLeast(0)
+        // Fusion (2026-08-06) : plus de valeur utilisateur independante pour maxBufferMs -
+        // voir la doc de classe juste au-dessus et celle de
+        // [PlayerSettings.bufferSafetyMarginSeconds].
+        val maxBufferMs = (requestedDelayMs + LIVE_DELAY_HEADROOM_MS)
             .coerceAtLeast(MIN_MAX_BUFFER_MS)
-            .coerceAtLeast(requestedDelayMs + LIVE_DELAY_HEADROOM_MS)
         val bufferForPlaybackMs = requestedDelayMs
             .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_MS)
             .coerceAtMost(maxBufferMs)
@@ -462,8 +542,9 @@ class PlayerController(
         // une estimation automatique de ce qu'il faut pour tenir `maxBufferMs` sur un flux a
         // fort debit (ASSUMED_PEAK_BITRATE_KBPS, marge large au-dessus des ~50 Mbps
         // constates pour couvrir aussi des flux encore plus lourds) : "Cache RAM" suit donc
-        // desormais automatiquement "Duree du tampon"/"Retard sur le direct" au lieu de
-        // pouvoir les contredire silencieusement, conformement a la demande explicite.
+        // desormais automatiquement "Marge de securite du tampon" (fusion 2026-08-06 de
+        // "Duree du tampon"/"Retard sur le direct") au lieu de pouvoir la contredire
+        // silencieusement, conformement a la demande explicite.
         // requiredBits = (maxBufferMs / 1000s) * (ASSUMED_PEAK_BITRATE_KBPS * 1000 bits/kbit)
         //              = maxBufferMs * ASSUMED_PEAK_BITRATE_KBPS (le /1000 et le *1000 s'annulent)
         val autoRequiredBytes = (maxBufferMs.toLong() * ASSUMED_PEAK_BITRATE_KBPS) / 8L
@@ -509,10 +590,22 @@ class PlayerController(
     val player: StateFlow<ExoPlayer> = _player
     val exoPlayer: ExoPlayer get() = _exoPlayer
 
-    /** Construit un nouvel `ExoPlayer` à partir des [settings] courants et y attache les
-     *  écouteurs habituels (§7/§5.5, voir [attachListeners]). Appelé à la construction du
-     *  contrôleur et par [updateSettings] à chaque reconfiguration de tampon/cache. */
-    private fun buildExoPlayer(): ExoPlayer {
+    /**
+     * Construit un nouvel `ExoPlayer` à partir des [settings] courants et y attache les
+     * écouteurs habituels (§7/§5.5, voir [attachListeners]). Appelé à la construction du
+     * contrôleur, par [updateSettings] à chaque reconfiguration de tampon/cache, et
+     * depuis l'Étape R5a (4/4) par [rebuildExoPlayerIfModeChanged] à chaque vraie
+     * transition direct↔replay.
+     *
+     * [mode] par défaut = [_playbackMode] courant : suffisant pour l'appel de
+     * construction initiale (toujours [PlaybackMode.LIVE], voir sa doc) et pour
+     * [updateSettings] (qui reconstruit sans changer de mode) ; [rebuildExoPlayerIfModeChanged]
+     * est le seul appelant à passer explicitement autre chose que la valeur déjà courante,
+     * puisqu'il appelle cette fonction AVANT que [_playbackMode] lui-même n'ait été mis à
+     * jour par [playChannel]/[playReplay] (voir l'ordre des opérations dans ces deux
+     * fonctions).
+     */
+    private fun buildExoPlayer(mode: PlaybackMode = _playbackMode.value): ExoPlayer {
         trackSelector = DefaultTrackSelector(context)
         val newPlayer = ExoPlayer.Builder(context)
             .setMediaSourceFactory(
@@ -520,10 +613,45 @@ class PlayerController(
                     .setLoadErrorHandlingPolicy(ResilientLoadErrorHandlingPolicy())
             )
             .setTrackSelector(trackSelector)
-            .setLoadControl(buildLoadControl(settings))
+            .setLoadControl(buildLoadControl(settings, mode))
             .build()
         attachListeners(newPlayer)
         return newPlayer
+    }
+
+    /**
+     * Étape R5a (4/4) — Reconstruit l'`ExoPlayer` si [targetMode] change réellement le
+     * profil de tampon appliqué par [buildLoadControl] par rapport à celui de l'instance
+     * actuellement active ([currentLoadControlMode]) : seule une transition direct↔replay
+     * le change (voir la doc de [buildLoadControl]), donc seule une transition de ce type
+     * déclenche une reconstruction ici — un zap direct→direct ou replay→replay reste sur
+     * le même `ExoPlayer`, exactement comme avant cette étape.
+     *
+     * `bufferForPlaybackMs`/`maxBufferMs` (le `LoadControl`) sont un réglage bas niveau
+     * d'ExoPlayer figé à la construction, qu'aucune API ne permet de reconfigurer à chaud
+     * sur une instance déjà construite — contrairement à `LiveConfiguration`, une
+     * propriété du `MediaItem` réappliquée à chaque [startPlayback] (voir sa doc). C'est
+     * la seule façon fiable d'appliquer réellement le démarrage rapide voulu pour un
+     * replay (§ [buildLoadControl]).
+     *
+     * Même mécanique de substitution que [updateSettings] : la nouvelle instance est
+     * publiée via [player] avant que l'ancienne ne soit libérée, pour qu'aucune
+     * `PlayerView` ([PlayerScreen]) ne se retrouve un instant sans player attaché — mais
+     * sans rien rejouer ici, contrairement à `updateSettings` : l'appelant
+     * ([playChannel]/[playReplay]) enchaîne de toute façon sur [startPlayback] juste après
+     * avoir appelé cette fonction.
+     *
+     * Appelée AVANT que [_playbackMode] ne soit lui-même mis à jour par l'appelant (voir
+     * l'ordre dans [playChannel]/[playReplay]) : [targetMode] porte donc la valeur CIBLE,
+     * pas encore celle de [_playbackMode] au moment de cet appel.
+     */
+    private fun rebuildExoPlayerIfModeChanged(targetMode: PlaybackMode) {
+        if (targetMode == currentLoadControlMode) return
+        currentLoadControlMode = targetMode
+        val oldPlayer = _exoPlayer
+        _exoPlayer = buildExoPlayer(targetMode)
+        _player.value = _exoPlayer
+        oldPlayer.release()
     }
 
     /**
@@ -542,14 +670,27 @@ class PlayerController(
      * nouvelle configuration ; une position figée n'aurait de sens que pour du VOD, jamais
      * pour un flux live) — réutilise donc telle quelle la remise à zéro qualités/
      * diagnostics/file de repli déjà validée pour un zap normal, plutôt qu'en dupliquer
-     * une partie ici.
+     * une partie ici. Rappeler [playChannel] ici bascule donc aussi [playbackMode] sur
+     * [PlaybackMode.LIVE] au passage, même si un replay était en cours au moment du
+     * changement de réglages — comportement préexistant à l'Étape R5a, pas revu ici (l'
+     * incrustation Réglages pendant un replay est hors périmètre de ce découpage, voir
+     * R5b/R5c).
+     *
+     * Étape R5a (4/4) : [currentLoadControlMode] est explicitement resynchronisé sur le
+     * mode réellement utilisé pour CE `buildExoPlayer()` (capturé avant l'appel, `settings`
+     * changeant mais pas forcément [playbackMode] à cet instant) — sans quoi
+     * [rebuildExoPlayerIfModeChanged] pourrait comparer [playChannel] juste en dessous à
+     * une valeur déjà obsolète et, selon le cas, sauter à tort une reconstruction pourtant
+     * nécessaire (ou en déclencher une inutile).
      */
     fun updateSettings(newSettings: PlayerSettings) {
         if (newSettings == settings) return
         settings = newSettings
         val oldPlayer = _exoPlayer
         val resumeChannel = currentChannel
-        _exoPlayer = buildExoPlayer()
+        val modeForRebuild = _playbackMode.value
+        _exoPlayer = buildExoPlayer(modeForRebuild)
+        currentLoadControlMode = modeForRebuild
         _player.value = _exoPlayer
         oldPlayer.release()
         if (resumeChannel != null) {
@@ -593,7 +734,14 @@ class PlayerController(
                     // playChannel (donc sans reinitialiser qualites/metriques/watchdog pour
                     // ce qui reste, du point de vue de l'utilisateur, la meme session sur la
                     // meme chaine).
-                    if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW &&
+                    // Étape R5a (2/4) : ce repositionnement "se replace sur le direct" n'a
+                    // aucun sens en REPLAY (voir la doc de currentLiveEdgeOffsetSeconds/
+                    // performSoftRetry) - on laisse tomber jusqu'au traitement d'erreur
+                    // fatale ci-dessous, qui affiche PlayerUiState.Error normalement ;
+                    // "Réessayer" (retry -> reloadCurrentSession) relance alors le MÊME
+                    // programme en différé plutôt qu'un faux retour au direct silencieux.
+                    if (_playbackMode.value != PlaybackMode.REPLAY &&
+                        error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW &&
                         behindLiveWindowRecoveries < BEHIND_LIVE_WINDOW_MAX_RECOVERIES
                     ) {
                         behindLiveWindowRecoveries += 1
@@ -827,6 +975,17 @@ class PlayerController(
      */
     fun playChannel(channel: Channel) {
         currentChannel = channel
+        // Étape R5a (1/4) : un appel à playChannel est TOUJOURS un (re)passage en direct —
+        // y compris depuis un replay en cours (bouton "Retour au direct" de l'OSD, R5b), ou
+        // simplement le comportement par défaut d'un PlayerController qui n'a encore jamais
+        // servi de replay. Voir [playReplay] pour le pendant en mode différé.
+        currentReplayUri = null
+        // Étape R5a (4/4) : reconstruit l'ExoPlayer AVANT de publier PlaybackMode.LIVE si
+        // on revient d'un replay (voir la doc de rebuildExoPlayerIfModeChanged) — sans
+        // effet si on était déjà en LIVE (currentLoadControlMode déjà LIVE, no-op).
+        rebuildExoPlayerIfModeChanged(PlaybackMode.LIVE)
+        _playbackMode.value = PlaybackMode.LIVE
+        _replayProgram.value = null
         cancelWatchdog()
         _uiState.value = PlayerUiState.Buffering
         // 8d6 : les pistes de la chaine precedente n'ont plus cours - remis a vide en
@@ -858,16 +1017,71 @@ class PlayerController(
         // session/configuration precedente).
         liveAnchorElapsedRealtimeMs = null
         liveAnchorPositionMs = null
-        // Fix (2026-08-05) : nouvelle chaine = nouvelle surveillance de derive (comme le
-        // watchdog juste au-dessus) - cancelDriftGuard() avant de la reprogrammer evite
-        // que la tache de la chaine precedente continue de reagir sur le nouveau player.
-        cancelDriftGuard()
         lastReconnectAtElapsedRealtimeMs = 0L
-        driftLowBufferStreak = 0
-        previousBufferedSeconds = null
         scheduleWatchdog()
-        scheduleDriftGuard()
         startPlayback(channel.streamUrl)
+    }
+
+    /**
+     * Étape R5a (1/4) — Charge et joue un [ReplayProgram] en différé, à partir de l'URL
+     * `timeshift.php` déjà construite par l'appelant (Étape R3,
+     * [com.dpflix.android.network.XtreamClient.buildTimeshiftUrl] — cette fonction ne la
+     * reconstruit pas elle-même : elle reste pure/sans dépendance réseau, voir sa doc).
+     *
+     * Miroir volontaire de [playChannel] pour toute la remise à zéro d'état "par session"
+     * (qualités disponibles, métriques Diagnostic, file de repli conteneur, compteurs de
+     * récupération, watchdog...) : un replay reste une VRAIE session de lecture au même
+     * titre qu'un direct, elle ne doit hériter d'aucun résidu de la session précédente, quel
+     * qu'ait été son mode. Seule différence swappée : [PlaybackMode.REPLAY] au lieu de
+     * [PlaybackMode.LIVE], et [timeshiftUrl] au lieu de `channel.streamUrl` comme source du
+     * [MediaItem] et de [containerFallbackQueue] — cette dernière reste pertinente en
+     * différé aussi (un panel Xtream peut tout aussi mal annoncer le conteneur réel d'une
+     * réponse timeshift.php que celui d'un flux live, voir la doc de [buildContainerFallbackQueue]).
+     *
+     * [channel] reste nécessaire en plus de [timeshiftUrl] (pas seulement l'URL) : conservé
+     * dans [currentChannel] pour les mêmes usages que [playChannel] (nom de chaîne pour
+     * l'OSD à R5b, `IptvHttpDataSourceFactory.httpClient(playlist)` déjà appliqué à la
+     * construction du contrôleur) — un replay reste la lecture DE cette chaîne, seule la
+     * fenêtre temporelle change.
+     *
+     * Étape R5a (4/4, dernière partie) : [rebuildExoPlayerIfModeChanged] garantit ici que
+     * [startPlayback] démarre cette session sur un `LoadControl` "démarrage rapide" (pas
+     * d'accumulation de tampon façon direct, voir [buildLoadControl]) — avec, comme posé
+     * dès R5a (1/4), aucune `LiveConfiguration`/retard cible sur le `MediaItem`
+     * ([startPlayback]), [currentLiveEdgeOffsetSeconds] neutralisé (R5a 2/4) et le
+     * zapping séquentiel bloqué côté [PlayerScreen] (R5a 3/4) : les quatre parties du
+     * découpage R5a sont désormais toutes branchées sur [playbackMode].
+     */
+    fun playReplay(channel: Channel, program: ReplayProgram, timeshiftUrl: String) {
+        currentChannel = channel
+        currentReplayUri = timeshiftUrl
+        // Étape R5a (4/4) : reconstruit l'ExoPlayer AVANT de publier PlaybackMode.REPLAY
+        // (voir la doc de rebuildExoPlayerIfModeChanged) — nécessaire pour que le
+        // démarrage rapide du LoadControl replay (buildLoadControl) s'applique réellement
+        // à CETTE session, dès le tout premier startPlayback plus bas, plutôt qu'un
+        // décalage d'une session (l'ancien ExoPlayer, encore configuré pour du direct,
+        // servirait sinon cette première lecture).
+        rebuildExoPlayerIfModeChanged(PlaybackMode.REPLAY)
+        _playbackMode.value = PlaybackMode.REPLAY
+        _replayProgram.value = program
+        cancelWatchdog()
+        _uiState.value = PlayerUiState.Buffering
+        _availableQualities.value = emptyList()
+        setQualityOverride(null)
+        _networkThroughputKbps.value = null
+        _streamResolution.value = null
+        _streamBitrateKbps.value = null
+        _segmentsSucceeded.value = 0
+        _segmentsFailed.value = 0
+        _recentErrors.value = emptyList()
+        containerFallbackQueue.clear()
+        containerFallbackQueue.addAll(buildContainerFallbackQueue(timeshiftUrl))
+        behindLiveWindowRecoveries = 0
+        liveAnchorElapsedRealtimeMs = null
+        liveAnchorPositionMs = null
+        lastReconnectAtElapsedRealtimeMs = 0L
+        scheduleWatchdog()
+        startPlayback(timeshiftUrl)
     }
 
     /**
@@ -897,10 +1111,14 @@ class PlayerController(
                 // Fix (2026-08-05) — Mode direct : aucun retard volontaire visé, on ne pose
                 // pas de LiveConfiguration personnalisée (Media3 garde son comportement natif
                 // par défaut). Voir la doc de [PlayerSettings.directModeEnabled].
-                if (!settings.directModeEnabled) {
+                //
+                // Étape R5a (4/4) — Mode replay : même repli, pour la même raison qu'en
+                // buildLoadControl (voir sa doc) — un flux timeshift.php n'a pas de retard
+                // cible sur un direct à maintenir puisqu'il n'y a pas de direct ici.
+                if (!settings.directModeEnabled && _playbackMode.value == PlaybackMode.LIVE) {
                     setLiveConfiguration(
                         MediaItem.LiveConfiguration.Builder()
-                            .setTargetOffsetMs(settings.liveDelaySeconds * 1000L)
+                            .setTargetOffsetMs(settings.bufferSafetyMarginSeconds * 1000L)
                             .build()
                     )
                 }
@@ -915,6 +1133,61 @@ class PlayerController(
     fun togglePlayPause() {
         if (_uiState.value is PlayerUiState.Error) return
         exoPlayer.playWhenReady = !exoPlayer.playWhenReady
+    }
+
+    /**
+     * Étape R5c — position actuelle dans le programme en différé, en millisecondes depuis
+     * son tout début. `null` hors [PlaybackMode.REPLAY], ou si aucun replay n'est en cours
+     * (état [PlayerUiState.Idle]/[PlayerUiState.Error], où une position n'a plus de sens à
+     * afficher — même garde que [currentBufferedSeconds]).
+     *
+     * Repose sur `Player.getCurrentPosition()` : le `MediaItem` d'un replay est ouvert
+     * directement sur l'URL `timeshift.php` du programme ([playReplay]), sans
+     * `LiveConfiguration` — la position `0` d'ExoPlayer correspond donc déjà exactement au
+     * tout début DU PROGRAMME (pas d'un flux live glissant), aucun calcul d'ancrage n'est
+     * nécessaire ici contrairement à [currentLiveEdgeOffsetSeconds].
+     */
+    fun currentReplayPositionMs(): Long? {
+        if (_playbackMode.value != PlaybackMode.REPLAY) return null
+        if (_uiState.value is PlayerUiState.Idle || _uiState.value is PlayerUiState.Error) return null
+        return exoPlayer.currentPosition.coerceAtLeast(0L)
+    }
+
+    /**
+     * Étape R5c — durée totale du programme en différé en cours, en millisecondes.
+     * `null` hors [PlaybackMode.REPLAY] ou si aucun [ReplayProgram] n'est retenu (ne
+     * devrait pas arriver en pratique tant que [playReplay] est le seul point d'entrée du
+     * mode replay, voir sa doc — `null` défensif plutôt qu'un crash).
+     *
+     * Dérivée de [ReplayProgram.startMillis]/[ReplayProgram.endMillis] (Étape R2), PAS de
+     * `Player.getDuration()` : un flux `timeshift.php` servi en `.ts` progressif n'expose
+     * fréquemment aucune durée fiable côté Media3 (`C.TIME_UNSET`, même limitation
+     * structurelle que l'écart au direct sur ce type de flux, voir
+     * [currentLiveEdgeOffsetSeconds]) — la durée du programme est de toute façon déjà
+     * connue avec certitude depuis l'Étape R2/R4, sans dépendre du flux pour la retrouver.
+     */
+    fun currentReplayDurationMs(): Long? {
+        if (_playbackMode.value != PlaybackMode.REPLAY) return null
+        val program = _replayProgram.value ?: return null
+        return (program.endMillis - program.startMillis).coerceAtLeast(0L)
+    }
+
+    /**
+     * Étape R5c — déplace la lecture à [positionMs] dans le programme en différé (reculer/
+     * avancer). Sans effet hors [PlaybackMode.REPLAY] : contrairement à un flux live, où
+     * "avancer/reculer" n'a pas de sens tel quel (§6, aucun rattrapage volontaire du
+     * direct, voir [performSoftRetry]/[reconnectProgressiveStream]), cette capacité est
+     * délibérément réservée au replay (§ test de sortie R5c).
+     *
+     * Borné à `[0, currentReplayDurationMs()]` : un appel avec une valeur hors bornes (ex.
+     * une barre de progression UI qui autoriserait un léger dépassement en fin de geste)
+     * ne doit ni sortir avant le début du programme, ni tenter d'aller au-delà de sa fin
+     * connue.
+     */
+    fun seekToReplayPosition(positionMs: Long) {
+        if (_playbackMode.value != PlaybackMode.REPLAY) return
+        val durationMs = currentReplayDurationMs() ?: return
+        exoPlayer.seekTo(positionMs.coerceIn(0L, durationMs))
     }
 
     /**
@@ -934,7 +1207,7 @@ class PlayerController(
      * `Player`/réglages. Repli dans ce cas : estimation maison à partir de l'ancrage
      * horloge murale posé au premier `STATE_READY` de la session en cours (voir
      * [liveAnchorElapsedRealtimeMs]) — l'écart estimé est le retard cible visé au
-     * démarrage ([PlayerSettings.liveDelaySeconds], voir [buildLoadControl]) plus tout
+     * démarrage ([PlayerSettings.bufferSafetyMarginSeconds], voir [buildLoadControl]) plus tout
      * temps mur écoulé depuis sans avancée équivalente de la position de lecture
      * (blocages/rebuffers inclus). Ne peut jamais diminuer, cohérent avec l'absence de
      * rattrapage volontaire du direct sur ce type de flux (aucun mécanisme d'accélération
@@ -945,6 +1218,15 @@ class PlayerController(
      * [PlayerMetricsBridge]), une précision à la milliseconde n'y apporterait rien d'utile.
      */
     fun currentLiveEdgeOffsetSeconds(): Float? {
+        // Étape R5a (2/4) : neutralisé en REPLAY - l'écart au direct n'a aucun sens sur
+        // un programme en différé (ReplayProgram, Étape R2), qu'il vienne de
+        // currentLiveOffset (souvent C.TIME_UNSET même en LIVE sur du .ts brut, voir le
+        // repli ci-dessous) ou de l'ancrage horloge murale liveAnchor* : ce dernier reste
+        // posé/mis à jour tel quel par updateStateFromPlayer (session REPLAY comme LIVE,
+        // sans dérivation supplémentaire à faire à cet endroit), mais R5b (OSD replay)
+        // n'a pas à l'exploiter - null ici l'indique explicitement plutôt que de laisser
+        // R5b redériver playbackMode lui-même pour l'ignorer.
+        if (_playbackMode.value == PlaybackMode.REPLAY) return null
         val offsetMs = exoPlayer.currentLiveOffset
         if (offsetMs != C.TIME_UNSET) {
             return kotlin.math.round(offsetMs / 100f) / 10f
@@ -954,7 +1236,7 @@ class PlayerController(
         val anchorPositionMs = liveAnchorPositionMs ?: return null
         val elapsedWallClockMs = SystemClock.elapsedRealtime() - anchorWallClockMs
         val elapsedPlaybackMs = exoPlayer.currentPosition - anchorPositionMs
-        val estimatedMs = (settings.liveDelaySeconds * 1000L) + (elapsedWallClockMs - elapsedPlaybackMs)
+        val estimatedMs = (settings.bufferSafetyMarginSeconds * 1000L) + (elapsedWallClockMs - elapsedPlaybackMs)
         if (estimatedMs < 0) return null
         return kotlin.math.round(estimatedMs / 100f) / 10f
     }
@@ -990,9 +1272,40 @@ class PlayerController(
      * watchdog automatique un budget complet de tentatives, plutôt que de repartir avec
      * un compteur déjà épuisé qui referait basculer sur [PlayerUiState.Error] dès le
      * premier blocage suivant sans même laisser les paliers du watchdog jouer leur rôle.
+     *
+     * Étape R5a (1/4) : rebranché sur [reloadCurrentSession] plutôt qu'un appel direct à
+     * `playChannel` — sans quoi "Réessayer" sur un replay bloqué rebasculerait à tort la
+     * lecture sur le direct de la chaîne (voir la doc de [reloadCurrentSession]).
      */
     fun retry(channel: Channel) {
         hardReloadAttempts = 0
+        reloadCurrentSession(channel)
+    }
+
+    /**
+     * Étape R5a (1/4) — reconstruit la session en cours (direct OU replay) en respectant
+     * [playbackMode] : [playChannel] en [PlaybackMode.LIVE], [playReplay] en
+     * [PlaybackMode.REPLAY] (avec le [ReplayProgram]/l'URL timeshift déjà retenus dans
+     * [_replayProgram]/[currentReplayUri]). Point de passage commun pour [retry] et
+     * [performHardReload] : les deux devaient auparavant rappeler `playChannel` en dur, ce
+     * qui aurait silencieusement ramené un replay bloqué au direct de sa chaîne au lieu de
+     * relancer le MÊME programme en différé — régression introduite par [playReplay],
+     * corrigée ici plutôt que dans chacun des deux appelants séparément.
+     *
+     * Repli sur [playChannel] si l'état replay attendu est incomplet (ne devrait pas
+     * arriver en pratique — [playReplay] pose toujours les deux ensemble — mais un
+     * `null` inattendu ne doit jamais faire échouer silencieusement une reprise après
+     * erreur : mieux vaut retomber sur le direct de la chaîne que ne rien jouer du tout).
+     */
+    private fun reloadCurrentSession(channel: Channel) {
+        if (_playbackMode.value == PlaybackMode.REPLAY) {
+            val uri = currentReplayUri
+            val program = _replayProgram.value
+            if (uri != null && program != null) {
+                playReplay(channel, program, uri)
+                return
+            }
+        }
         playChannel(channel)
     }
 
@@ -1055,7 +1368,20 @@ class PlayerController(
     // puisque la lecture ne progresse jamais au-dela du point de blocage initial.
     private fun isRealLiveWindow(): Boolean = exoPlayer.currentLiveOffset != C.TIME_UNSET
 
+    // Étape R5a (2/4) : en REPLAY, ni seekToDefaultPosition() (reviendrait vers le bord
+    // "direct" de la fenêtre - une notion sans objet ici, voir currentLiveEdgeOffsetSeconds)
+    // ni reconnectProgressiveStream() (ouvre une NOUVELLE connexion qui, sur un panel
+    // Xtream, sert le direct de la chaîne "maintenant" à toute connexion fraîche sur son
+    // URL de flux - ici l'URL en cours est timeshift.php, mais rouvrir la connexion n'a
+    // aucune raison de rapprocher qui que ce soit du direct ; ce n'est simplement pas le
+    // mécanisme "garde le tampon" voulu pour un programme en différé). On se contente donc
+    // de s'assurer que la lecture reprend sur la position déjà atteinte, sans rien
+    // reconstruire - au sens strict, "garde le tampon" pour un replay.
     private fun performSoftRetry() {
+        if (_playbackMode.value == PlaybackMode.REPLAY) {
+            exoPlayer.playWhenReady = true
+            return
+        }
         if (isRealLiveWindow()) {
             exoPlayer.seekToDefaultPosition()
             exoPlayer.playWhenReady = true
@@ -1075,18 +1401,23 @@ class PlayerController(
     // probleme, mais on garde tout le reste de l'etat de session).
     //
     // Nouvel ancrage horloge murale (liveAnchor*) : la nouvelle connexion redemarre a un
-    // retard proche de settings.liveDelaySeconds (via bufferForPlaybackMs, voir
+    // retard proche de settings.bufferSafetyMarginSeconds (via bufferForPlaybackMs, voir
     // [buildLoadControl]) - l'estimation d'ecart au direct doit repartir de cette
     // nouvelle reference plutot que de continuer a additionner l'ancien ecart deja
     // derive, sans quoi [currentLiveEdgeOffsetSeconds] resterait bloque sur la valeur
     // (fausse) accumulee avant la reconnexion.
     //
     // `MIN_RECONNECT_INTERVAL_MS` : protege contre un enchainement de reconnexions
-    // rapprochees (driftGuard + watchdog reagissant tous les deux a la meme derive, ou un
-    // reseau si degrade qu'aucune reconnexion n'a le temps de re-remplir le tampon avant
-    // la suivante) - dans ce dernier cas, laisser le watchdog/hardReload prendre le relais
-    // normalement plutot que de boucler encore plus vite.
+    // rapprochees (un reseau si degrade qu'aucune reconnexion n'a le temps de re-remplir
+    // le tampon avant la suivante) - dans ce cas, laisser le watchdog/hardReload prendre
+    // le relais normalement plutot que de boucler encore plus vite.
     private fun reconnectProgressiveStream() {
+        // Étape R5a (2/4) : garde défensive - le seul appelant actuel (performSoftRetry)
+        // ne l'atteint déjà plus en REPLAY, mais cette fonction reste un point sensible
+        // (ouvre une toute nouvelle connexion HTTP) : si un futur appelant l'invoquait par
+        // erreur pendant un replay, mieux vaut ne rien faire que de rouvrir la connexion
+        // timeshift.php sans aucun bénéfice - voir la doc de performSoftRetry.
+        if (_playbackMode.value == PlaybackMode.REPLAY) return
         val uri = currentPlaybackUri ?: return
         val now = SystemClock.elapsedRealtime()
         if (now - lastReconnectAtElapsedRealtimeMs < MIN_RECONNECT_INTERVAL_MS) return
@@ -1094,99 +1425,6 @@ class PlayerController(
         liveAnchorElapsedRealtimeMs = null
         liveAnchorPositionMs = null
         startPlayback(uri, forcedMimeType = currentPlaybackMimeType)
-    }
-
-    /**
-     * Surveillance continue du tampon (§6 "le tampon doit augmenter et diminuer
-     * progressivement sans exagérer... jamais de rattrapage forcé, toujours revenir au
-     * retard cible") pour les flux .ts progressifs : contrairement au watchdog
-     * ([scheduleWatchdog]), qui ne réagit qu'à un blocage DÉJÀ visible
-     * (`PlayerUiState.Buffering` prolongé), cette tâche tourne en permanence pendant la
-     * lecture et agit AVANT que le tampon ne soit totalement épuisé — reconnecte dès que
-     * le niveau de tampon descend sous un seuil bas ([DRIFT_LOW_WATERMARK_RATIO] du
-     * retard cible), pendant que la lecture est encore fluide côté utilisateur.
-     *
-     * Sans effet sur un flux réellement reconnu live par Media3 ([isRealLiveWindow]) :
-     * celui-ci gère déjà nativement la convergence vers `targetOffsetMs`, cette
-     * surveillance ferait doublon (voire interférerait) avec ce mécanisme natif.
-     */
-    /**
-     * Surveillance continue du tampon (§6 "le tampon doit augmenter et diminuer
-     * progressivement sans exagérer... jamais de rattrapage forcé, toujours revenir au
-     * retard cible") pour les flux .ts progressifs : contrairement au watchdog
-     * ([scheduleWatchdog]), qui ne réagit qu'à un blocage DÉJÀ visible
-     * (`PlayerUiState.Buffering` prolongé), cette tâche tourne en permanence pendant la
-     * lecture et agit AVANT que le tampon ne soit totalement épuisé — reconnecte dès que
-     * le niveau de tampon descend sous un seuil bas ([DRIFT_LOW_WATERMARK_RATIO] du
-     * retard cible), pendant que la lecture est encore fluide côté utilisateur.
-     *
-     * Sans effet sur un flux réellement reconnu live par Media3 ([isRealLiveWindow]) :
-     * celui-ci gère déjà nativement la convergence vers `targetOffsetMs`, cette
-     * surveillance ferait doublon (voire interférerait) avec ce mécanisme natif.
-     *
-     * Fix (2026-08-05, régression identifiée après une pause volontaire prolongée) : une
-     * lecture normale sur un flux live 1x temps réel voit son tampon redescendre
-     * PROGRESSIVEMENT vers `liveDelaySeconds` après tout épisode où il a dépassé la
-     * cible (ex. pause volontaire qui laisse le temps au tampon de gonfler bien au-delà
-     * du retard cible, voir §6 "augmente et diminue progressivement sans exagérer") — ce
-     * drainage normal traverse forcément le seuil bas à un moment donné, sans qu'il
-     * s'agisse d'une vraie panne de rechargement. Réagir à une SEULE lecture sous le
-     * seuil confondait ce drainage naturel avec un vrai risque de blocage, et
-     * reconnectait inutilement (donc vidait le tampon d'un coup) en plein milieu d'une
-     * lecture par ailleurs saine. Deux garde-fous ajoutés :
-     * - Persistance ([DRIFT_SUSTAINED_CHECKS]) : le tampon doit rester sous le seuil
-     *   PLUSIEURS lectures consécutives, pas une seule.
-     * - Tendance : la streak est réinitialisée dès que le tampon regagne du terrain
-     *   d'une lecture à l'autre (`bufferedSeconds > previousBufferedSeconds`) — un
-     *   tampon qui recharge, même lentement, n'est jamais un motif de reconnexion tant
-     *   qu'il ne stagne pas ou ne s'aggrave pas.
-     * Seul un tampon RÉELLEMENT bloqué ou en aggravation continue, sur plusieurs
-     * secondes, déclenche encore la reconnexion préventive.
-     */
-    private fun scheduleDriftGuard() {
-        // Fix (2026-08-05) — Mode direct : aucune reconnexion préventive, on laisse le
-        // flux jouer tel quel. Voir la doc de [PlayerSettings.directModeEnabled].
-        if (settings.directModeEnabled) return
-        if (driftGuardJob?.isActive == true) return
-        driftGuardJob = controllerScope.launch {
-            while (true) {
-                delay(DRIFT_CHECK_INTERVAL_MS)
-                if (isRealLiveWindow() || !exoPlayer.isPlaying) {
-                    driftLowBufferStreak = 0
-                    previousBufferedSeconds = null
-                    continue
-                }
-                val bufferedSeconds = currentBufferedSeconds()
-                if (bufferedSeconds == null) {
-                    driftLowBufferStreak = 0
-                    previousBufferedSeconds = null
-                    continue
-                }
-                val lowWatermarkSeconds = (settings.liveDelaySeconds * DRIFT_LOW_WATERMARK_RATIO)
-                    .coerceAtLeast(MIN_LOW_WATERMARK_SECONDS)
-                val isRecovering = previousBufferedSeconds?.let { bufferedSeconds > it } == true
-                previousBufferedSeconds = bufferedSeconds
-
-                if (bufferedSeconds <= lowWatermarkSeconds && !isRecovering) {
-                    driftLowBufferStreak += 1
-                } else {
-                    driftLowBufferStreak = 0
-                }
-
-                if (driftLowBufferStreak >= DRIFT_SUSTAINED_CHECKS) {
-                    driftLowBufferStreak = 0
-                    previousBufferedSeconds = null
-                    reconnectProgressiveStream()
-                }
-            }
-        }
-    }
-
-    private fun cancelDriftGuard() {
-        driftGuardJob?.cancel()
-        driftGuardJob = null
-        driftLowBufferStreak = 0
-        previousBufferedSeconds = null
     }
 
     /**
@@ -1206,6 +1444,9 @@ class PlayerController(
      * "latence infinie" identifiée au diagnostic). Au-delà de la borne, on affiche une
      * erreur finale au lieu de retenter — cohérent avec le traitement des autres échecs
      * définitifs (ex. [BEHIND_LIVE_WINDOW_MAX_RECOVERIES] juste au-dessus).
+     *
+     * Étape R5a (1/4) : voir [reloadCurrentSession] — même correction que [retry], pour la
+     * même raison (un replay bloqué ne doit pas silencieusement revenir au direct).
      */
     private fun performHardReload() {
         val channel = currentChannel ?: return
@@ -1217,13 +1458,12 @@ class PlayerController(
             )
             return
         }
-        playChannel(channel)
+        reloadCurrentSession(channel)
     }
 
     /** À appeler impérativement quand l'écran qui détient ce controller disparaît. */
     fun release() {
         cancelWatchdog()
-        cancelDriftGuard()
         controllerScope.cancel()
         exoPlayer.release()
     }
@@ -1248,57 +1488,9 @@ class PlayerController(
         // ralentissement transitoire).
         private const val LIVE_DELAY_HEADROOM_MS = 10_000
 
-        // Fix (2026-08-05) — voir scheduleDriftGuard : frequence de verification du
-        // tampon sur les flux .ts progressifs. Assez frequent pour reagir avant un
-        // veritable stall (le watchdog, lui, ne se declenche qu'apres
-        // SOFT_RETRY_AFTER_STALL_MS de blocage DEJA visible), assez espace pour ne pas
-        // solliciter le Player inutilement.
-        private const val DRIFT_CHECK_INTERVAL_MS = 1_000L
-
-        // Fix (2026-08-05, v3) — voir scheduleDriftGuard : le seuil bas est desormais la
-        // CONCORDANCE stricte avec le retard cible (100%, plus le seuil n'etait qu'une
-        // fraction de 35%) - "si le retard cible est de 5-10s, le tampon ne doit jamais se
-        // vider en dessous de 5-10s" (exigence explicite). Reconnecte des que le tampon
-        // restant descend sous le retard cible lui-meme, PENDANT que la lecture est
-        // encore fluide - "libere" alors le flux en cours (nouvelle connexion) avant qu'il
-        // ne s'approche de zero et ne force un blocage visible. Sans risque de sur-
-        // reaction sur un simple frémissement reseau normal : couple a DRIFT_SUSTAINED_CHECKS
-        // (il faut rester sous le seuil plusieurs secondes d'affilee, pas une seule mesure)
-        // et a la detection de reprise (previousBufferedSeconds) - seul un tampon qui NE
-        // regagne jamais de terrain pendant toute la fenetre de persistance declenche la
-        // reconnexion.
-        private const val DRIFT_LOW_WATERMARK_RATIO = 1.0f
-
-        // Fix (2026-08-05, v4) — voir scheduleDriftGuard : nombre de lectures CONSECUTIVES
-        // sous le seuil bas, sans reprise entre-temps, avant de reconnecter. Relevé de 6 à
-        // 15 (soit ~15s a DRIFT_CHECK_INTERVAL_MS = 1s) suite a un cas reel signale : le
-        // fournisseur IPTV coupe parfois la diffusion source net pendant 5 a 10s (pas un
-        // probleme reseau cote client, une vraie coupure a la source) avant de reprendre
-        // normalement. Avec l'ancien seuil de 6s, une coupure de 10s declenchait une
-        // reconnexion PENDANT la coupure elle-meme - juste avant que la source ne
-        // reprenne naturellement - videant le tampon protecteur pile au mauvais moment et
-        // rendant visible ce qui aurait du rester invisible. A 15s, une coupure connue de
-        // 5-10s se resorbe seule (le tampon draine puis regagne du terrain des la reprise,
-        // ce qui reinitialise le compteur avant meme d'atteindre le seuil de persistance) :
-        // la reconnexion ne se declenche plus que pour un drainage qui depasse reellement
-        // ce qu'une coupure habituelle de ce fournisseur provoque - donc une vraie panne
-        // plus longue, pas le cas courant qu'on cherche justement a rendre invisible.
-        // Suppose un retard cible (liveDelaySeconds) regle avec une marge reelle au-dessus
-        // de la coupure la plus longue observee (voir DEFAULT_LIVE_DELAY_SECONDS) : sans
-        // cette marge, le tampon peut atteindre zero avant meme que ce delai de
-        // persistance ne s'ecoule, quel qu'il soit.
-        private const val DRIFT_SUSTAINED_CHECKS = 15
-
-        // Fix (2026-08-05) — voir scheduleDriftGuard : plancher absolu du seuil bas,
-        // pour un retard cible tres court (ex. 0-2s) ou le tenir a 100% de la cible
-        // laisserait une marge ridiculement faible en secondes reelles pour amortir le
-        // moindre frémissement reseau.
-        private const val MIN_LOW_WATERMARK_SECONDS = 1.5f
-
         // Fix (2026-08-05) — voir reconnectProgressiveStream : intervalle minimal entre
         // deux reconnexions du flux progressif, pour eviter un enchainement de
-        // reconnexions rapprochees quand plusieurs mecanismes (driftGuard, watchdog)
-        // reagissent a la meme derive.
+        // reconnexions rapprochees sur un reseau degrade.
         private const val MIN_RECONNECT_INTERVAL_MS = 8_000L
 
         /** Fix (2026-07-23) — voir onPlayerError/behindLiveWindowRecoveries. */

@@ -4,13 +4,10 @@ import com.dpflix.android.model.Channel
 import java.util.UUID
 
 /**
- * Résultat du parsing d'une playlist M3U : les chaînes extraites, plus l'EPG
- * auto-détecté via l'attribut `url-tvg` (ou `x-tvg-url`, variante courante) de
- * l'en-tête `#EXTM3U` (§4.6 du cahier des charges).
+ * Résultat du parsing d'une playlist M3U : les chaînes extraites.
  */
 data class M3uParseResult(
-    val channels: List<Channel>,
-    val detectedEpgUrl: String?
+    val channels: List<Channel>
 )
 
 /**
@@ -23,8 +20,6 @@ data class M3uParseResult(
  * contenu texte déjà récupéré. Ça permet de tester le parseur sans réseau ni disque.
  */
 object M3uParser {
-
-    private val HEADER_EPG_REGEX = Regex("""(?:url-tvg|x-tvg-url)\s*=\s*(?:"([^"]*)"|'([^']*)'|(\S+))""", RegexOption.IGNORE_CASE)
 
     // Accepte clé="valeur", clé='valeur' et clé=valeur (sans guillemets, jusqu'au prochain
     // espace/virgule) — certains générateurs de playlist (panels IPTV, exports maison) ne
@@ -53,11 +48,6 @@ object M3uParser {
         require(lines.isNotEmpty() && lines.first().uppercase().startsWith("#EXTM3U")) {
             "Fichier M3U invalide : doit commencer par #EXTM3U"
         }
-
-        val detectedEpgUrl = HEADER_EPG_REGEX.find(lines.first())
-            ?.groupValues
-            ?.let { g -> g[1].takeIf { it.isNotEmpty() } ?: g[2].takeIf { it.isNotEmpty() } ?: g[3].takeIf { it.isNotEmpty() } }
-            ?.takeIf { it.isNotBlank() }
 
         val channels = mutableListOf<Channel>()
         var pendingAttrs: Map<String, String> = emptyMap()
@@ -107,7 +97,7 @@ object M3uParser {
             }
         }
 
-        return M3uParseResult(channels = channels, detectedEpgUrl = detectedEpgUrl)
+        return M3uParseResult(channels = channels)
     }
 
     // N'importe quel caractère hors de l'ASCII imprimable (0x21-0x7E) ou un espace :

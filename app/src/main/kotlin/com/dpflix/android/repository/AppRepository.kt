@@ -5,35 +5,34 @@ import kotlinx.coroutines.flow.first
 /**
  * Point d'entrée unique consommé par la couche métier partagée (3a-3d), l'UI (étape 6/7)
  * et le lecteur (étape 5) : compose `PlaylistRepository` (Room, 4a), `ChannelRepository`
- * (Room, 4b), `SettingsRepository` (DataStore, 4c) et [EpgRepository] (cache mémoire,
- * étape 9a), et porte la seule logique qui traverse réellement plusieurs de ces couches
- * (réinitialisation complète, activation de la playlist par défaut au démarrage).
+ * (Room, 4b) et `SettingsRepository` (DataStore, 4c), et porte la seule logique qui
+ * traverse réellement plusieurs de ces couches (réinitialisation complète, activation de
+ * la playlist par défaut au démarrage).
  */
 class AppRepository(
     val playlists: PlaylistRepository,
     val channels: ChannelRepository,
     val settings: SettingsRepository,
-    val epg: EpgRepository
+    /** Étape R2 (replay) : repository à part, voir sa doc — ne participe à aucune des
+     *  méthodes ci-dessous (reset, playlist par défaut), simplement exposé ici pour que
+     *  la future UI (Étape R4) n'ait qu'un seul point d'entrée à consommer, comme les
+     *  trois autres. */
+    val replay: ReplayRepository
 ) {
 
     /**
      * Réinitialisation complète (§5.6 "Réinitialisation complète") : playlists + chaînes
-     * (cascade FK, 4b) + réglages globaux (4c) + cache mémoire EPG (9a).
+     * (cascade FK, 4b) + réglages globaux (4c).
      *
      * Ne vide **pas** le cache disque ExoPlayer (`MediaCacheProvider`, existe depuis
      * l'étape 5c) : ce module vit dans le package `player`, qui ne dépend aujourd'hui de
      * rien dans `repository` — lui faire l'inverse ici inverserait cette dépendance sans
      * réel besoin. C'est donc l'appelant (`SettingsViewModel.confirmReset`, étape 6d) qui
      * orchestre les deux appels côte à côte.
-     *
-     * Fix (2026-07-23) : `epg.clearAll()` ajouté — sans lui, les guides EPG restaient en
-     * cache mémoire pour des `playlistId` qui n'existent plus après la suppression des
-     * playlists (orphelins sans impact visible, juste de la mémoire non libérée).
      */
     suspend fun resetAll() {
         playlists.deleteAll()
         settings.resetAll()
-        epg.clearAll()
     }
 
     /**

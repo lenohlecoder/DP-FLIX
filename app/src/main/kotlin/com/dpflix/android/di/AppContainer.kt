@@ -3,10 +3,11 @@ package com.dpflix.android.di
 import android.content.Context
 import androidx.room.Room
 import com.dpflix.android.db.AppDatabase
+import com.dpflix.android.network.XtreamClient
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.repository.ChannelRepository
-import com.dpflix.android.repository.EpgRepository
 import com.dpflix.android.repository.PlaylistRepository
+import com.dpflix.android.repository.ReplayRepository
 import com.dpflix.android.repository.SettingsRepository
 import com.dpflix.android.settings.SettingsDataStore
 
@@ -42,10 +43,16 @@ class AppContainer(context: Context) {
 
     private val settingsDataStore = SettingsDataStore(context.applicationContext)
 
+    // Étape R2 (replay) : instance dédiée, même pattern que OnboardingViewModel
+    // (XtreamClient() sans argument = client HTTP par défaut, voir sa doc) — pas de
+    // paramétrage spécifique à partager avec un éventuel autre usage pour l'instant.
+    private val xtreamClient = XtreamClient()
+    private val playlistRepository = PlaylistRepository(database.playlistDao())
+
     val appRepository: AppRepository = AppRepository(
-        playlists = PlaylistRepository(database.playlistDao()),
+        playlists = playlistRepository,
         channels = ChannelRepository(database.channelDao()),
         settings = SettingsRepository(settingsDataStore),
-        epg = EpgRepository(context.applicationContext)
+        replay = ReplayRepository(xtreamClient, playlistRepository)
     )
 }

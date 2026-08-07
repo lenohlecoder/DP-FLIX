@@ -1,5 +1,6 @@
 package com.dpflix.android.home
 
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -9,6 +10,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -18,8 +25,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -70,16 +79,31 @@ import com.dpflix.android.ui.theme.DpFlixColors
  * sur une chaîne ([ChannelCategoryListTv]/[HomeViewModel.onChannelClicked]) navigue
  * désormais directement vers le lecteur plein écran, comme côté mobile.
  *
- * ## Bouton Guide TV retiré (25 juillet 2026)
+ * ## Bouton Guide TV retiré (25 juillet 2026), remplacé par Films et Séries (07/08)
  * Le bouton "Guide TV" ([com.dpflix.android.epg.EpgGuideScreenTv], §4.6) qui vivait ici
  * depuis l'étape 9b1 a été retiré à la demande de l'utilisateur (latence/gels sur une
  * playlist de 20000+ chaînes) — voir la doc de [HomeScreen]/`DpFlixDestination` pour le
- * détail de ce qui reste de la gestion EPG indépendamment de cet écran.
+ * détail de ce qui reste de la gestion EPG indépendamment de cet écran. Le bouton
+ * "Films et Séries" ([com.dpflix.android.filmsseries.FilmsSeriesScreenTv]) reprend
+ * désormais son emplacement, à côté du bouton "Réglages".
+ *
+ * ## Recherche (2026-08-06)
+ * Icône loupe dans l'en-tête, à côté de "Réglages" : ouvre un champ de saisie qui filtre
+ * les chaînes affichées par nom UNIQUEMENT (jamais par nom de catégorie), sur TOUTES les
+ * catégories de la playlist active — pas seulement celle actuellement visible à l'écran.
+ * Filtrage en mémoire ([filteredCategories], `String.contains(ignoreCase = true)`) sur les
+ * catégories déjà chargées par [HomeViewModel] plutôt qu'une nouvelle requête Room : une
+ * playlist compte au plus quelques dizaines de milliers de chaînes déjà en mémoire pour
+ * l'affichage normal, un filtrage `List.filter` dessus est instantané, pas besoin
+ * d'aller-retour base de données à chaque frappe. Les catégories qui n'ont plus aucune
+ * chaîne correspondante après filtrage disparaissent de la liste (même logique que
+ * l'état vide "aucune chaîne" déjà géré plus bas).
  */
 @Composable
 fun HomeScreenTv(
     appRepository: AppRepository,
     onNavigateToSettings: () -> Unit,
+    onNavigateToFilmsSeries: () -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -88,9 +112,35 @@ fun HomeScreenTv(
     )
     val uiState by viewModel.uiState.collectAsState()
 
+    val filmsSeriesFocusRequester = remember { FocusRequester() }
     val settingsFocusRequester = remember { FocusRequester() }
     val firstChannelFocusRequester = remember { FocusRequester() }
     var hasRequestedInitialFocus by remember { mutableStateOf(false) }
+
+    // Recherche (§ demande utilisateur, 2026-08-06) : voir la doc de la fonction.
+    var searchActive by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    val searchFieldFocusRequester = remember { FocusRequester() }
+
+    val filteredCategories = remember(uiState.categories, searchQuery) {
+        val query = searchQuery.trim()
+        if (query.isEmpty()) {
+            uiState.categories
+        } else {
+            uiState.categories
+                .map { category -> category.copy(channels = category.channels.filter { it.name.contains(query, ignoreCase = true) }) }
+                .filter { it.channels.isNotEmpty() }
+        }
+    }
+
+    fun openSearch() {
+        searchActive = true
+    }
+
+    fun closeSearch() {
+        searchActive = false
+        searchQuery = ""
+    }
 
     MaterialTheme {
         DpFlixBackground(modifier = modifier.fillMaxSize()) {
@@ -102,8 +152,36 @@ fun HomeScreenTv(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(text = "DP-Flix", color = DpFlixColors.OnBackground, fontSize = 28.sp)
-                    Row {
+                    if (searchActive) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            label = { Text("Rechercher une chaîne") },
+                            singleLine = true,
+                            modifier = Modifier
+                                .weight(1f)
+                                .focusRequester(searchFieldFocusRequester)
+                        )
+                        LaunchedEffect(Unit) { searchFieldFocusRequester.requestFocus() }
+                    } else {
+                        Text(text = "DP-Flix", color = DpFlixColors.OnBackground, fontSize = 28.sp)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { if (searchActive) closeSearch() else openSearch() }) {
+                            Icon(
+                                imageVector = Icons.Filled.Search,
+                                contentDescription = "Rechercher une chaîne",
+                                tint = DpFlixColors.OnBackground
+                            )
+                        }
+                        Button(
+                            onClick = onNavigateToFilmsSeries,
+                            modifier = Modifier
+                                .focusRequester(filmsSeriesFocusRequester)
+                                .padding(start = 12.dp)
+                        ) {
+                            Text("Films et Séries")
+                        }
                         Button(
                             onClick = onNavigateToSettings,
                             modifier = Modifier
@@ -120,8 +198,11 @@ fun HomeScreenTv(
                     uiState.categories.all { it.channels.isEmpty() } -> EmptyStateTv(
                         text = "Aucune chaîne dans cette playlist pour le moment."
                     )
+                    searchActive && filteredCategories.isEmpty() -> EmptyStateTv(
+                        text = "Aucune chaîne ne correspond à « $searchQuery »."
+                    )
                     else -> ChannelCategoryListTv(
-                        categories = uiState.categories,
+                        categories = filteredCategories,
                         selectedChannelId = null,
                         firstChannelFocusRequester = firstChannelFocusRequester,
                         onChannelClick = { channel ->
@@ -205,6 +286,13 @@ private fun CategoryRowTv(
     }
 }
 
+/**
+ * Voyant de focus (§ demande utilisateur, 2026-08-06) : bordure rouge qui suit la carte
+ * ayant le focus D-pad ([isFocused], `Modifier.onFocusChanged`) — distincte du "En aperçu"
+ * ci-dessous ([isSelected], chaîne réellement en lecture dans le mini-lecteur), les deux
+ * pouvant être vrais sur deux cartes différentes en même temps (on navigue avec les
+ * flèches loin de la chaîne qu'on écoute).
+ */
 @Composable
 private fun ChannelCardTv(
     channel: Channel,
@@ -212,10 +300,18 @@ private fun ChannelCardTv(
     focusRequester: FocusRequester?,
     onClick: () -> Unit
 ) {
+    var isFocused by remember { mutableStateOf(false) }
     Button(
         onClick = onClick,
         modifier = Modifier
             .width(160.dp)
+            .onFocusChanged { isFocused = it.isFocused }
+            .clip(RoundedCornerShape(8.dp))
+            .border(
+                width = if (isFocused) 3.dp else 0.dp,
+                color = DpFlixColors.Red,
+                shape = RoundedCornerShape(8.dp)
+            )
             .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
     ) {
         Column {

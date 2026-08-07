@@ -27,10 +27,13 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.dpflix.android.filmsseries.FilmsSeriesScreen
 import com.dpflix.android.home.HomeScreen
 import com.dpflix.android.model.Channel
+import com.dpflix.android.model.ReplayProgram
 import com.dpflix.android.onboarding.OnboardingScreen
 import com.dpflix.android.player.PlayerScreen
+import com.dpflix.android.replay.ReplayScreen
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.settings.SettingsScreen
 import com.dpflix.android.splash.SplashScreen
@@ -145,8 +148,40 @@ fun DpFlixNavHost(
             HomeScreen(
                 appRepository = appRepository,
                 onNavigateToSettings = { navController.navigate(DpFlixDestination.Settings.route) },
+                onNavigateToFilmsSeries = { navController.navigate(DpFlixDestination.FilmsSeries.route) },
                 onNavigateToPlayerFullscreen = { channelId ->
                     navController.navigate(DpFlixDestination.PlayerFullscreen.createRoute(channelId))
+                }
+            )
+        }
+
+        composable(DpFlixDestination.FilmsSeries.route) {
+            FilmsSeriesScreen(
+                appRepository = appRepository,
+                onNavigateHome = { navController.popBackStack() }
+            )
+        }
+
+        // Étape R4 (replay) : pas encore de bouton d'accès réel nulle part dans l'app
+        // (prévu à l'Étape R6) — la route existe déjà pour qu'un test manuel
+        // (`DpFlixDestination.Replay.createRoute(channelId)`, voir le README de l'étape)
+        // puisse l'atteindre sans attendre R6.
+        //
+        // Étape R5b : onPlayProgram (Toast/log jusqu'ici) navigue désormais réellement
+        // vers PlayerFullscreenReplay, avec le programme tapé transporté tel quel en
+        // argument (voir sa doc — pas de nouvel aller-retour base de données, channelId
+        // est déjà celui de cette route).
+        composable(
+            route = DpFlixDestination.Replay.route,
+            arguments = listOf(navArgument(DpFlixDestination.ARG_CHANNEL_ID) { type = NavType.StringType })
+        ) { backStackEntry ->
+            val channelId = backStackEntry.arguments?.getString(DpFlixDestination.ARG_CHANNEL_ID).orEmpty()
+            ReplayScreen(
+                appRepository = appRepository,
+                channelId = channelId,
+                onBack = { navController.popBackStack() },
+                onPlayProgram = { program ->
+                    navController.navigate(DpFlixDestination.PlayerFullscreenReplay.createRoute(channelId, program))
                 }
             )
         }
@@ -172,6 +207,42 @@ fun DpFlixNavHost(
                 appRepository = appRepository,
                 channelId = channelId,
                 onBack = { navController.popBackStack() },
+                onNavigateToReplay = { fromChannelId ->
+                    navController.navigate(DpFlixDestination.Replay.createRoute(fromChannelId))
+                },
+                onRequestFullReset = {
+                    navController.navigate(DpFlixDestination.Onboarding.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        // Étape R5b : pendant de la route ci-dessus pour un programme en différé — voir
+        // ResolvedChannelReplayPlayer plus bas (même résolution de chaîne, + le
+        // ReplayProgram reconstruit directement depuis les arguments de navigation,
+        // aucun aller-retour base de données pour lui, voir la doc de
+        // DpFlixDestination.PlayerFullscreenReplay).
+        composable(
+            route = DpFlixDestination.PlayerFullscreenReplay.route,
+            arguments = listOf(
+                navArgument(DpFlixDestination.ARG_CHANNEL_ID) { type = NavType.StringType },
+                navArgument(DpFlixDestination.PlayerFullscreenReplay.ARG_PROGRAM_START_MILLIS) { type = NavType.LongType },
+                navArgument(DpFlixDestination.PlayerFullscreenReplay.ARG_PROGRAM_END_MILLIS) { type = NavType.LongType },
+                navArgument(DpFlixDestination.PlayerFullscreenReplay.ARG_PROGRAM_TITLE) { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val channelId = backStackEntry.arguments?.getString(DpFlixDestination.ARG_CHANNEL_ID).orEmpty()
+            val program = ReplayProgram(
+                title = backStackEntry.arguments?.getString(DpFlixDestination.PlayerFullscreenReplay.ARG_PROGRAM_TITLE).orEmpty(),
+                startMillis = backStackEntry.arguments?.getLong(DpFlixDestination.PlayerFullscreenReplay.ARG_PROGRAM_START_MILLIS) ?: 0L,
+                endMillis = backStackEntry.arguments?.getLong(DpFlixDestination.PlayerFullscreenReplay.ARG_PROGRAM_END_MILLIS) ?: 0L
+            )
+            ResolvedChannelReplayPlayer(
+                appRepository = appRepository,
+                channelId = channelId,
+                program = program,
+                onBack = { navController.popBackStack() },
                 onRequestFullReset = {
                     navController.navigate(DpFlixDestination.Onboarding.route) {
                         popUpTo(0) { inclusive = true }
@@ -189,11 +260,66 @@ private const val POST_SPLASH_ROUTE = "post_splash_routing"
  * [PlayerScreen] — voir la doc de [DpFlixNavHost]. Un court indicateur de chargement le
  * temps de cette lecture Room ; si la chaîne n'existe plus (playlist rafraîchie/supprimée
  * entre-temps), un message simple avec retour plutôt qu'un écran blanc.
+ *
+ * [onNavigateToReplay] (Étape R6) : transmis tel quel à `PlayerScreen.onNavigateToReplay`
+ * — navigue vers `DpFlixDestination.Replay.createRoute` avec l'ID de la chaîne réellement
+ * affichée au moment du tap (voir la doc de `PlayerScreen` sur pourquoi ce n'est pas
+ * forcément [channelId], l'entrée de navigation initiale).
  */
 @Composable
 private fun ResolvedChannelPlayer(
     appRepository: AppRepository,
     channelId: String,
+    onBack: () -> Unit,
+    onNavigateToReplay: (channelId: String) -> Unit,
+    onRequestFullReset: () -> Unit
+) {
+    var channel by remember(channelId) { mutableStateOf<Channel?>(null) }
+    var notFound by remember(channelId) { mutableStateOf(false) }
+
+    LaunchedEffect(channelId) {
+        val resolved = appRepository.channels.getById(channelId)
+        if (resolved == null) notFound = true else channel = resolved
+    }
+
+    val currentChannel = channel
+    when {
+        currentChannel != null -> PlayerScreen(
+            channel = currentChannel,
+            modifier = Modifier.fillMaxSize(),
+            appRepository = appRepository,
+            onNavigateToReplay = onNavigateToReplay,
+            onRequestFullReset = onRequestFullReset
+        )
+        notFound -> PlaceholderScreen(
+            title = "Chaîne introuvable",
+            actions = listOf("Retour" to onBack)
+        )
+        else -> Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                CircularProgressIndicator(
+                    modifier = Modifier.align(Alignment.Center),
+                    color = Color.White
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Pendant de [ResolvedChannelPlayer] pour un programme en différé (Étape R5b) : même
+ * résolution de chaîne par ID, mais [program] est déjà complet (reconstruit directement
+ * depuis les arguments de navigation par l'appelant, voir la doc de
+ * `DpFlixDestination.PlayerFullscreenReplay`) — pas de second aller-retour base de données
+ * pour lui. Transmis à [PlayerScreen] via `initialReplayProgram` (Étape R5b), qui
+ * construit l'URL timeshift et démarre `PlayerController.playReplay` au lieu de
+ * `playChannel` dès que la chaîne est résolue.
+ */
+@Composable
+private fun ResolvedChannelReplayPlayer(
+    appRepository: AppRepository,
+    channelId: String,
+    program: ReplayProgram,
     onBack: () -> Unit,
     onRequestFullReset: () -> Unit
 ) {
@@ -209,6 +335,7 @@ private fun ResolvedChannelPlayer(
     when {
         currentChannel != null -> PlayerScreen(
             channel = currentChannel,
+            initialReplayProgram = program,
             modifier = Modifier.fillMaxSize(),
             appRepository = appRepository,
             onRequestFullReset = onRequestFullReset

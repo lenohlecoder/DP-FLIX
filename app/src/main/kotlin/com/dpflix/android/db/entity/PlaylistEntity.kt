@@ -8,8 +8,8 @@ import com.dpflix.android.model.PlaylistType
  * Représentation Room de [com.dpflix.android.model.Playlist] (modèle métier, étape 3a).
  *
  * Reprend l'intégralité des champs du modèle métier : conformément au principe
- * "isolation totale par playlist" (§4.3), l'EPG manuel, la dernière chaîne regardée
- * et le flag de numérotation personnalisée vivent déjà sur l'objet Playlist lui-même,
+ * "isolation totale par playlist" (§4.3), la dernière chaîne regardée et le flag de
+ * numérotation personnalisée vivent déjà sur l'objet Playlist lui-même,
  * il n'y a donc rien à répartir sur une table séparée à cette sous-étape.
  *
  * Aucune contrainte de validation ici (les `require()` du modèle métier ne sont pas
@@ -35,20 +35,10 @@ data class PlaylistEntity(
     val xtreamPassword: String?,
     val includeTvChannels: Boolean,
 
-    // --- EPG (§4.6 + §5.4) : priorité manuel > auto-détecté > aucun ---
-    val manualEpgUrl: String?,
-    val autoDetectedEpgUrl: String?,
-
-    /** Voir [com.dpflix.android.model.Playlist.manualEpgLocalFileUri] (§5.4, ajouté en 6g-2-1). */
-    val manualEpgLocalFileUri: String?,
-
     // --- État propre à la playlist (§4.3, §5.6) ---
     val lastWatchedChannelId: String?,
     val defaultVideoQuality: String?,
     val resumeLastChannelOnStart: Boolean,
-
-    /** Voir [com.dpflix.android.model.Playlist.lastEpgUpdateMillis] (§5.4, ajouté en 6g-1). */
-    val lastEpgUpdateMillis: Long?,
 
     // --- Numérotation des chaînes personnalisée (§5.3), par playlist ---
     val useCustomChannelNumbering: Boolean,

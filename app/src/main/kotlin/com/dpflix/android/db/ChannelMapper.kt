@@ -5,7 +5,7 @@ import com.dpflix.android.model.Channel
 
 /**
  * Identifiant stable d'une chaîne, indépendant de l'`id` transitoire produit par le
- * parseur (voir `ChannelEntity`). Basé sur `tvgId` quand disponible (rattachement EPG,
+ * parseur (voir `ChannelEntity`). Basé sur `tvgId` quand disponible (identifiant fourni par la source,
  * §4.6 — donc déjà l'identifiant le plus fiable côté source), sinon sur `streamUrl`
  * (déterministe pour Xtream comme pour la plupart des flux M3U statiques).
  *
@@ -54,7 +54,10 @@ fun Channel.toEntity(): ChannelEntity = ChannelEntity(
     category = category,
     tvgId = tvgId,
     originalNumber = originalNumber,
-    customNumber = customNumber
+    customNumber = customNumber,
+    tvArchive = tvArchive,
+    tvArchiveDurationDays = tvArchiveDurationDays,
+    xtreamStreamId = xtreamStreamId
 )
 
 /**
@@ -72,5 +75,8 @@ fun ChannelEntity.toDomain(): Channel = Channel(
     category = category,
     tvgId = tvgId,
     originalNumber = originalNumber,
-    customNumber = customNumber
+    customNumber = customNumber,
+    tvArchive = tvArchive,
+    tvArchiveDurationDays = tvArchiveDurationDays,
+    xtreamStreamId = xtreamStreamId
 )

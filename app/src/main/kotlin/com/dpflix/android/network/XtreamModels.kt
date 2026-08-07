@@ -28,14 +28,10 @@ data class XtreamUserInfo(
 )
 
 /**
- * Résultat de la récupération des chaînes live (`get_live_streams`), accompagné de
- * l'EPG auto-détecté "lié au compte" (§4.6 : priorité 2, après l'EPG manuel) —
- * conceptuellement l'équivalent, côté Xtream, du `detectedEpgUrl` de [com.dpflix.android.parser.M3uParseResult]
- * côté M3U.
+ * Résultat de la récupération des chaînes live (`get_live_streams`).
  */
 data class XtreamLiveChannelsData(
     val channels: List<Channel>,
-    val detectedEpgUrl: String?,
     /**
      * Nombre d'entrées présentes dans le tableau JSON brut renvoyé par le serveur pour
      * `get_live_streams`, AVANT filtrage — distinct de `channels.size` : permet de

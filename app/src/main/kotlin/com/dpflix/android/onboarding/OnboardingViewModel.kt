@@ -182,9 +182,6 @@ class OnboardingViewModel(
                     false
                 } else {
                     appRepository.channels.refreshChannels(playlist.id, data.channels)
-                    data.detectedEpgUrl?.let { epgUrl ->
-                        appRepository.playlists.updatePlaylist(playlist.copy(autoDetectedEpgUrl = epgUrl))
-                    }
                     true
                 }
             }
@@ -237,8 +234,7 @@ class OnboardingViewModel(
                 name = form.name.trim(),
                 type = PlaylistType.M3U,
                 m3uUrl = form.url.trim().takeIf { it.isNotBlank() },
-                m3uLocalFilePath = source.localFilePath,
-                autoDetectedEpgUrl = parseResult.detectedEpgUrl
+                m3uLocalFilePath = source.localFilePath
             )
 
             when (val addResult = appRepository.playlists.addPlaylist(playlist)) {

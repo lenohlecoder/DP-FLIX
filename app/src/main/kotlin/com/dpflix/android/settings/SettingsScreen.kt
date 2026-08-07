@@ -1,9 +1,6 @@
 package com.dpflix.android.settings
 
-import android.net.Uri
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardOptions
@@ -25,14 +22,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
@@ -55,7 +49,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dpflix.android.model.Channel
-import com.dpflix.android.model.EpgStatus
 import com.dpflix.android.model.Playlist
 import com.dpflix.android.model.PlaylistType
 import com.dpflix.android.onboarding.OnboardingScreen
@@ -77,9 +70,9 @@ import kotlinx.coroutines.delay
  * `Settings` du `NavHost` mobile — voir `DpFlixNavHost`).
  *
  * Les sections [SettingsSection.General] (6d), [SettingsSection.Player] (6e),
- * [SettingsSection.Playlists], [SettingsSection.ChannelNumbering] (6f),
- * [SettingsSection.Epg] (6g-1 à 6g-2-2) et [SettingsSection.Diagnostic] (6g-3, voir
- * [DiagnosticSectionBody]) ont un contenu réel ici. [ComingSoonSection] ne sert donc plus
+ * [SettingsSection.Playlists], [SettingsSection.ChannelNumbering] (6f) et
+ * [SettingsSection.Diagnostic] (6g-3, voir [DiagnosticSectionBody]) ont un contenu réel
+ * ici. [ComingSoonSection] ne sert donc plus
  * qu'en filet de sécurité pour une section future non encore branchée.
  *
  * [onResetComplete] est appelé après une réinitialisation complète réussie (plus aucune
@@ -136,13 +129,13 @@ fun SettingsScreen(
                         onQualityCapSelected = viewModel::setDefaultVideoQualityCap,
                         onResumeToggled = viewModel::setResumeLastChannelOnStartForActivePlaylist,
                         onDefaultPlaylistSelected = viewModel::setDefaultPlaylist,
+                        onFilmsSeriesUrlChanged = viewModel::setFilmsSeriesUrl,
                         onRequestReset = viewModel::requestReset
                     )
                     SettingsSection.Player -> PlayerSectionBody(
                         uiState = uiState,
-                        onBufferDurationChange = viewModel::setBufferDurationSeconds,
+                        onBufferSafetyMarginChange = viewModel::setBufferSafetyMarginSeconds,
                         onRamCacheChange = viewModel::setRamCacheSizeMb,
-                        onLiveDelayChange = viewModel::setLiveDelaySeconds,
                         onHybridBufferToggled = viewModel::setHybridBufferEnabled,
                         onDiskCacheMaxChange = viewModel::setDiskCacheMaxSizeMb,
                         onClearDiskCache = viewModel::clearDiskCache,
@@ -163,14 +156,6 @@ fun SettingsScreen(
                         uiState = uiState,
                         onSelectPlaylist = viewModel::selectNumberingPlaylist,
                         onSetCustomNumber = viewModel::setCustomChannelNumber
-                    )
-                    SettingsSection.Epg -> EpgSectionBody(
-                        uiState = uiState,
-                        onSelectPlaylist = viewModel::selectEpgPlaylist,
-                        onSetManualUrl = viewModel::setManualEpgUrl,
-                        onSetManualLocalFile = viewModel::setManualEpgLocalFile,
-                        onClearManualSource = viewModel::clearManualEpgSource,
-                        onRefresh = viewModel::refreshEpg
                     )
                     SettingsSection.Diagnostic -> DiagnosticSectionBody(
                         uiState = uiState,
@@ -202,7 +187,6 @@ private fun SectionListBody(onSelect: (SettingsSection) -> Unit) {
         SettingsSection.Player,
         SettingsSection.Playlists,
         SettingsSection.ChannelNumbering,
-        SettingsSection.Epg,
         SettingsSection.Diagnostic
     )
     LazyColumn(modifier = Modifier.fillMaxSize()) {
@@ -245,6 +229,7 @@ private fun GeneralSectionBody(
     onQualityCapSelected: (String?) -> Unit,
     onResumeToggled: (Boolean) -> Unit,
     onDefaultPlaylistSelected: (String?) -> Unit,
+    onFilmsSeriesUrlChanged: (String?) -> Unit,
     onRequestReset: () -> Unit
 ) {
     Column(
@@ -268,6 +253,11 @@ private fun GeneralSectionBody(
             playlists = uiState.playlists,
             selectedId = uiState.generalSettings.defaultPlaylistId,
             onSelect = onDefaultPlaylistSelected
+        )
+
+        FilmsSeriesUrlSetting(
+            currentUrl = uiState.generalSettings.filmsSeriesUrl,
+            onSave = onFilmsSeriesUrlChanged
         )
 
         ResetSetting(onRequestReset = onRequestReset)
@@ -357,13 +347,46 @@ private fun ResetSetting(onRequestReset: () -> Unit) {
     }
 }
 
+/**
+ * URL de la section "Films et Séries" (§5.6, remplace l'ancien Guide TV) : `OutlinedTextField`
+ * local + bouton "Enregistrer" plutôt qu'écriture DataStore à chaque frappe (même raison que
+ * [EditPlaylistDialog] : éviter les problèmes de curseur d'un champ ré-observé en continu).
+ * Champ vidé + "Enregistrer" restaure la valeur par défaut codée en dur (voir
+ * [SettingsViewModel.setFilmsSeriesUrl], qui traite une chaîne vide comme `null`).
+ */
+@Composable
+private fun FilmsSeriesUrlSetting(currentUrl: String?, onSave: (String?) -> Unit) {
+    var draft by remember(currentUrl) { mutableStateOf(currentUrl.orEmpty()) }
+    val effectiveUrl = currentUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
+
+    SettingBlock(
+        title = "Lien Films et Séries",
+        subtitle = "Plateforme ouverte par la section \"Films et Séries\" de l'accueil. Vide = valeur par défaut ($effectiveUrl)."
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                singleLine = true,
+                label = { Text("URL") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            TextButton(
+                onClick = { onSave(draft) },
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("Enregistrer", color = DpFlixColors.Red, fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
 /** Contenu réel de la section Lecteur (§5.1, étape 6e). */
 @Composable
 private fun PlayerSectionBody(
     uiState: SettingsUiState,
-    onBufferDurationChange: (Int) -> Unit,
+    onBufferSafetyMarginChange: (Int) -> Unit,
     onRamCacheChange: (Int) -> Unit,
-    onLiveDelayChange: (Int) -> Unit,
     onHybridBufferToggled: (Boolean) -> Unit,
     onDiskCacheMaxChange: (Long) -> Unit,
     onClearDiskCache: () -> Unit,
@@ -393,30 +416,21 @@ private fun PlayerSectionBody(
 
         if (!settings.directModeEnabled) {
             StepperSetting(
-                title = "Durée du tampon",
-                subtitle = "Quantité de vidéo mise en avance avant lecture.",
-                value = settings.bufferDurationSeconds,
-                step = 5,
+                title = "Marge de sécurité du tampon",
+                subtitle = "Décalage volontaire par rapport au direct réel, pour absorber les à-coups réseau ; pilote aussi la quantité de vidéo mise en avance avant lecture.",
+                value = settings.bufferSafetyMarginSeconds,
+                step = 1,
                 unit = "s",
-                onValueChange = onBufferDurationChange
+                onValueChange = onBufferSafetyMarginChange
             )
 
             StepperSetting(
                 title = "Cache RAM",
-                subtitle = "Plancher mémoire minimum réservé au tampon (s'ajuste automatiquement à la hausse si \"Durée du tampon\" ou \"Retard sur le direct\" l'exigent).",
+                subtitle = "Plancher mémoire minimum réservé au tampon (s'ajuste automatiquement à la hausse si \"Marge de sécurité du tampon\" l'exige).",
                 value = settings.ramCacheSizeMb,
                 step = 25,
                 unit = "Mo",
                 onValueChange = onRamCacheChange
-            )
-
-            StepperSetting(
-                title = "Retard sur le direct",
-                subtitle = "Décalage volontaire par rapport au direct réel, pour absorber les à-coups réseau.",
-                value = settings.liveDelaySeconds,
-                step = 1,
-                unit = "s",
-                onValueChange = onLiveDelayChange
             )
         }
 
@@ -819,9 +833,8 @@ private fun ChannelNumberingRow(channel: Channel, onSetCustomNumber: (Int?) -> U
 }
 
 /**
- * Rangée de chips de sélection de playlist, factorisée en 6g-1 (identique à ce qu'utilisait
- * déjà seule [ChannelNumberingSectionBody] depuis 6f) : les deux sections isolées par
- * playlist (§5.3 Numérotation, §5.4 EPG) partagent exactement le même sélecteur.
+ * Rangée de chips de sélection de playlist, factorisée en 6g-1 : utilisée par la section
+ * Numérotation (§5.3), seule section isolée par playlist depuis le retrait du système EPG.
  */
 @Composable
 private fun PlaylistSelectorChips(playlists: List<Playlist>, selectedId: String?, onSelect: (String) -> Unit) {
@@ -853,247 +866,8 @@ private fun PlaylistSelectorChips(playlists: List<Playlist>, selectedId: String?
     }
 }
 
-/**
- * Contenu réel de la section Guide TV / EPG (§5.4). Sélecteur de playlist en tête (repli
- * sur la playlist active), même mécanique que [ChannelNumberingSectionBody] (§5.3) — voir
- * la doc de [SettingsUiState.epgPlaylistId] sur la différence de câblage ViewModel entre
- * les deux.
- *
- * - 6g-1 : statut + dernière mise à jour, LECTURE SEULE.
- * - 6g-2-1 : saisie/import de la source manuelle (URL ou fichier local),
- *   [EpgManualSourceSetting]. N'y déclenche aucun chargement réel.
- * - 6g-2-2 (cette sous-étape) : bouton "Rafraîchir l'EPG" ([EpgRefreshSetting]) qui
- *   déclenche le chargement réel de la source effective (manuelle si renseignée, sinon
- *   auto-détectée, §4.6) + son parsing, met à jour "Dernière mise à jour" en cas de succès,
- *   affiche l'erreur en cas d'échec (fichier invalide, URL injoignable).
- */
-@Composable
-private fun EpgSectionBody(
-    uiState: SettingsUiState,
-    onSelectPlaylist: (String) -> Unit,
-    onSetManualUrl: (String, String) -> Unit,
-    onSetManualLocalFile: (String, Uri) -> Unit,
-    onClearManualSource: (String) -> Unit,
-    onRefresh: (String) -> Unit
-) {
-    if (uiState.playlists.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                text = "Aucune playlist enregistrée.",
-                color = DpFlixColors.OnBackgroundMuted,
-                style = MaterialTheme.typography.bodyLarge,
-                modifier = Modifier.padding(32.dp)
-            )
-        }
-        return
-    }
-
-    val selectedId = uiState.epgPlaylistId ?: uiState.activePlaylist?.id
-    val playlist = uiState.playlists.firstOrNull { it.id == selectedId }
-
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-    ) {
-        PlaylistSelectorChips(playlists = uiState.playlists, selectedId = selectedId, onSelect = onSelectPlaylist)
-
-        if (playlist != null) {
-            Column(
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(28.dp)
-            ) {
-                EpgStatusSetting(playlist)
-                EpgLastUpdateSetting(playlist)
-                EpgRefreshSetting(
-                    inProgress = uiState.epgRefreshInProgress,
-                    error = uiState.epgRefreshError,
-                    onRefresh = { onRefresh(playlist.id) }
-                )
-                EpgManualSourceSetting(
-                    playlist = playlist,
-                    onSetUrl = { url -> onSetManualUrl(playlist.id, url) },
-                    onSetLocalFile = { uri -> onSetManualLocalFile(playlist.id, uri) },
-                    onClear = { onClearManualSource(playlist.id) }
-                )
-            }
-        }
-    }
-}
-
-/**
- * Bouton "Rafraîchir l'EPG" (§5.4, 6g-2-2). [inProgress] désactive le bouton pendant
- * l'opération (pas de rafraîchissements concurrents pour la même playlist) et affiche un
- * indicateur, même pattern que `OnboardingActions` (§4.2) pour "Suivant" pendant la
- * soumission d'un formulaire. [error] affiche le dernier message d'échec le cas échéant.
- */
-@Composable
-private fun EpgRefreshSetting(inProgress: Boolean, error: String?, onRefresh: () -> Unit) {
-    SettingBlock(
-        title = "Rafraîchissement",
-        subtitle = "Recharge la source EPG effective (manuelle si renseignée, sinon auto-détectée)."
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onRefresh, enabled = !inProgress) {
-                if (inProgress) {
-                    CircularProgressIndicator(modifier = Modifier.height(18.dp), color = Color.White, strokeWidth = 2.dp)
-                } else {
-                    Text("Rafraîchir l'EPG")
-                }
-            }
-            if (error != null) {
-                Text(error, color = DpFlixColors.Red, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-/**
- * Saisie/import de la source EPG manuelle (§5.4, 6g-2-1) : URL **ou** fichier local
- * (`.xml`/`.xml.gz`) via le sélecteur système, mutuellement exclusifs — même contrat que
- * le formulaire M3U de l'onboarding (§4.2, voir `M3uFormStep`). L'état de saisie est local
- * à ce composable (pas dans `SettingsUiState`, voir la doc de
- * [SettingsUiState.epgPlaylistId] sur le choix similaire pour le sélecteur de playlist) :
- * réinitialisé avec [LaunchedEffect] à chaque changement de playlist sélectionnée pour
- * repartir de la source déjà enregistrée plutôt que de garder la saisie de la playlist
- * précédente affichée par erreur.
- *
- * Pas de sauvegarde au fil de la frappe (contrairement à d'autres réglages de cet écran,
- * ex. le renommage de playlist) : un bouton "Enregistrer" explicite, pour ne pas écraser
- * une URL valide en base par une saisie partielle à chaque caractère tapé.
- */
-@Composable
-private fun EpgManualSourceSetting(
-    playlist: Playlist,
-    onSetUrl: (String) -> Unit,
-    onSetLocalFile: (Uri) -> Unit,
-    onClear: () -> Unit
-) {
-    var draftUrl by remember(playlist.id) { mutableStateOf(playlist.manualEpgUrl.orEmpty()) }
-    var draftLocalUri by remember(playlist.id) {
-        mutableStateOf(playlist.manualEpgLocalFileUri?.let { Uri.parse(it) })
-    }
-    var validationError by remember(playlist.id) { mutableStateOf<String?>(null) }
-
-    // Une source manuelle enregistrée depuis un autre écran/une autre session (ex. valeur
-    // en base au premier affichage) doit aussi réinitialiser la saisie — pas seulement le
-    // changement de playlist déjà couvert par les `remember(playlist.id)` ci-dessus.
-    LaunchedEffect(playlist.manualEpgUrl, playlist.manualEpgLocalFileUri) {
-        draftUrl = playlist.manualEpgUrl.orEmpty()
-        draftLocalUri = playlist.manualEpgLocalFileUri?.let { Uri.parse(it) }
-    }
-
-    val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            draftUrl = ""
-            draftLocalUri = uri
-            validationError = null
-        }
-    }
-
-    SettingBlock(
-        title = "Source manuelle",
-        subtitle = "URL XMLTV (.xml / .xml.gz) ou fichier local, en alternative à l'EPG auto-détecté."
-    ) {
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            OutlinedTextField(
-                value = draftUrl,
-                onValueChange = { value ->
-                    // Une URL saisie et un fichier importé sont mutuellement exclusifs (comme en §4.2).
-                    draftUrl = value
-                    draftLocalUri = null
-                    validationError = null
-                },
-                label = { Text("URL EPG manuelle") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text("— ou —", color = DpFlixColors.OnBackgroundMuted, style = MaterialTheme.typography.bodySmall)
-            OutlinedButton(
-                onClick = {
-                    filePickerLauncher.launch(arrayOf("text/xml", "application/xml", "application/gzip", "application/octet-stream", "*/*"))
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(Icons.Filled.Folder, contentDescription = null)
-                Text(
-                    text = draftLocalUri?.let { "Fichier : ${it.lastPathSegment}" }
-                        ?: "Importer un fichier local (.xml / .xml.gz)",
-                    modifier = Modifier.padding(start = 8.dp)
-                )
-            }
-            if (validationError != null) {
-                Text(validationError!!, color = DpFlixColors.Red, style = MaterialTheme.typography.bodySmall)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                TextButton(
-                    onClick = {
-                        val uri = draftLocalUri
-                        when {
-                            uri != null -> onSetLocalFile(uri)
-                            draftUrl.isNotBlank() -> onSetUrl(draftUrl)
-                            else -> validationError = "Indiquez une URL ou importez un fichier"
-                        }
-                    }
-                ) {
-                    Text("Enregistrer", fontWeight = FontWeight.Bold)
-                }
-                if (playlist.manualEpgUrl != null || playlist.manualEpgLocalFileUri != null) {
-                    TextButton(onClick = {
-                        draftUrl = ""
-                        draftLocalUri = null
-                        validationError = null
-                        onClear()
-                    }) {
-                        Text("Effacer", color = DpFlixColors.OnBackgroundMuted)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun EpgStatusSetting(playlist: Playlist) {
-    val (label, description) = when (playlist.epgStatus) {
-        EpgStatus.MANUAL -> "Manuel" to playlist.manualEpgUrl.orEmpty()
-        EpgStatus.AUTO_DETECTED -> "Auto-détecté" to autoDetectedEpgDescription(playlist)
-        EpgStatus.NONE -> "Aucun guide TV disponible" to "Aucune source EPG détectée pour cette playlist."
-    }
-    SettingBlock(title = "Statut", subtitle = description) {
-        Text(text = label, color = DpFlixColors.OnBackground, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun EpgLastUpdateSetting(playlist: Playlist) {
-    SettingBlock(
-        title = "Dernière mise à jour",
-        subtitle = "Date du dernier chargement EPG réussi pour cette playlist."
-    ) {
-        Text(
-            text = formatEpgTimestamp(playlist.lastEpgUpdateMillis),
-            color = DpFlixColors.OnBackground,
-            style = MaterialTheme.typography.bodyLarge
-        )
-    }
-}
-
-/**
- * Pour Xtream, `autoDetectedEpgUrl` (voir `XtreamClient.buildXmltvUrl`) contient les
- * identifiants du compte en clair dans la query string — ne jamais l'afficher tel quel
- * dans cet écran. Pour M3U, l'`url-tvg` détectée est affichée directement (pas
- * d'identifiants embarqués dans ce cas côté §4.6).
- */
-private fun autoDetectedEpgDescription(playlist: Playlist): String =
-    if (playlist.type == PlaylistType.XTREAM) {
-        "Route EPG du compte Xtream (mêmes identifiants que la playlist)."
-    } else {
-        playlist.autoDetectedEpgUrl.orEmpty()
-    }
-
-/** Pas `java.time` (minSdk 23 du projet, pas de désucrage — même contrainte que `EpgXmlParser`). */
-private fun formatEpgTimestamp(millis: Long?): String {
+/** Pas `java.time` (minSdk 23 du projet, pas de désucrage). */
+private fun formatDiagnosticTimestamp(millis: Long?): String {
     if (millis == null) return "Jamais"
     val formatter = java.text.SimpleDateFormat("dd/MM/yyyy à HH:mm", java.util.Locale.FRANCE)
     return formatter.format(java.util.Date(millis))
@@ -1101,7 +875,7 @@ private fun formatEpgTimestamp(millis: Long?): String {
 
 /**
  * Contenu réel de la section Diagnostic (§5.5, 6g-3 + 6g-4). Une seule section, pas de
- * sélecteur de playlist contrairement à EPG/Numérotation : ces métriques décrivent le
+ * sélecteur de playlist contrairement à Numérotation : ces métriques décrivent le
  * lecteur/le cache, globaux à l'appli (voir la doc de [SettingsUiState.diagnosticState]).
  *
  * Chaque métrique non mesurée à ce stade (voir [DiagnosticState]) affiche explicitement
@@ -1262,7 +1036,7 @@ private fun DiagnosticRecentErrorsSetting(errors: List<DiagnosticErrorEntry>?) {
             else -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 errors.forEach { entry ->
                     Text(
-                        text = "${formatEpgTimestamp(entry.timestampMillis)} — ${entry.message}",
+                        text = "${formatDiagnosticTimestamp(entry.timestampMillis)} — ${entry.message}",
                         color = DpFlixColors.OnBackground,
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -1273,7 +1047,7 @@ private fun DiagnosticRecentErrorsSetting(errors: List<DiagnosticErrorEntry>?) {
 }
 
 /** Formatage lisible d'une taille en octets — Mo en dessous de 1 Go, Go au-dessus.
- *  `Locale.FRANCE` explicite (comme `formatEpgTimestamp`) : pas de dépendance à la
+ *  `Locale.FRANCE` explicite (comme `formatDiagnosticTimestamp`) : pas de dépendance à la
  *  locale système de l'appareil pour le séparateur décimal. */
 private fun formatBytes(bytes: Long): String {
     val mb = bytes.toDouble() / (1024.0 * 1024.0)

@@ -36,8 +36,7 @@ interface PlaylistDao {
 
     /**
      * Fix (2026-07-25) : mise à jour d'une playlist déjà existante — utilisée par
-     * `PlaylistRepository.updatePlaylist` (renommage, source EPG manuelle,
-     * `lastEpgUpdateMillis`, `autoDetectedEpgUrl`, réglages réseau avancés, etc.).
+     * `PlaylistRepository.updatePlaylist` (renommage, réglages réseau avancés, etc.).
      *
      * NE PAS remplacer par `upsert` (`@Insert(onConflict = REPLACE)`) : sur une ligne
      * dont la clé primaire existe déjà, `OnConflictStrategy.REPLACE` fait en réalité un
@@ -47,10 +46,8 @@ interface PlaylistDao {
      * `onDelete = CASCADE` (voir sa doc) : ce DELETE intermédiaire supprimait donc
      * TOUTES les chaînes de la playlist à chaque `updatePlaylist`, juste avant que la
      * ligne playlist ne soit réinsérée (sans ses chaînes, forcément) — symptôme
-     * "playlist à 0 chaîne" observé après un simple renommage, l'enregistrement d'une
-     * URL EPG manuelle, un rafraîchissement EPG réussi (`setLastEpgUpdateMillis`), ou
-     * même juste après l'import Xtream initial (`autoDetectedEpgUrl` enregistré juste
-     * après `refreshChannels`, effaçant les chaînes qui venaient d'être insérées).
+     * "playlist à 0 chaîne" observé après un simple renommage, ou même juste après
+     * l'import Xtream initial (chaînes réinsérées par `refreshChannels` juste avant).
      * `@Update` génère un vrai `UPDATE ... WHERE id = ...` SQL, qui ne touche jamais aux
      * lignes `channels` liées.
      */

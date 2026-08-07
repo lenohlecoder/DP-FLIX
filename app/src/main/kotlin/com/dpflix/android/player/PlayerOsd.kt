@@ -13,13 +13,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.HighQuality
+import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Replay
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material3.DropdownMenu
@@ -43,6 +46,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.dpflix.android.model.Channel
+import com.dpflix.android.model.ReplayProgram
 import com.dpflix.android.ui.ChannelLogo
 import com.dpflix.android.ui.theme.DpFlixColors
 import java.text.SimpleDateFormat
@@ -138,6 +142,31 @@ import kotlin.math.roundToInt
  * [volumeFraction]/[onVolumeChange]. Voir la doc de `PlayerController.playChannel` pour
  * la décision "remis à Auto à chaque zap" (à la différence du volume, délibérément pas
  * remis à zéro par chaîne).
+ *
+ * [playbackMode]/[replayProgram]/[onExitReplay] (Étape R5b, replay/catch-up) : quand
+ * [playbackMode] vaut [PlaybackMode.REPLAY], le bandeau d'info remplace la ligne
+ * "écart au direct"/"programme en cours" (8b) par le titre et les horaires de
+ * [replayProgram] (jamais `null` dans ce cas, voir `PlayerController.playReplay`), et un
+ * bouton "Retour au direct" apparaît en tête de la barre de contrôles du bas
+ * ([onExitReplay], `null` en mini-lecteur comme [onOpenSettings] — le replay n'y est de
+ * toute façon jamais atteignable). Le reste du bandeau (logo, numéro, nom, heure) et de la
+ * barre de contrôles (lecture/pause, volume, qualité) ne change pas de comportement en
+ * différé — seul le tampon/l'écart au direct/le zapping sont neutralisés, dans
+ * `PlayerController`/`PlayerScreen` (Étape R5a), pas ici.
+ *
+ * [replayPositionMs]/[replayDurationMs]/[onSeekReplay] (Étape R5c) : alimentent
+ * [ReplaySeekBar], rendue au-dessus de la barre de contrôles UNIQUEMENT si
+ * `playbackMode == REPLAY` — première vraie barre de progression du lecteur avec
+ * `seekTo`, voir sa doc pour le détail du glissement en deux temps. `0L` par défaut
+ * (jamais lus tant que [playbackMode] reste [PlaybackMode.LIVE], voir `PlayerScreen`).
+ *
+ * [onOpenReplay] (Étape R6, point d'entrée) : bouton "Replay" dans la barre de contrôles
+ * du bas, rendu UNIQUEMENT en direct ([PlaybackMode.LIVE], jamais en même temps que
+ * [onExitReplay] — pas de sens à proposer d'ouvrir la liste des programmes passés pendant
+ * qu'on en regarde déjà un) ET seulement si [channel] a du catch-up ([Channel.tvArchive],
+ * Étape R1) — cohérent avec le découpage R1-R6 ("visible uniquement si
+ * channel.tvArchive"). `null` par défaut comme [onOpenSettings]/[onRequestNumericEntry] :
+ * jamais atteignable en mini-lecteur (voir [PlayerScreen]).
  */
 @Composable
 fun PlayerOsd(
@@ -153,6 +182,13 @@ fun PlayerOsd(
     availableQualities: List<QualityOption>,
     selectedQuality: QualityOption?,
     onQualityChange: (QualityOption?) -> Unit,
+    playbackMode: PlaybackMode = PlaybackMode.LIVE,
+    replayProgram: ReplayProgram? = null,
+    replayPositionMs: Long = 0L,
+    replayDurationMs: Long = 0L,
+    onSeekReplay: ((Long) -> Unit)? = null,
+    onExitReplay: (() -> Unit)? = null,
+    onOpenReplay: (() -> Unit)? = null,
     onRequestNumericEntry: (() -> Unit)? = null,
     onOpenSettings: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -211,17 +247,29 @@ fun PlayerOsd(
                     modifier = Modifier.padding(top = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    Text(
-                        text = liveEdgeOffsetLabel(liveEdgeOffsetSeconds),
-                        color = DpFlixColors.OnBackgroundMuted,
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    if (currentProgramTitle != null) {
+                    if (playbackMode == PlaybackMode.REPLAY && replayProgram != null) {
+                        // Étape R5b : plus de sens à afficher un écart au direct ou le
+                        // "programme en cours" EPG sur un programme déjà terminé — le
+                        // titre/horaires du ReplayProgram effectivement en train de jouer
+                        // sont l'information pertinente ici.
                         Text(
-                            text = "· $currentProgramTitle",
+                            text = replayInfoLabel(replayProgram),
                             color = DpFlixColors.OnBackgroundMuted,
                             style = MaterialTheme.typography.bodyMedium
                         )
+                    } else {
+                        Text(
+                            text = liveEdgeOffsetLabel(liveEdgeOffsetSeconds),
+                            color = DpFlixColors.OnBackgroundMuted,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        if (currentProgramTitle != null) {
+                            Text(
+                                text = "· $currentProgramTitle",
+                                color = DpFlixColors.OnBackgroundMuted,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
                     }
                 }
             }
@@ -230,7 +278,15 @@ fun PlayerOsd(
             // rangée horizontale (8d9) au lieu des trois rangées empilées de 8d1-8d8.
             // Dégradé inversé (assombrit le bas de l'écran plutôt que le haut), même
             // logique visuelle que le bandeau d'info ci-dessus.
-            Row(
+            //
+            // Étape R5c : en mode REPLAY, une rangée [ReplaySeekBar] s'ajoute AU-DESSUS de
+            // cette rangée de contrôles plutôt qu'à l'intérieur — pleine largeur, seule
+            // façon d'offrir assez d'espace de glissement pour un geste de seek précis
+            // (contrairement au [VolumeSlider], volontairement étroit au milieu d'autres
+            // contrôles). D'où la [Column] englobante ci-dessous : c'est elle qui porte
+            // désormais le dégradé/padding partagé, plutôt que la [Row] seule comme avant
+            // cette étape.
+            Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
@@ -239,25 +295,43 @@ fun PlayerOsd(
                             colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f))
                         )
                     )
-                    .padding(horizontal = 24.dp, vertical = 20.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(24.dp)
+                    .padding(horizontal = 24.dp, vertical = 20.dp)
             ) {
-                PlayPauseButton(isPlaying = isPlaying, onClick = onTogglePlayPause)
-                VolumeSlider(volumeFraction = volumeFraction, onVolumeChange = onVolumeChange)
-                QualitySelector(
-                    availableQualities = availableQualities,
-                    selected = selectedQuality,
-                    onSelect = onQualityChange
-                )
-                if (onOpenSettings != null) {
-                    // Ouvre Réglages en incrustation par-dessus la vidéo (qui continue de
-                    // jouer derrière, voir PlayerScreen) plutôt que de naviguer vers un
-                    // écran séparé — ce qui arrêterait la lecture et figerait les
-                    // métriques du Diagnostic (§5.5), alimentées uniquement pendant une
-                    // lecture réellement active (voir PlayerMetricsBridge).
-                    IconButton(onClick = onOpenSettings) {
-                        Icon(imageVector = Icons.Filled.Settings, contentDescription = "Réglages", tint = Color.White)
+                if (playbackMode == PlaybackMode.REPLAY) {
+                    ReplaySeekBar(
+                        positionMs = replayPositionMs,
+                        durationMs = replayDurationMs,
+                        onSeek = onSeekReplay
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(24.dp)
+                ) {
+                    PlayPauseButton(isPlaying = isPlaying, onClick = onTogglePlayPause)
+                    if (playbackMode == PlaybackMode.REPLAY && onExitReplay != null) {
+                        ExitReplayButton(onClick = onExitReplay)
+                    }
+                    // Étape R6 : point d'entrée replay, voir la doc de [onOpenReplay] plus haut.
+                    if (playbackMode == PlaybackMode.LIVE && channel.tvArchive && onOpenReplay != null) {
+                        OpenReplayButton(onClick = onOpenReplay)
+                    }
+                    VolumeSlider(volumeFraction = volumeFraction, onVolumeChange = onVolumeChange)
+                    QualitySelector(
+                        availableQualities = availableQualities,
+                        selected = selectedQuality,
+                        onSelect = onQualityChange
+                    )
+                    if (onOpenSettings != null) {
+                        // Ouvre Réglages en incrustation par-dessus la vidéo (qui continue de
+                        // jouer derrière, voir PlayerScreen) plutôt que de naviguer vers un
+                        // écran séparé — ce qui arrêterait la lecture et figerait les
+                        // métriques du Diagnostic (§5.5), alimentées uniquement pendant une
+                        // lecture réellement active (voir PlayerMetricsBridge).
+                        IconButton(onClick = onOpenSettings) {
+                            Icon(imageVector = Icons.Filled.Settings, contentDescription = "Réglages", tint = Color.White)
+                        }
                     }
                 }
             }
@@ -291,6 +365,94 @@ private fun VolumeSlider(volumeFraction: Float, onVolumeChange: (Float) -> Unit)
                 inactiveTrackColor = DpFlixColors.OnBackgroundMuted
             )
         )
+    }
+}
+
+/**
+ * Étape R5c — barre de progression + `seekTo` du programme en différé (§ test de sortie
+ * R5c : "reculer/avancer dans le programme"). Première vraie barre de progression du
+ * lecteur — jusqu'ici seul [VolumeSlider] utilisait un `Slider`, pour un réglage sans
+ * notion de "position dans un contenu" (voir la doc de [PlayerOsd]).
+ *
+ * Ne se rend pas si [durationMs] est encore inconnue (`<= 0`, ex. juste après
+ * [com.dpflix.android.player.PlayerController.playReplay], avant que [replayProgram] ne
+ * soit retenu côté contrôleur) — même logique défensive que [QualitySelector] pour une
+ * liste vide : rien d'utile à afficher plutôt qu'une barre à 0% trompeuse.
+ *
+ * Glissement en deux temps, comme n'importe quel lecteur vidéo : `onValueChange` ne fait
+ * que déplacer le curseur localement ([isDragging]/[dragFraction]) pendant le geste, SANS
+ * appeler [onSeek] à chaque pixel (un vrai `seekTo` par frame de glissement saccaderait la
+ * lecture pour rien) ; seul `onValueChangeFinished` (relâchement du doigt/de la
+ * télécommande) déclenche le [onSeek] réel. [positionMs] (poll ~1s, voir
+ * `PlayerScreen`) ne doit d'ailleurs PAS écraser le curseur pendant ce glissement — d'où
+ * [isDragging], qui fait temporairement primer la position locale sur celle reçue en
+ * paramètre.
+ *
+ * `onSeek` nullable (comme [PlayerOsd.onExitReplay]) : cohérence de style avec le reste du
+ * fichier pour un paramètre qui restera toujours non nul en pratique dès que
+ * `playbackMode == REPLAY` (voir `PlayerScreen`), mais sans imposer cette garantie au
+ * type lui-même.
+ */
+@Composable
+private fun ReplaySeekBar(positionMs: Long, durationMs: Long, onSeek: ((Long) -> Unit)?) {
+    if (durationMs <= 0L) return
+
+    var isDragging by remember { mutableStateOf(false) }
+    var dragFraction by remember { mutableStateOf(0f) }
+    val shownFraction = if (isDragging) {
+        dragFraction
+    } else {
+        (positionMs.toFloat() / durationMs.toFloat()).coerceIn(0f, 1f)
+    }
+    val shownPositionMs = (shownFraction * durationMs).toLong()
+
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = formatReplayTime(shownPositionMs),
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall
+        )
+        Slider(
+            value = shownFraction,
+            onValueChange = { fraction ->
+                isDragging = true
+                dragFraction = fraction
+            },
+            onValueChangeFinished = {
+                onSeek?.invoke((dragFraction * durationMs).toLong())
+                isDragging = false
+            },
+            modifier = Modifier.weight(1f),
+            colors = SliderDefaults.colors(
+                thumbColor = Color.White,
+                activeTrackColor = Color.White,
+                inactiveTrackColor = DpFlixColors.OnBackgroundMuted
+            )
+        )
+        Text(
+            text = formatReplayTime(durationMs),
+            color = Color.White,
+            style = MaterialTheme.typography.bodySmall
+        )
+    }
+}
+
+/** "H:MM:SS" au-delà d'une heure, "M:SS" en-deçà — [ms] toujours >= 0 ici ([ReplaySeekBar]
+ *  ne reçoit que des positions déjà bornées, voir `PlayerController.seekToReplayPosition`/
+ *  `currentReplayPositionMs`). */
+private fun formatReplayTime(ms: Long): String {
+    val totalSeconds = ms / 1000L
+    val hours = totalSeconds / 3600
+    val minutes = (totalSeconds % 3600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) {
+        "%d:%02d:%02d".format(hours, minutes, seconds)
+    } else {
+        "%d:%02d".format(minutes, seconds)
     }
 }
 
@@ -389,12 +551,26 @@ private fun formatClock(nowMillis: Long): String =
  * transitoire courant juste après un zapping, avant `STATE_READY`.
  * Un écart quasi nul (< 1 s, arrondi à l'affichage) est présenté comme "Direct" plutôt
  * que "0 s" : plus lisible, et cohérent avec le fait que le retard cible (§5.1/§6,
- * `PlayerSettings.liveDelaySeconds`) peut légitimement valoir 0.
+ * `PlayerSettings.bufferSafetyMarginSeconds`) peut légitimement valoir 0.
  */
 private fun liveEdgeOffsetLabel(offsetSeconds: Float?): String = when {
     offsetSeconds == null -> "Écart au direct : indisponible"
     offsetSeconds.roundToInt() <= 0 -> "Direct"
     else -> "Écart au direct : ${offsetSeconds} s"
+}
+
+/**
+ * "Titre (HH:mm–HH:mm)" (Étape R5b) — même fuseau horaire par défaut de l'appareil que
+ * `ReplayScreen.formatProgramTimeRange` (Étape R4), pas de date ici (contrairement à R4,
+ * qui liste des programmes pouvant s'étaler sur plusieurs jours) : ce bandeau n'affiche
+ * QUE le programme en train de jouer à l'instant, la date du jour où il a été diffusé
+ * n'apporte rien de plus une fois la lecture démarrée.
+ */
+private fun replayInfoLabel(program: ReplayProgram): String {
+    val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
+    val start = timeFormat.format(Date(program.startMillis))
+    val end = timeFormat.format(Date(program.endMillis))
+    return "${program.title} ($start–$end)"
 }
 
 /**
@@ -421,6 +597,72 @@ private fun PlayPauseButton(isPlaying: Boolean, onClick: () -> Unit) {
             imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
             contentDescription = if (isPlaying) "Mettre en pause" else "Lecture",
             tint = Color.White
+        )
+    }
+}
+
+/**
+ * Bouton "Retour au direct" (Étape R5b) — seul contrôle nouveau spécifique au replay dans
+ * la barre du bas, rendu UNIQUEMENT en [PlaybackMode.REPLAY] (voir la garde dans
+ * [PlayerOsd]). [onClick] rappelle `PlayerController.playChannel` côté `PlayerScreen` —
+ * ce composable ne fait que le rendu, comme le reste de cette barre.
+ *
+ * Style "puce" (icône + libellé sur fond légèrement teinté) plutôt qu'une simple icône
+ * isolée comme [PlayPauseButton] : contrairement aux autres contrôles de cette barre
+ * (toujours présents, leur icône seule suffit à les reconnaître avec l'habitude), celui-ci
+ * n'apparaît que ponctuellement — le libellé explicite évite toute ambiguïté sur ce que
+ * fait ce bouton la première fois qu'un utilisateur le rencontre.
+ */
+@Composable
+private fun ExitReplayButton(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(DpFlixColors.Red.copy(alpha = 0.85f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(imageVector = Icons.Filled.LiveTv, contentDescription = null, tint = Color.White)
+        Text(
+            text = "Retour au direct",
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+    }
+}
+
+/**
+ * Bouton "Replay" (Étape R6, point d'entrée) — même style "puce" que [ExitReplayButton]
+ * (icône + libellé, jamais confondu avec les contrôles permanents de la barre) : les deux
+ * ne sont d'ailleurs jamais visibles en même temps ([PlayerOsd] les rend sur des branches
+ * mutuellement exclusives de [PlaybackMode]). Fond neutre (`DpFlixColors.Surface`) plutôt
+ * que le rouge de [ExitReplayButton] : celui-ci ramène vers l'action "normale" (le
+ * direct), celui-là ouvre une action secondaire optionnelle — la distinction de couleur
+ * aide à ne pas les confondre visuellement si l'utilisateur passe rapidement de l'un à
+ * l'autre au fil de ses lectures. [onClick] rappelle `onNavigateToReplay` côté
+ * `PlayerScreen`, qui délègue lui-même la navigation réelle au `NavHost` appelant — ce
+ * composable ne fait que le rendu, comme le reste de cette barre.
+ */
+@Composable
+private fun OpenReplayButton(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(DpFlixColors.Surface)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Icon(imageVector = Icons.Filled.Replay, contentDescription = null, tint = Color.White)
+        Text(
+            text = "Replay",
+            color = Color.White,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold
         )
     }
 }

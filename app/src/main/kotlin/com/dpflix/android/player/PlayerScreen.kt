@@ -48,6 +48,7 @@ import androidx.media3.ui.PlayerView
 import com.dpflix.android.settings.SettingsScreen
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.EpgLoadResult
+import com.dpflix.android.model.ReplayProgram
 import com.dpflix.android.repository.AppRepository
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -64,6 +65,10 @@ private const val OSD_CLOCK_TICK_MILLIS = 1_000L
 /** Delai sans nouvelle frappe avant validation automatique d'un numero en cours de saisie
  *  (8c, "court delai sans nouvelle frappe" acte dans le cadrage de cette sous-etape). */
 private const val NUMERIC_ENTRY_AUTO_VALIDATE_MILLIS = 2_000L
+
+/** Delai d'inactivite (aucune navigation dans le menu) avant fermeture automatique du menu
+ *  de chaines ouvert par la touche Menu de la telecommande. */
+private const val CHANNEL_MENU_AUTO_HIDE_MILLIS = 5_000L
 
 /** Distance minimale (dp) d'un glissement vertical pour qu'il soit interprete comme un
  *  zapping plutot qu'un tap (8c, swipe mobile). Convertie en pixels dans la factory de
@@ -173,6 +178,36 @@ private const val SWIPE_MIN_DISTANCE_DP = 32f
  *   immediatement via OK (DPAD_CENTER/ENTER cote TV, "check" du clavier virtuel cote mobile).
  *   Numero sans correspondance -> validateTypedNumber vide simplement la saisie, pas
  *   d'erreur bloquante (decision actee dans le cadrage de 8c).
+ *
+ * Etape R5a-3 : les deux entrees ci-dessus (zap() et validateTypedNumber()) consultent
+ * `controller?.playbackMode` et ne font plus rien tant qu'un replay (PlaybackMode.REPLAY,
+ * voir PlayerController) est en cours - naviguer chaine par chaine ou taper un numero n'a
+ * pas de sens pendant la lecture d'un programme passe. Le menu de chaines (PlayerZapping.
+ * sameCategory, touche Menu) n'est PAS concerne par cette garde : hors perimetre defini
+ * pour R5a-3, laisse tel quel volontairement.
+ *
+ * ## initialReplayProgram (Étape R5b, replay/catch-up)
+ * `null` par défaut (lecture d'un direct classique, chemin inchangé). Quand non nul (arrivée
+ * depuis `ReplayScreen` via `DpFlixDestination.PlayerFullscreenReplay`), le
+ * `LaunchedEffect(channel.id)` qui crée le contrôleur construit l'URL `timeshift.php`
+ * (`AppRepository.replay.buildTimeshiftUrl`, Étape R3) puis appelle
+ * `PlayerController.playReplay` au lieu de `playChannel` — voir ce `LaunchedEffect` pour le
+ * repli si la construction échoue (playlist Xtream introuvable/incomplète entre-temps, cas
+ * qui ne devrait pas arriver en pratique : `ReplayScreen` vient juste de charger cette même
+ * chaîne avec succès). `remember(channel.id)`, pas `remember(channel.id, initialReplayProgram)`
+ * : un programme en différé n'est jamais recyclé pour recomposer cet écran avec un AUTRE
+ * programme sans repasser par la navigation (nouvelle destination, donc nouvelle instance
+ * de composable) — inutile de faire dépendre les `remember` de cette valeur.
+ *
+ * ## onNavigateToReplay (Étape R6, point d'entrée)
+ * `null` par défaut (mini-lecteur, même garde que [appRepository] pour le zapping — voir
+ * plus haut) ; les deux points d'entrée plein écran (`DpFlixNavHost`/`DpFlixTvNavHost`)
+ * le fournissent, chacun retombant sur `DpFlixDestination.Replay.createRoute(channelId)`
+ * pour naviguer vers la liste des programmes passés (Étape R4) de [currentChannel] — pas
+ * de [channel] (l'entrée de navigation initiale) : un zap en direct peut avoir changé de
+ * chaîne depuis, le bouton "Replay" de l'OSD doit refléter la chaîne réellement affichée.
+ * Transmis tel quel à [PlayerOsd] (voir sa doc pour la garde d'affichage,
+ * `channel.tvArchive` + [PlaybackMode.LIVE]).
  */
 @Composable
 fun PlayerScreen(
@@ -180,6 +215,8 @@ fun PlayerScreen(
     modifier: Modifier = Modifier,
     osdEnabled: Boolean = true,
     appRepository: AppRepository? = null,
+    initialReplayProgram: ReplayProgram? = null,
+    onNavigateToReplay: ((channelId: String) -> Unit)? = null,
     onRequestFullReset: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -212,11 +249,27 @@ fun PlayerScreen(
     var liveEdgeOffsetSeconds by remember(channel.id) { mutableStateOf<Float?>(null) }
     var currentProgramTitle by remember(channel.id) { mutableStateOf<String?>(null) }
 
+    // Étape R5c : position/durée du programme en différé, recalculées par la même boucle
+    // que liveEdgeOffsetSeconds ci-dessus (voir plus bas) - restent à 0L hors replay,
+    // PlayerOsd n'affiche la barre de progression que si playbackMode == REPLAY (voir sa
+    // doc), ces valeurs par défaut n'y sont donc jamais visibles en direct.
+    var replayPositionMs by remember(channel.id) { mutableStateOf(0L) }
+    var replayDurationMs by remember(channel.id) { mutableStateOf(0L) }
+
     // Saisie numerique directe (5.3/8c) : voir la doc de la fonction pour le detail du
     // mecanisme de validation automatique et du clavier virtuel mobile.
     var typedNumber by remember(channel.id) { mutableStateOf("") }
     var numericEntryToken by remember(channel.id) { mutableStateOf(0) }
     var keypadVisible by remember(channel.id) { mutableStateOf(false) }
+
+    // Menu pendant la lecture (touche Menu telecommande) : liste des chaines de la
+    // categorie en cours, affichee a cote de la video (PlayerZapping.sameCategory).
+    // channelMenuToken redemarre le minuteur d'auto-masquage a chaque ouverture/
+    // navigation dans le menu, meme mecanique que osdShowToken/numericEntryToken.
+    var channelMenuVisible by remember(channel.id) { mutableStateOf(false) }
+    var channelMenuToken by remember(channel.id) { mutableStateOf(0) }
+    var channelMenuChannels by remember(channel.id) { mutableStateOf<List<Channel>>(emptyList()) }
+    var channelMenuSelectedIndex by remember(channel.id) { mutableStateOf(0) }
 
     // Volume (8d4) : decision tranchee - AudioManager (volume systeme, STREAM_MUSIC)
     // plutot qu'ExoPlayer.volume. Sur la quasi-totalite des box IPTV/apps de streaming,
@@ -286,9 +339,15 @@ fun PlayerScreen(
     }
 
     /** Zapping sequentiel (8c) : sans effet si appRepository est absent (mini-lecteur,
-     *  voir la doc de la fonction) ou si aucun voisin n'a pu etre resolu. */
+     *  voir la doc de la fonction) ou si aucun voisin n'a pu etre resolu. Sans effet non
+     *  plus en cours de replay (Etape R5a-3) : naviguer chaine par chaine n'a pas de sens
+     *  pendant la lecture d'un programme passe (timeshift.php, voir PlaybackMode.REPLAY) -
+     *  seule la sortie explicite vers le direct (bouton dedie de l'OSD, R5b) doit quitter
+     *  le replay en cours. Verifie AVANT de resoudre le voisin : ni PlayerZapping.neighbor
+     *  ni applyZap ne doivent tourner pour rien sur un swipe/D-pad recu pendant un replay. */
     fun zap(direction: ZapDirection) {
         val repository = appRepository ?: return
+        if (controller?.playbackMode?.value == PlaybackMode.REPLAY) return
         val fromChannel = currentChannel
         coroutineScope.launch {
             val neighbor = PlayerZapping.neighbor(repository, fromChannel, direction)
@@ -313,7 +372,11 @@ fun PlayerScreen(
 
     /** Valide la saisie en cours (minuteur ecoule ou "OK" explicite) : resout le numero dans
      *  la playlist de currentChannel via PlayerZapping.byDisplayNumber et zappe si trouve
-     *  - sinon referme simplement l'overlay, pas d'erreur bloquante (decision de cadrage). */
+     *  - sinon referme simplement l'overlay, pas d'erreur bloquante (decision de cadrage).
+     *  Meme non-effet en cours de replay (Etape R5a-3, voir zap() juste au-dessus) : la
+     *  saisie tapee est quand meme videe/l'overlay referme comme dans le cas "pas de
+     *  correspondance" deja existant, seule la resolution PlayerZapping.byDisplayNumber
+     *  est sautee - pas de nouveau code d'erreur a gerer cote UI pour ce cas. */
     fun validateTypedNumber() {
         val repository = appRepository
         val number = typedNumber.toIntOrNull()
@@ -321,6 +384,7 @@ fun PlayerScreen(
         typedNumber = ""
         keypadVisible = false
         if (repository == null || number == null) return
+        if (controller?.playbackMode?.value == PlaybackMode.REPLAY) return
         coroutineScope.launch {
             val match = PlayerZapping.byDisplayNumber(repository, playlistId, number)
             if (match != null) applyZap(match)
@@ -334,6 +398,48 @@ fun PlayerScreen(
         showOsd()
     }
 
+    /** Ferme le menu de chaines (deuxieme pression Menu, minuteur d'inactivite ecoule, ou
+     *  selection validee). */
+    fun closeChannelMenu() {
+        channelMenuVisible = false
+    }
+
+    /** Ouvre le menu de chaines (premiere pression Menu) : charge les chaines de la
+     *  categorie de currentChannel et positionne la selection sur la chaine en cours -
+     *  sans effet si appRepository est absent (mini-lecteur). */
+    fun openChannelMenu() {
+        val repository = appRepository ?: return
+        val forChannel = currentChannel
+        coroutineScope.launch {
+            val channels = PlayerZapping.sameCategory(repository, forChannel)
+            channelMenuChannels = channels
+            channelMenuSelectedIndex = channels.indexOfFirst { it.id == forChannel.id }.coerceAtLeast(0)
+            channelMenuVisible = true
+            channelMenuToken++
+        }
+    }
+
+    /** Touche Menu : ouvre si ferme, ferme si deja ouvert (§ demande utilisateur). */
+    fun toggleChannelMenu() {
+        if (channelMenuVisible) closeChannelMenu() else openChannelMenu()
+    }
+
+    /** Deplace la selection dans le menu (HAUT/BAS), avec bouclage aux deux bouts - meme
+     *  convention que le zapping sequentiel - et relance le minuteur d'inactivite. */
+    fun moveChannelMenuSelection(delta: Int) {
+        val size = channelMenuChannels.size
+        if (size == 0) return
+        channelMenuSelectedIndex = ((channelMenuSelectedIndex + delta) % size + size) % size
+        channelMenuToken++
+    }
+
+    /** Valide la selection du menu (OK) : zappe vers la chaine choisie et referme le menu. */
+    fun confirmChannelMenuSelection() {
+        val target = channelMenuChannels.getOrNull(channelMenuSelectedIndex)
+        closeChannelMenu()
+        if (target != null) applyZap(target)
+    }
+
     LaunchedEffect(channel.id) {
         // Fix (2026-07-24) : récupère la playlist propriétaire de cette chaîne pour que
         // son éventuel forçage réseau (Referer/User-Agent/proxy, voir Playlist) soit
@@ -341,7 +447,19 @@ fun PlayerScreen(
         // n'est fourni (mini-lecteur), même comportement automatique qu'avant dans ce cas.
         val playlist = appRepository?.playlists?.getById(channel.playlistId)
         val created = PlayerController.create(context, playlist = playlist)
-        created.playChannel(channel)
+        // Étape R5b : programme en différé demandé (voir la doc du paramètre
+        // initialReplayProgram) — construit l'URL timeshift.php avant playReplay. Repli
+        // sur playChannel (direct) si la construction échoue ou si aucun appRepository
+        // n'est fourni : ne devrait pas arriver en pratique (voir la doc du paramètre),
+        // mais démarrer quand même une lecture plutôt que de laisser cet écran bloqué sur
+        // son indicateur de chargement.
+        val program = initialReplayProgram
+        val timeshiftUrl = program?.let { appRepository?.replay?.buildTimeshiftUrl(channel, it) }
+        if (program != null && timeshiftUrl != null) {
+            created.playReplay(channel, program, timeshiftUrl)
+        } else {
+            created.playChannel(channel)
+        }
         controller = created
     }
 
@@ -391,6 +509,17 @@ fun PlayerScreen(
         }
     }
 
+    // Auto-masquage du menu de chaines (5s d'inactivite, cf. CHANNEL_MENU_AUTO_HIDE_MILLIS) -
+    // meme mecanique de minuteur redemarrable que l'OSD/la saisie numerique ci-dessus :
+    // channelMenuToken change a chaque ouverture ou navigation HAUT/BAS dans le menu.
+    if (osdEnabled) {
+        LaunchedEffect(channelMenuToken, channel.id) {
+            if (!channelMenuVisible) return@LaunchedEffect
+            delay(CHANNEL_MENU_AUTO_HIDE_MILLIS)
+            channelMenuVisible = false
+        }
+    }
+
     // Demande le focus Android (D-pad TV / clic mobile) des que la View existe, UNIQUEMENT
     // en plein ecran (voir la doc de osdEnabled) - sinon la View reste passive et
     // laisse le Box englobant du mini-lecteur gerer seul le tap/D-pad ("agrandir").
@@ -419,6 +548,11 @@ fun PlayerScreen(
                 // Étape 10 (§5.5) : niveau de tampon, natif comme l'écart au direct
                 // ci-dessus - même cadence, pas besoin d'un tick dédié.
                 PlayerMetricsBridge.updateBufferedSeconds(activeController.currentBufferedSeconds())
+                // Étape R5c : position/durée du replay, même cadence - un rafraîchissement
+                // à la seconde suffit à une barre de progression (l'utilisateur fait glisser
+                // le curseur lui-même pour une position précise, voir PlayerOsd.ReplaySeekBar).
+                replayPositionMs = activeController.currentReplayPositionMs() ?: 0L
+                replayDurationMs = activeController.currentReplayDurationMs() ?: 0L
                 delay(OSD_CLOCK_TICK_MILLIS)
             }
         }
@@ -577,6 +711,11 @@ fun PlayerScreen(
         val availableQualities by currentController.availableQualities.collectAsState()
         val selectedQuality by currentController.selectedQuality.collectAsState()
 
+        // Étape R5b : voir la doc de PlayerOsd pour ce que playbackMode/replayProgram y
+        // déclenchent (bandeau + bouton "Retour au direct").
+        val playbackMode by currentController.playbackMode.collectAsState()
+        val replayProgram by currentController.replayProgram.collectAsState()
+
         // Fix (2026-08-04) : `currentController.exoPlayer` peut désormais changer
         // d'instance en cours de vie de cet écran (voir PlayerController.updateSettings,
         // rappelé quand Réglages → Lecteur change pendant la lecture) — la lire via ce
@@ -652,7 +791,11 @@ fun PlayerScreen(
                                 appendDigit = ::appendDigit,
                                 hasTypedNumber = { typedNumber.isNotEmpty() },
                                 validateTypedNumber = ::validateTypedNumber,
-                                togglePlayPause = { currentController.togglePlayPause() }
+                                togglePlayPause = { currentController.togglePlayPause() },
+                                isChannelMenuVisible = { channelMenuVisible },
+                                toggleChannelMenu = ::toggleChannelMenu,
+                                moveChannelMenuSelection = ::moveChannelMenuSelection,
+                                confirmChannelMenuSelection = ::confirmChannelMenuSelection
                             )
                         )
                     }
@@ -674,6 +817,13 @@ fun PlayerScreen(
                 availableQualities = availableQualities,
                 selectedQuality = selectedQuality,
                 onQualityChange = { option -> currentController.setQualityOverride(option) },
+                playbackMode = playbackMode,
+                replayProgram = replayProgram,
+                replayPositionMs = replayPositionMs,
+                replayDurationMs = replayDurationMs,
+                onSeekReplay = { positionMs -> currentController.seekToReplayPosition(positionMs) },
+                onExitReplay = if (appRepository != null) { { currentController.playChannel(currentChannel) } } else null,
+                onOpenReplay = onNavigateToReplay?.let { navigate -> { navigate(currentChannel.id) } },
                 onRequestNumericEntry = if (appRepository != null) { { openKeypad() } } else null,
                 onOpenSettings = if (appRepository != null) { { settingsOverlayVisible = true } } else null,
                 // Depuis 8d9, PlayerOsd gère lui-même deux zones (bandeau haut + barre de
@@ -689,6 +839,13 @@ fun PlayerScreen(
                 onValidate = ::validateTypedNumber,
                 onDismiss = ::cancelNumericEntry,
                 modifier = Modifier.align(Alignment.Center)
+            )
+
+            PlayerChannelMenuOverlay(
+                visible = channelMenuVisible,
+                channels = channelMenuChannels,
+                selectedIndex = channelMenuSelectedIndex,
+                modifier = Modifier.align(Alignment.CenterEnd)
             )
         }
 
@@ -804,10 +961,36 @@ private fun buildPlayerViewKeyListener(
     appendDigit: (Int) -> Unit,
     hasTypedNumber: () -> Boolean,
     validateTypedNumber: () -> Unit,
-    togglePlayPause: () -> Unit
+    togglePlayPause: () -> Unit,
+    isChannelMenuVisible: () -> Boolean,
+    toggleChannelMenu: () -> Unit,
+    moveChannelMenuSelection: (Int) -> Unit,
+    confirmChannelMenuSelection: () -> Unit
 ): android.view.View.OnKeyListener = android.view.View.OnKeyListener { _, keyCode, event ->
     if (event.action != KeyEvent.ACTION_DOWN) return@OnKeyListener false
     when {
+        // Menu pendant la lecture : premiere pression ouvre, deuxieme referme (priorite
+        // absolue, avant meme la saisie numerique - Menu n'a pas d'autre role sur cet
+        // ecran).
+        keyCode == KeyEvent.KEYCODE_MENU -> {
+            toggleChannelMenu()
+            true
+        }
+        // Tant que le menu est ouvert, HAUT/BAS/OK naviguent/valident DANS le menu au
+        // lieu de zapper/agir sur la lecture (meme priorite que la saisie numerique
+        // ci-dessous vis-a-vis de OK) - la video continue de jouer derriere.
+        isChannelMenuVisible() && keyCode == KeyEvent.KEYCODE_DPAD_UP -> {
+            moveChannelMenuSelection(-1)
+            true
+        }
+        isChannelMenuVisible() && keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> {
+            moveChannelMenuSelection(1)
+            true
+        }
+        isChannelMenuVisible() && (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) -> {
+            confirmChannelMenuSelection()
+            true
+        }
         keyCode in DIGIT_KEY_CODES -> {
             appendDigit(keyCode - KeyEvent.KEYCODE_0)
             true

@@ -1,6 +1,7 @@
 package com.dpflix.android.nav
 
 import android.net.Uri
+import com.dpflix.android.model.ReplayProgram
 
 /**
  * Routes des écrans de navigation (§7 étapes 6a et 7a).
@@ -27,6 +28,10 @@ import android.net.Uri
  * - [PlayerFullscreen] : réutilise [com.dpflix.android.player.PlayerScreen] (étape 5),
  *   déjà fonctionnel sur les deux points d'entrée (validé au D-pad dès 5a) — seul le
  *   branchement à la navigation est nouveau ici.
+ * - [PlayerFullscreenReplay] : pendant de [PlayerFullscreen] pour un programme en différé
+ *   (Étape R5b, replay/catch-up) — voir plus bas et sa propre doc.
+ * - [FilmsSeries] : section "Films et Séries" (07/08), prend la place laissée par
+ *   l'ancien bouton Guide TV sur l'accueil (voir plus bas).
  *
  * ## Écran Guide TV retiré (25 juillet 2026)
  * La destination `EpgGuide` (grille EPG plein écran, §4.6) a été retirée à la demande de
@@ -35,6 +40,12 @@ import android.net.Uri
  * cours affiché sur l'OSD du lecteur, réglages EPG dans Réglages) est indépendant de cet
  * écran et reste inchangé — voir `EpgRepository` pour le détail de ce qui l'utilise
  * encore.
+ *
+ * ## Écran Films et Séries (07/08)
+ * [FilmsSeries] remplace, sur l'accueil, l'emplacement laissé vacant par le bouton Guide
+ * TV retiré ci-dessus (voir `HomeScreen`/`HomeScreenTv`) : navigateur intégré verrouillé
+ * sur une seule plateforme externe, voir `com.dpflix.android.filmsseries.FilmsSeriesScreen`
+ * pour le détail du verrouillage (domaine, popups, retour).
  */
 sealed class DpFlixDestination(val route: String) {
 
@@ -45,6 +56,19 @@ sealed class DpFlixDestination(val route: String) {
     object Home : DpFlixDestination("home")
 
     object Settings : DpFlixDestination("settings")
+
+    object FilmsSeries : DpFlixDestination("films_series")
+
+    /**
+     * Écran "Programmes passés" (Étape R4, replay/catch-up) : même raisonnement que
+     * [PlayerFullscreen] ci-dessous pour le choix de ne transporter que l'ID de chaîne —
+     * l'écran va chercher la [com.dpflix.android.model.Channel] complète lui-même (voir
+     * `ReplayViewModel`). Contenu réel mobile depuis l'Étape R4 ; version TV encore un
+     * placeholder (voir `DpFlixTvNavHost`), contenu réel TV prévu à l'Étape R6.
+     */
+    object Replay : DpFlixDestination("replay/{$ARG_CHANNEL_ID}") {
+        fun createRoute(channelId: String): String = "replay/${Uri.encode(channelId)}"
+    }
 
     /**
      * Lecture plein écran d'une chaîne. L'argument transporté est l'ID de la chaîne, pas
@@ -69,6 +93,33 @@ sealed class DpFlixDestination(val route: String) {
         // automatiquement chaque segment capturé en argument de route, donc aucun décodage
         // manuel n'est nécessaire côté lecture (backStackEntry.arguments?.getString(...)).
         fun createRoute(channelId: String): String = "player/${Uri.encode(channelId)}"
+    }
+
+    /**
+     * Lecture plein écran d'un programme en différé (Étape R5b, replay/catch-up) — pendant
+     * de [PlayerFullscreen] pour un [com.dpflix.android.model.ReplayProgram] plutôt qu'un
+     * direct. Même choix que [PlayerFullscreen] pour l'ID de chaîne (résolu côté écran, pas
+     * transporté directement), mais le programme lui-même EST transporté en argument (au
+     * contraire de la chaîne) : contrairement à `Channel` (potentiellement 20000 lignes en
+     * base, autant aller le rechercher), `ReplayProgram` est trois champs déjà connus par
+     * l'appelant (`ReplayScreen`, qui vient de l'afficher dans sa liste) — un aller-retour
+     * base de données de plus pour re-obtenir EXACTEMENT ce qu'on a déjà sous la main
+     * n'aurait aucun sens ici.
+     *
+     * `programTitle` encodé séparément (`Uri.encode`) : peut contenir `/`, `&`, des espaces
+     * ou des caractères spéciaux (accents, ponctuation) selon ce que le panel Xtream renvoie
+     * — même raison que le fix du 4 août sur [PlayerFullscreen.createRoute] pour `channelId`.
+     */
+    object PlayerFullscreenReplay : DpFlixDestination(
+        "player_replay/{$ARG_CHANNEL_ID}/{$ARG_PROGRAM_START_MILLIS}/{$ARG_PROGRAM_END_MILLIS}/{$ARG_PROGRAM_TITLE}"
+    ) {
+        const val ARG_PROGRAM_START_MILLIS = "programStartMillis"
+        const val ARG_PROGRAM_END_MILLIS = "programEndMillis"
+        const val ARG_PROGRAM_TITLE = "programTitle"
+
+        fun createRoute(channelId: String, program: ReplayProgram): String =
+            "player_replay/${Uri.encode(channelId)}/${program.startMillis}/${program.endMillis}/" +
+                Uri.encode(program.title)
     }
 
     companion object {
