@@ -36,7 +36,8 @@ fun PlayerSettings.writeTo(prefs: MutablePreferences) {
 fun Preferences.toGeneralSettings(): GeneralSettings = GeneralSettings(
     defaultVideoQualityCap = this[SettingsKeys.DEFAULT_VIDEO_QUALITY_CAP],
     defaultPlaylistId = this[SettingsKeys.DEFAULT_PLAYLIST_ID],
-    filmsSeriesUrl = this[SettingsKeys.FILMS_SERIES_URL]
+    filmsSeriesUrl = this[SettingsKeys.FILMS_SERIES_URL],
+    filmsSeriesUrl2 = this[SettingsKeys.FILMS_SERIES_URL_2]
 )
 
 fun GeneralSettings.writeTo(prefs: MutablePreferences) {
@@ -54,5 +55,10 @@ fun GeneralSettings.writeTo(prefs: MutablePreferences) {
         prefs[SettingsKeys.FILMS_SERIES_URL] = filmsSeriesUrl
     } else {
         prefs.remove(SettingsKeys.FILMS_SERIES_URL)
+    }
+    if (filmsSeriesUrl2 != null) {
+        prefs[SettingsKeys.FILMS_SERIES_URL_2] = filmsSeriesUrl2
+    } else {
+        prefs.remove(SettingsKeys.FILMS_SERIES_URL_2)
     }
 }

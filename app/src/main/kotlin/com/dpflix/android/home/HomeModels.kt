@@ -35,11 +35,18 @@ import com.dpflix.android.model.ChannelCategory
  *   statique (voir [HomeScreen.MiniPlayer]) le temps que le plein écran prenne la main.
  *   Remis à `true` par [HomeViewModel.resumePreviewPlaybackIfNeeded] dès que l'accueil
  *   revient en composition (retour arrière depuis le plein écran).
+ * @property searchQuery Barre de recherche (§4.4, ajout du 8 août 2026) : texte tapé par
+ *   l'utilisateur, vide par défaut (aucune recherche en cours, [HomeScreen] affiche alors
+ *   les rangées groupées par catégorie comme avant). Non vide → [HomeScreen] affiche à la
+ *   place une grille plate de résultats, TOUTES catégories confondues (filtrage sur
+ *   [Channel.name], voir [HomeViewModel.onSearchQueryChanged]) — objectif explicite de
+ *   l'utilisateur : "peu importe la catégorie, pour des recherches plus rapides".
  */
 data class HomeUiState(
     val hasActivePlaylist: Boolean = false,
     val categories: List<ChannelCategory> = emptyList(),
     val previewChannel: Channel? = null,
     val previewProgramTitle: String? = null,
-    val previewPlaybackActive: Boolean = true
+    val previewPlaybackActive: Boolean = true,
+    val searchQuery: String = ""
 )

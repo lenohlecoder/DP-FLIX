@@ -7,6 +7,7 @@ import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.DataSource
@@ -34,6 +35,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
@@ -255,6 +257,33 @@ class PlayerController(
 
     /** Tâche du watchdog en cours (une seule à la fois — voir [scheduleWatchdog]/[cancelWatchdog]). */
     private var watchdogJob: Job? = null
+
+    /**
+     * Fix (2026-08-08) — surveillance active du tampon pendant la lecture, en complément
+     * du watchdog de blocage ci-dessus : [scheduleWatchdog] ne réagit qu'à un blocage DÉJÀ
+     * visible (`STATE_BUFFERING`) ; `DefaultLoadControl` lui-même n'a aucune notion de
+     * "réagir dès qu'il reste moins de X secondes" pendant une lecture qui continue. Un
+     * poll léger et peu punitif ([startBufferGuard]/[evaluateBufferGuard]) comble cet
+     * écart : sous [BUFFER_GUARD_LOW_WATERMARK_MS] de tampon restant, ralentit légèrement
+     * la vitesse de lecture (`PlaybackParameters`, quasi imperceptible) plutôt que de
+     * laisser le tampon s'épuiser jusqu'au vrai blocage — revient à 1x avec hystérésis une
+     * fois [BUFFER_GUARD_RECOVER_WATERMARK_MS] regagnés, pour ne pas osciller. Volontairement
+     * PAS un recul de lecture (rewind) : `setBackBuffer(0, false)` (voir [buildLoadControl])
+     * jette déjà le tampon joué par choix délibéré (§6, mouvement continu) ; rouvrir un
+     * back buffer juste pour permettre un recul coûterait de la mémoire pour un bénéfice
+     * plus faible qu'un simple ralentissement, à peine perceptible.
+     *
+     * Une instance par `ExoPlayer` construit (voir [buildExoPlayer]) — annulée et
+     * relancée à chaque reconstruction, jamais partagée entre deux instances successives
+     * (comme [trackSelector]).
+     */
+    private var bufferGuardJob: Job? = null
+
+    /** Vitesse actuellement ralentie par [evaluateBufferGuard] — évite de réappliquer
+     *  `playbackParameters` à chaque poll tant que rien n'a changé, et sert de mémoire
+     *  d'hystérésis (voir la doc de [bufferGuardJob]). Remis à `false` à chaque nouvelle
+     *  session ([startPlayback]) et à chaque nouvel `ExoPlayer` ([buildExoPlayer]). */
+    private var playbackSpeedLowered = false
 
     /** Dernière chaîne demandée via [playChannel], nécessaire au rechargement complet du watchdog. */
     private var currentChannel: Channel? = null
@@ -510,10 +539,25 @@ class PlayerController(
         // [PlayerSettings.bufferSafetyMarginSeconds].
         val maxBufferMs = (requestedDelayMs + LIVE_DELAY_HEADROOM_MS)
             .coerceAtLeast(MIN_MAX_BUFFER_MS)
-        val bufferForPlaybackMs = requestedDelayMs
-            .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_MS)
+        // Fix (2026-08-08) — démarrage souple : `bufferForPlaybackMs` (seuil de démarrage)
+        // n'a plus besoin d'attendre l'INTÉGRALITÉ de `requestedDelayMs` avant la première
+        // image — sur une marge de sécurité élevée (ex. 60s), ça imposait ~60s d'écran
+        // noir au tout premier lancement/zap, pour un bénéfice de robustesse que la
+        // surveillance active du tampon ci-dessous ([evaluateBufferGuard]) couvre
+        // désormais autrement (ralentissement léger si le tampon redescend bas, plutôt
+        // qu'un long délai systématique avant même la première image). `requestedDelayMs / 3`
+        // démarre plus tôt sur une marge élevée, sans jamais descendre sous
+        // [BUFFER_GUARD_LOW_WATERMARK_MS] (~15s) — même seuil que la surveillance active,
+        // fusionné volontairement en une seule valeur commune plutôt que deux réglages
+        // proches mais distincts.
+        val bufferForPlaybackMs = (requestedDelayMs / 3)
+            .coerceAtLeast(BUFFER_GUARD_LOW_WATERMARK_MS)
             .coerceAtMost(maxBufferMs)
-        val bufferForPlaybackAfterRebufferMs = bufferForPlaybackMs
+        // Fix (2026-08-08) : après un rebuffer, on redemande un peu plus que le seuil de
+        // démarrage initial (marge supplémentaire, `+5s`) plutôt que de repartir du même
+        // seuil bas qui vient justement de s'épuiser — sans quoi un flux qui alterne
+        // stall/reprise pourrait reboucler sur des rebuffers rapprochés.
+        val bufferForPlaybackAfterRebufferMs = (bufferForPlaybackMs + 5_000)
             .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
             .coerceAtMost(maxBufferMs)
         // Fix (2026-08-05) : minBufferMs etait calcule independamment (maxBufferMs / 2)
@@ -616,6 +660,11 @@ class PlayerController(
             .setLoadControl(buildLoadControl(settings, mode))
             .build()
         attachListeners(newPlayer)
+        // Fix (2026-08-08) : voir la doc de [bufferGuardJob] — une instance de la
+        // surveillance active du tampon par `ExoPlayer` construit, jamais partagée entre
+        // deux instances successives (même principe que [trackSelector] juste au-dessus).
+        playbackSpeedLowered = false
+        startBufferGuard(newPlayer)
         return newPlayer
     }
 
@@ -1127,6 +1176,12 @@ class PlayerController(
         exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
+        // Fix (2026-08-08) : voir la doc de [bufferGuardJob]/[playbackSpeedLowered] — une
+        // nouvelle session (zap, nouveau replay, reconnexion) repart toujours à vitesse
+        // normale, jamais héritée d'un ralentissement décidé pour l'ancien flux/la
+        // position précédente.
+        playbackSpeedLowered = false
+        exoPlayer.playbackParameters = PlaybackParameters.DEFAULT
     }
 
     /** Bascule play/pause (§7 étape 5a : "contrôle basique play/pause"). Sans effet en état [PlayerUiState.Error]. */
@@ -1344,6 +1399,68 @@ class PlayerController(
     }
 
     /**
+     * Fix (2026-08-08) — démarre le poll de [bufferGuardJob] sur [target] (voir sa doc
+     * pour le "pourquoi" : `DefaultLoadControl` ne réagit qu'au blocage complet, rien
+     * entre un tampon plein et zéro). Annule tout poll précédent avant d'en relancer un
+     * (un seul actif à la fois, comme [scheduleWatchdog]) — pertinent ici parce que
+     * [buildExoPlayer] peut être rappelée (reconfiguration, transition direct↔replay)
+     * alors qu'un poll précédent, sur l'ANCIEN `ExoPlayer` déjà libéré, tournerait encore
+     * dans le vide sans cette annulation.
+     */
+    private fun startBufferGuard(target: ExoPlayer) {
+        bufferGuardJob?.cancel()
+        bufferGuardJob = controllerScope.launch {
+            while (isActive) {
+                delay(BUFFER_GUARD_POLL_INTERVAL_MS)
+                evaluateBufferGuard(target)
+            }
+        }
+    }
+
+    /**
+     * Fix (2026-08-08) — un tick du poll de [bufferGuardJob], voir sa doc pour la vue
+     * d'ensemble. Volontairement peu punitif par rapport au watchdog de blocage
+     * ([scheduleWatchdog]) : n'agit QUE pendant une lecture déjà en cours
+     * (`STATE_READY` + `playWhenReady`), jamais pendant l'accumulation initiale avant la
+     * première image (où un tampon sous le seuil est normal, pas un signal d'alerte) ni
+     * pendant une pause volontaire de l'utilisateur.
+     *
+     * Mode direct ([PlayerSettings.directModeEnabled]) : entièrement court-circuité —
+     * cohérent avec "tout désactiver d'un coup" (voir la doc de ce réglage), restaure
+     * d'abord la vitesse normale si elle avait été abaissée avant que le mode direct ne
+     * soit activé en cours de lecture.
+     *
+     * Hystérésis (§ description utilisateur, "20-25s") : le ralentissement ne se lève
+     * qu'à [BUFFER_GUARD_RECOVER_WATERMARK_MS], nettement au-dessus du seuil de
+     * déclenchement [BUFFER_GUARD_LOW_WATERMARK_MS] — sans cet écart, un tampon qui
+     * oscille juste autour d'un seuil unique ferait osciller la vitesse de lecture en
+     * continu (0.9x/1x/0.9x/1x...), perceptible et inutilement agressif.
+     */
+    private fun evaluateBufferGuard(target: ExoPlayer) {
+        if (settings.directModeEnabled) {
+            if (playbackSpeedLowered) restorePlaybackSpeed(target)
+            return
+        }
+        if (target.playbackState != Player.STATE_READY || !target.playWhenReady) return
+
+        val bufferedMs = target.totalBufferedDuration
+        when {
+            bufferedMs < BUFFER_GUARD_LOW_WATERMARK_MS && !playbackSpeedLowered -> {
+                playbackSpeedLowered = true
+                target.playbackParameters = BUFFER_GUARD_SLOWDOWN_SPEED
+            }
+            bufferedMs >= BUFFER_GUARD_RECOVER_WATERMARK_MS && playbackSpeedLowered -> {
+                restorePlaybackSpeed(target)
+            }
+        }
+    }
+
+    private fun restorePlaybackSpeed(target: ExoPlayer) {
+        playbackSpeedLowered = false
+        target.playbackParameters = PlaybackParameters.DEFAULT
+    }
+
+    /**
      * Relance douce (§6, premier palier) : "garde le tampon", donc on ne reconstruit
      * rien — pas de nouveau `MediaItem`, pas de nouvel appel à `prepare()`. On se
      * contente de replacer la lecture sur la position par défaut du flux live (qui tient
@@ -1464,6 +1581,7 @@ class PlayerController(
     /** À appeler impérativement quand l'écran qui détient ce controller disparaît. */
     fun release() {
         cancelWatchdog()
+        bufferGuardJob?.cancel()
         controllerScope.cancel()
         exoPlayer.release()
     }
@@ -1480,6 +1598,33 @@ class PlayerController(
         private const val ASSUMED_PEAK_BITRATE_KBPS = 80_000L
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_MS = 2_500
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5_000
+
+        // Fix (2026-08-08) — voir buildLoadControl (démarrage souple) et
+        // evaluateBufferGuard (surveillance active) : seuil commun aux deux mécanismes,
+        // fusionné volontairement en une seule valeur plutôt que deux réglages proches
+        // mais distincts (description utilisateur : "ça rejoint exactement 15s"). `Int`
+        // (pas `Long`) : comparé/combiné directement avec les millisecondes `Int` de
+        // buildLoadControl (comme MIN_MAX_BUFFER_MS/LIVE_DELAY_HEADROOM_MS) ; comparé à
+        // `totalBufferedDuration` (Long) dans evaluateBufferGuard, ce que Kotlin autorise
+        // nativement pour les opérateurs de comparaison entre types numériques.
+        private const val BUFFER_GUARD_LOW_WATERMARK_MS = 15_000
+
+        // Fix (2026-08-08) — voir evaluateBufferGuard : seuil de reprise à 1x, nettement
+        // au-dessus du seuil de déclenchement pour l'hystérésis (description utilisateur :
+        // "20-25s"). Valeur médiane de cette fourchette.
+        private const val BUFFER_GUARD_RECOVER_WATERMARK_MS = 22_000
+
+        // Fix (2026-08-08) — voir startBufferGuard : "un petit poll, beaucoup moins
+        // punitif" que le watchdog de blocage (qui, lui, attend 15s/20s avant de réagir à
+        // un blocage déjà là) — 2s reste largement assez réactif pour un ralentissement
+        // de vitesse, pas assez fréquent pour peser sur le thread principal.
+        private const val BUFFER_GUARD_POLL_INTERVAL_MS = 2_000L
+
+        // Fix (2026-08-08) — voir evaluateBufferGuard : ralentissement "quasi
+        // imperceptible à l'oreille/l'œil" (description utilisateur, fourchette
+        // 0.9x-0.95x) plutôt qu'un recul de lecture, incompatible avec setBackBuffer(0,
+        // false) — voir la doc de [bufferGuardJob].
+        private val BUFFER_GUARD_SLOWDOWN_SPEED = PlaybackParameters(0.93f)
 
         // Fix (2026-08-05) — voir buildLoadControl : marge ajoutee au-dela du retard
         // demande pour garantir que maxBufferMs peut TOUJOURS le contenir entierement,

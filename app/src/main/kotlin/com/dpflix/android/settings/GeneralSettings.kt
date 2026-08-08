@@ -24,10 +24,23 @@ data class GeneralSettings(
      * distinct d'une chaîne vide qu'on ne veut pas non plus traiter comme une valeur
      * réelle — voir [toGeneralSettings]/[writeTo] pour le repli sur [DEFAULT_FILMS_SERIES_URL].
      */
-    val filmsSeriesUrl: String? = null
+    val filmsSeriesUrl: String? = null,
+
+    /**
+     * Second lien "Stream 2" pour la section "Films et Séries" (French-Stream, 08/08) —
+     * même principe que [filmsSeriesUrl] (verrouillage de domaine identique, voir
+     * `com.dpflix.android.filmsseries.FilmsSeriesScreen`), une plateforme totalement
+     * indépendante de la première. `null`/vide = pas encore personnalisé, repli sur
+     * [DEFAULT_FILMS_SERIES_URL_2].
+     */
+    val filmsSeriesUrl2: String? = null
 ) {
     companion object {
-        /** Valeur par défaut codée en dur, restaurée si le champ Réglages est vidé. */
+        /** Valeur par défaut codée en dur pour "Stream 1", restaurée si le champ Réglages est vidé. */
         const val DEFAULT_FILMS_SERIES_URL = "https://purstream.store/"
+
+        /** Valeur par défaut codée en dur pour "Stream 2" (French-Stream), même rôle que
+         *  [DEFAULT_FILMS_SERIES_URL] pour "Stream 1". */
+        const val DEFAULT_FILMS_SERIES_URL_2 = "https://french-stream.one/"
     }
 }

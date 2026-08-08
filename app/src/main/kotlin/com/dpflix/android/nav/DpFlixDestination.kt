@@ -57,7 +57,21 @@ sealed class DpFlixDestination(val route: String) {
 
     object Settings : DpFlixDestination("settings")
 
-    object FilmsSeries : DpFlixDestination("films_series")
+    /**
+     * Section "Films et Séries" (07/08) — deux plateformes indépendantes ("Stream 1"/
+     * "Stream 2", French-Stream, 08/08) sélectionnées via [FilmsSeriesStreamPickerDialog]
+     * à l'accueil. [ARG_STREAM_INDEX] transporté en paramètre de requête (`?streamIndex=`)
+     * plutôt qu'en segment de chemin (`/`) : contrairement à [ARG_CHANNEL_ID] ou
+     * [PlayerFullscreenReplay.ARG_PROGRAM_TITLE], c'est un argument OPTIONNEL — un lien de
+     * navigation existant vers `"films_series"` (nav profonde éventuelle, test manuel)
+     * reste valide sans le préciser, `defaultValue = 1` s'applique alors (voir
+     * `DpFlixNavHost`/`DpFlixTvNavHost`).
+     */
+    object FilmsSeries : DpFlixDestination("films_series?$ARG_STREAM_INDEX={$ARG_STREAM_INDEX}") {
+        const val ARG_STREAM_INDEX = "streamIndex"
+
+        fun createRoute(streamIndex: Int = 1): String = "films_series?$ARG_STREAM_INDEX=$streamIndex"
+    }
 
     /**
      * Écran "Programmes passés" (Étape R4, replay/catch-up) : même raisonnement que

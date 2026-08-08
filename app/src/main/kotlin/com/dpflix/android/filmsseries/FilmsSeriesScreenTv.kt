@@ -21,11 +21,13 @@ import com.dpflix.android.repository.AppRepository
 fun FilmsSeriesScreenTv(
     appRepository: AppRepository,
     onNavigateHome: () -> Unit,
+    streamIndex: Int = 1,
     modifier: Modifier = Modifier
 ) {
     FilmsSeriesScreen(
         appRepository = appRepository,
         onNavigateHome = onNavigateHome,
+        streamIndex = streamIndex,
         modifier = modifier
     )
 }
