@@ -10,6 +10,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,14 +59,16 @@ import kotlinx.coroutines.delay
  *   que ce soit. Pas de barre d'adresse, de navigation précédente/suivante ni de menu
  *   long-press (désactivé explicitement) : aucun chrome de navigateur visible.
  *
- * ## Retour (§ demande utilisateur)
+ * ## Retour (§ demande utilisateur, révisé 08/08)
  * [BackHandler] intercepte le bouton retour (télécommande TV ou geste/bouton tactile
  * mobile — même API des deux côtés, `androidx.activity.compose.BackHandler`, pas de
- * distinction nécessaire) : un premier appui affiche un `Toast` d'avertissement et ouvre
- * une fenêtre de 2 secondes ([DOUBLE_BACK_WINDOW_MS]), un second appui dans cette fenêtre
- * déclenche [onNavigateHome]. Ne navigue jamais dans l'historique de la `WebView`
- * elle-même ([WebView.canGoBack]) : un appui retour ne recule pas d'une page du site,
- * conformément à la demande ("le seul contrôle propre à l'app est le bouton retour").
+ * distinction nécessaire). Priorité à la navigation dans l'historique du site
+ * ([WebView.canGoBack]/[WebView.goBack]) : tant que la WebView peut reculer d'une page,
+ * un appui retour la fait simplement reculer, sans toucher au compteur de double-appui.
+ * Ce n'est que lorsqu'il n'y a plus de page précédente sur le site qu'un premier appui
+ * affiche un `Toast` d'avertissement et ouvre une fenêtre de 2 secondes
+ * ([DOUBLE_BACK_WINDOW_MS]), un second appui dans cette fenêtre déclenche
+ * [onNavigateHome].
  */
 @Composable
 fun FilmsSeriesScreen(
@@ -84,6 +87,10 @@ fun FilmsSeriesScreen(
     val context = LocalContext.current
     var awaitingSecondBackPress by remember { mutableStateOf(false) }
     val onNavigateHomeState = rememberUpdatedState(onNavigateHome)
+    // Référence à la WebView active, posée par `LockedWebView` une fois créée, pour que
+    // le BackHandler ci-dessous puisse lui demander de reculer dans l'historique du site
+    // avant d'envisager de sortir vers l'accueil.
+    val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
     LaunchedEffect(awaitingSecondBackPress) {
         if (awaitingSecondBackPress) {
@@ -93,7 +100,10 @@ fun FilmsSeriesScreen(
     }
 
     BackHandler {
-        if (awaitingSecondBackPress) {
+        val webView = webViewRef.value
+        if (webView != null && webView.canGoBack()) {
+            webView.goBack()
+        } else if (awaitingSecondBackPress) {
             awaitingSecondBackPress = false
             onNavigateHomeState.value()
         } else {
@@ -102,7 +112,7 @@ fun FilmsSeriesScreen(
         }
     }
 
-    Box(modifier = modifier.fillMaxSize()) {
+    Box(modifier = modifier.fillMaxSize().statusBarsPadding()) {
         if (generalSettings == null) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
         } else {
@@ -111,7 +121,11 @@ fun FilmsSeriesScreen(
             // toute nouvelle WebView plutôt que de tenter un `loadUrl` sur l'existante —
             // plus simple et plus sûr que de garder une référence mutable à la WebView.
             key(url) {
-                LockedWebView(url = url, modifier = Modifier.fillMaxSize())
+                LockedWebView(
+                    url = url,
+                    onWebViewCreated = { webViewRef.value = it },
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
     }
@@ -121,7 +135,11 @@ private const val DOUBLE_BACK_WINDOW_MS = 2000L
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun LockedWebView(url: String, modifier: Modifier = Modifier) {
+private fun LockedWebView(
+    url: String,
+    onWebViewCreated: (WebView) -> Unit,
+    modifier: Modifier = Modifier
+) {
     val allowedHost = remember(url) { Uri.parse(url).host }
 
     AndroidView(
@@ -159,7 +177,7 @@ private fun LockedWebView(url: String, modifier: Modifier = Modifier) {
                 }
 
                 loadUrl(url)
-            }
+            }.also(onWebViewCreated)
         },
         onRelease = { webView -> webView.destroy() }
     )
