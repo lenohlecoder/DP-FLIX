@@ -32,9 +32,12 @@ import kotlinx.coroutines.delay
 
 /**
  * Section "Films et Séries" (remplace l'ancien Guide TV, retiré le 25 juillet 2026 — voir
- * `DpFlixDestination`) : navigateur intégré verrouillé sur une seule plateforme externe
- * ([GeneralSettings.filmsSeriesUrl], réglable depuis Réglages → Général, repli sur
- * [GeneralSettings.DEFAULT_FILMS_SERIES_URL]).
+ * `DpFlixDestination`) : navigateur intégré verrouillé sur une plateforme externe. Deux
+ * plateformes indépendantes possibles ("Stream 1"/"Stream 2", French-Stream, 08/08) —
+ * [streamIndex] sélectionne laquelle : 1 → [GeneralSettings.filmsSeriesUrl]/
+ * [GeneralSettings.DEFAULT_FILMS_SERIES_URL], 2 → [GeneralSettings.filmsSeriesUrl2]/
+ * [GeneralSettings.DEFAULT_FILMS_SERIES_URL_2]. Choisi à l'accueil via
+ * `FilmsSeriesStreamPickerDialog`, transporté par `DpFlixDestination.FilmsSeries`.
  *
  * Réutilisé tel quel côté mobile ET TV — contrairement au reste de l'app (mobile
  * `material3`/`androidx.compose.foundation`, TV `androidx.tv.material3`/D-pad), cet écran
@@ -68,10 +71,15 @@ import kotlinx.coroutines.delay
 fun FilmsSeriesScreen(
     appRepository: AppRepository,
     onNavigateHome: () -> Unit,
+    streamIndex: Int = 1,
     modifier: Modifier = Modifier
 ) {
     val generalSettings by appRepository.settings.generalSettings.collectAsState(initial = null)
-    val url = generalSettings?.filmsSeriesUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
+    val url = if (streamIndex == 2) {
+        generalSettings?.filmsSeriesUrl2 ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL_2
+    } else {
+        generalSettings?.filmsSeriesUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
+    }
 
     val context = LocalContext.current
     var awaitingSecondBackPress by remember { mutableStateOf(false) }

@@ -17,14 +17,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.dpflix.android.filmsseries.FilmsSeriesStreamPickerDialog
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ChannelCategory
 import com.dpflix.android.player.PlayerScreen
@@ -50,6 +58,7 @@ import com.dpflix.android.ui.ChannelLogo
 import com.dpflix.android.ui.DpFlixBackground
 import com.dpflix.android.ui.theme.DpFlixColors
 import com.dpflix.android.ui.theme.DpFlixTheme
+import java.text.Normalizer
 
 /**
  * Écran d'accueil (§4.4 du cahier des charges, étape 6c) : remplace le placeholder de
@@ -80,7 +89,7 @@ import com.dpflix.android.ui.theme.DpFlixTheme
 fun HomeScreen(
     appRepository: AppRepository,
     onNavigateToSettings: () -> Unit,
-    onNavigateToFilmsSeries: () -> Unit,
+    onNavigateToFilmsSeries: (streamIndex: Int) -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -88,6 +97,11 @@ fun HomeScreen(
         factory = remember { HomeViewModelFactory(appRepository) }
     )
     val uiState by viewModel.uiState.collectAsState()
+
+    // Sélecteur "Stream 1"/"Stream 2" (French-Stream, 08/08) : état purement local à cet
+    // écran, affiché au clic sur le bouton Films et Séries avant de naviguer — voir
+    // FilmsSeriesStreamPickerDialog.
+    var showFilmsSeriesPicker by remember { mutableStateOf(false) }
 
     // Fix (25 juillet 2026, vague 1 "stop crash", diagnostic point 2) : voir la doc de
     // HomeUiState.previewPlaybackActive. Remet le mini-lecteur en état "actif" à chaque
@@ -143,7 +157,7 @@ fun HomeScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Row {
-                        IconButton(onClick = onNavigateToFilmsSeries) {
+                        IconButton(onClick = { showFilmsSeriesPicker = true }) {
                             Icon(
                                 imageVector = Icons.Filled.Movie,
                                 contentDescription = "Films et Séries",
@@ -174,23 +188,65 @@ fun HomeScreen(
                     )
                 }
 
+                SearchBar(
+                    query = uiState.searchQuery,
+                    onQueryChange = viewModel::onSearchQueryChanged
+                )
+
+                val onChannelClick: (Channel) -> Unit = { channel ->
+                    val goFullscreen = viewModel.onChannelClicked(channel)
+                    if (goFullscreen) {
+                        viewModel.suspendPreviewPlayback()
+                        pendingFullscreenChannelId = channel.id
+                    }
+                }
+
+                // Barre de recherche (§4.4, ajout du 8 août 2026) : requête normalisée une
+                // seule fois (accents/casse ignorés, voir normalizeForSearch) et réévaluée
+                // seulement quand la requête ou les chaînes changent — pas à chaque
+                // recomposition déclenchée par autre chose (ex. ouverture du mini-lecteur).
+                val searchResults = remember(uiState.categories, uiState.searchQuery) {
+                    val query = uiState.searchQuery
+                    if (query.isBlank()) {
+                        emptyList()
+                    } else {
+                        val normalizedQuery = normalizeForSearch(query)
+                        uiState.categories
+                            .flatMap { it.channels }
+                            .filter { normalizeForSearch(it.name).contains(normalizedQuery) }
+                    }
+                }
+
                 when {
                     !uiState.hasActivePlaylist -> EmptyState(text = "Aucune playlist active.")
                     uiState.categories.all { it.channels.isEmpty() } -> EmptyState(
                         text = "Aucune chaîne dans cette playlist pour le moment."
                     )
+                    uiState.searchQuery.isNotBlank() -> if (searchResults.isEmpty()) {
+                        EmptyState(text = "Aucune chaîne ne correspond à « ${uiState.searchQuery} ».")
+                    } else {
+                        SearchResultsGrid(
+                            channels = searchResults,
+                            selectedChannelId = preview?.id,
+                            onChannelClick = onChannelClick
+                        )
+                    }
                     else -> ChannelCategoryList(
                         categories = uiState.categories,
                         selectedChannelId = preview?.id,
-                        onChannelClick = { channel ->
-                            val goFullscreen = viewModel.onChannelClicked(channel)
-                            if (goFullscreen) {
-                                viewModel.suspendPreviewPlayback()
-                                pendingFullscreenChannelId = channel.id
-                            }
-                        }
+                        onChannelClick = onChannelClick
                     )
                 }
+            }
+
+            if (showFilmsSeriesPicker) {
+                FilmsSeriesStreamPickerDialog(
+                    onSelectStream = { streamIndex ->
+                        showFilmsSeriesPicker = false
+                        onNavigateToFilmsSeries(streamIndex)
+                    },
+                    onDismiss = { showFilmsSeriesPicker = false }
+                )
             }
         }
     }
@@ -263,6 +319,105 @@ private fun MiniPlayer(
     }
 }
 
+/**
+ * Barre de recherche (§4.4, ajout du 8 août 2026) : demandée par l'utilisateur en haut de
+ * l'accueil ("une barre de recherche en haut", capture à l'appui — l'emplacement exact du
+ * repère qu'il avait posé importe peu, celle-ci prend toute la largeur juste sous le titre,
+ * seul endroit disponible entre "DP-Flix"/les deux icônes et le mini-lecteur). Filtre
+ * TOUTES les chaînes de la playlist active "peu importe la catégorie" (voir
+ * [normalizeForSearch]/l'usage dans [HomeScreen]) — pas de recherche par catégorie
+ * elle-même, uniquement par [Channel.name], cohérent avec l'objectif exprimé : "pour des
+ * recherches plus rapides".
+ *
+ * Toujours visible (pas de bouton pour la faire apparaître/disparaître) : la vider
+ * (icône ✕, n'apparaît que si non vide) suffit à revenir à l'affichage groupé par
+ * catégorie habituel.
+ */
+@Composable
+private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = query,
+        onValueChange = onQueryChange,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .padding(bottom = 8.dp),
+        placeholder = { Text("Rechercher une chaîne...") },
+        singleLine = true,
+        leadingIcon = {
+            Icon(
+                imageVector = Icons.Filled.Search,
+                contentDescription = null,
+                tint = DpFlixColors.OnBackgroundMuted
+            )
+        },
+        trailingIcon = {
+            if (query.isNotEmpty()) {
+                IconButton(onClick = { onQueryChange("") }) {
+                    Icon(
+                        imageVector = Icons.Filled.Clear,
+                        contentDescription = "Effacer la recherche",
+                        tint = DpFlixColors.OnBackgroundMuted
+                    )
+                }
+            }
+        },
+        shape = RoundedCornerShape(24.dp),
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedTextColor = DpFlixColors.OnBackground,
+            unfocusedTextColor = DpFlixColors.OnBackground,
+            focusedContainerColor = DpFlixColors.Surface,
+            unfocusedContainerColor = DpFlixColors.Surface,
+            focusedBorderColor = DpFlixColors.Red,
+            unfocusedBorderColor = Color.Transparent,
+            cursorColor = DpFlixColors.Red
+        )
+    )
+}
+
+/**
+ * Accents/casse ignorés (§4.4, ajout du 8 août 2026) : "Canal" doit trouver "CANAL+ Action"
+ * ou "Chaîne Météo" doit se retrouver en tapant "meteo" sans accent — comportement attendu
+ * d'une recherche rapide sur mobile, où le clavier ne propose pas toujours les accents
+ * facilement. `Normalizer` décompose les caractères accentués (é → e + accent combinant)
+ * puis la regex retire les marques diacritiques ainsi isolées.
+ */
+private fun normalizeForSearch(text: String): String {
+    val decomposed = Normalizer.normalize(text, Normalizer.Form.NFD)
+    return DIACRITICS_REGEX.replace(decomposed, "").lowercase()
+}
+
+private val DIACRITICS_REGEX = Regex("\\p{Mn}+")
+
+/**
+ * Résultats de recherche (§4.4, ajout du 8 août 2026) : grille plate, TOUTES catégories
+ * confondues — à la différence de [ChannelCategoryList], qui groupe par catégorie.
+ * Réutilise [ChannelCard] tel quel (même apparence qu'une chaîne dans une rangée).
+ */
+@Composable
+private fun SearchResultsGrid(
+    channels: List<Channel>,
+    selectedChannelId: String?,
+    onChannelClick: (Channel) -> Unit
+) {
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(3),
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(channels, key = { it.id }) { channel ->
+            ChannelCard(
+                channel = channel,
+                isSelected = channel.id == selectedChannelId,
+                onClick = { onChannelClick(channel) },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
 @Composable
 private fun ChannelCategoryList(
     categories: List<ChannelCategory>,
@@ -317,10 +472,14 @@ private fun CategoryRow(
 }
 
 @Composable
-private fun ChannelCard(channel: Channel, isSelected: Boolean, onClick: () -> Unit) {
+private fun ChannelCard(
+    channel: Channel,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier.width(120.dp)
+) {
     Column(
-        modifier = Modifier
-            .width(120.dp)
+        modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(if (isSelected) DpFlixColors.Red.copy(alpha = 0.25f) else DpFlixColors.Surface)
             .clickable(onClick = onClick)

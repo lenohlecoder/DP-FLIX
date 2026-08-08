@@ -3,6 +3,7 @@ package com.dpflix.android.settings
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -42,9 +44,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -130,6 +138,7 @@ fun SettingsScreen(
                         onResumeToggled = viewModel::setResumeLastChannelOnStartForActivePlaylist,
                         onDefaultPlaylistSelected = viewModel::setDefaultPlaylist,
                         onFilmsSeriesUrlChanged = viewModel::setFilmsSeriesUrl,
+                        onFilmsSeriesUrl2Changed = viewModel::setFilmsSeriesUrl2,
                         onRequestReset = viewModel::requestReset
                     )
                     SettingsSection.Player -> PlayerSectionBody(
@@ -230,6 +239,7 @@ private fun GeneralSectionBody(
     onResumeToggled: (Boolean) -> Unit,
     onDefaultPlaylistSelected: (String?) -> Unit,
     onFilmsSeriesUrlChanged: (String?) -> Unit,
+    onFilmsSeriesUrl2Changed: (String?) -> Unit,
     onRequestReset: () -> Unit
 ) {
     Column(
@@ -256,8 +266,17 @@ private fun GeneralSectionBody(
         )
 
         FilmsSeriesUrlSetting(
+            title = "Lien Films et Séries — Stream 1",
             currentUrl = uiState.generalSettings.filmsSeriesUrl,
+            defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL,
             onSave = onFilmsSeriesUrlChanged
+        )
+
+        FilmsSeriesUrlSetting(
+            title = "Lien Films et Séries — Stream 2",
+            currentUrl = uiState.generalSettings.filmsSeriesUrl2,
+            defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL_2,
+            onSave = onFilmsSeriesUrl2Changed
         )
 
         ResetSetting(onRequestReset = onRequestReset)
@@ -348,19 +367,24 @@ private fun ResetSetting(onRequestReset: () -> Unit) {
 }
 
 /**
- * URL de la section "Films et Séries" (§5.6, remplace l'ancien Guide TV) : `OutlinedTextField`
- * local + bouton "Enregistrer" plutôt qu'écriture DataStore à chaque frappe (même raison que
- * [EditPlaylistDialog] : éviter les problèmes de curseur d'un champ ré-observé en continu).
- * Champ vidé + "Enregistrer" restaure la valeur par défaut codée en dur (voir
- * [SettingsViewModel.setFilmsSeriesUrl], qui traite une chaîne vide comme `null`).
+ * URL d'une des plateformes de la section "Films et Séries" (§5.6, remplace l'ancien
+ * Guide TV) : `OutlinedTextField` local + bouton "Enregistrer" plutôt qu'écriture
+ * DataStore à chaque frappe (même raison que [EditPlaylistDialog] : éviter les problèmes
+ * de curseur d'un champ ré-observé en continu). Champ vidé + "Enregistrer" restaure
+ * [defaultUrl] (voir [SettingsViewModel.setFilmsSeriesUrl]/`setFilmsSeriesUrl2`, qui
+ * traitent une chaîne vide comme `null`).
+ *
+ * Réutilisé pour les deux liens ("Stream 1"/"Stream 2", French-Stream 08/08, voir
+ * `FilmsSeriesStreamPickerDialog` côté accueil) : [title] et [defaultUrl] portent la
+ * seule différence entre les deux appels.
  */
 @Composable
-private fun FilmsSeriesUrlSetting(currentUrl: String?, onSave: (String?) -> Unit) {
+private fun FilmsSeriesUrlSetting(title: String, currentUrl: String?, defaultUrl: String, onSave: (String?) -> Unit) {
     var draft by remember(currentUrl) { mutableStateOf(currentUrl.orEmpty()) }
-    val effectiveUrl = currentUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
+    val effectiveUrl = currentUrl ?: defaultUrl
 
     SettingBlock(
-        title = "Lien Films et Séries",
+        title = title,
         subtitle = "Plateforme ouverte par la section \"Films et Séries\" de l'accueil. Vide = valeur par défaut ($effectiveUrl)."
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -794,8 +818,42 @@ private fun ChannelNumberingSectionBody(
     }
 }
 
+/**
+ * Rangée de numérotation (Modification 08/08) : le numéro affiché ([Text], état "repos")
+ * devient un [OutlinedTextField] numérique au tap ("case modifiable" demandée) — ouvre le
+ * clavier système, permet d'effacer et de retaper un nouveau numéro. Validé (et le champ
+ * refermé) à la perte de focus, quelle qu'en soit la cause : appui sur "OK"/Terminé au
+ * clavier ([KeyboardActions.onDone], qui appelle explicitement [FocusManager.clearFocus])
+ * ou simple tap ailleurs à l'écran ([Modifier.onFocusChanged] détecte les deux de la même
+ * façon, un seul chemin de validation). Un champ vidé puis laissé ainsi (perte de focus
+ * sans nouveau chiffre retapé) ne modifie rien : [commitEditedNumber] ignore silencieusement
+ * une saisie non numérique plutôt que de retomber sur 0, qui serait une valeur surprenante
+ * et non demandée par l'utilisateur.
+ *
+ * État d'édition ([isEditingNumber]/[editedNumberText]) local à CETTE rangée
+ * (`remember(channel.id)`, pas partagé) : éditer une chaîne ne doit pas affecter
+ * l'affichage des autres lignes de la liste.
+ */
 @Composable
 private fun ChannelNumberingRow(channel: Channel, onSetCustomNumber: (Int?) -> Unit) {
+    var isEditingNumber by remember(channel.id) { mutableStateOf(false) }
+    var editedNumberText by remember(channel.id) { mutableStateOf("") }
+    val numberFieldFocusRequester = remember(channel.id) { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    fun commitEditedNumber() {
+        editedNumberText.trim().toIntOrNull()?.let { onSetCustomNumber(it) }
+        isEditingNumber = false
+    }
+
+    LaunchedEffect(isEditingNumber) {
+        if (isEditingNumber) {
+            numberFieldFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -820,14 +878,30 @@ private fun ChannelNumberingRow(channel: Channel, onSetCustomNumber: (Int?) -> U
                     Text("Réinitialiser", style = MaterialTheme.typography.bodySmall)
                 }
             }
-            StepperChip(label = "−", onClick = { onSetCustomNumber((channel.displayNumber ?: 0) - 1) })
-            Text(
-                text = (channel.displayNumber ?: 0).toString(),
-                color = DpFlixColors.OnBackground,
-                style = MaterialTheme.typography.bodyLarge,
-                fontWeight = FontWeight.Bold
-            )
-            StepperChip(label = "+", onClick = { onSetCustomNumber((channel.displayNumber ?: 0) + 1) })
+            if (isEditingNumber) {
+                OutlinedTextField(
+                    value = editedNumberText,
+                    onValueChange = { editedNumberText = it.filter(Char::isDigit) },
+                    modifier = Modifier
+                        .width(72.dp)
+                        .focusRequester(numberFieldFocusRequester)
+                        .onFocusChanged { state -> if (!state.isFocused) commitEditedNumber() },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
+                )
+            } else {
+                Text(
+                    text = (channel.displayNumber ?: 0).toString(),
+                    color = DpFlixColors.OnBackground,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clickable {
+                        editedNumberText = (channel.displayNumber ?: 0).toString()
+                        isEditingNumber = true
+                    }
+                )
+            }
         }
     }
 }

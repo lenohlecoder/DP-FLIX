@@ -2,6 +2,7 @@ package com.dpflix.android.settings
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -35,7 +37,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -148,6 +154,7 @@ fun SettingsScreenTv(
                         onResumeToggled = viewModel::setResumeLastChannelOnStartForActivePlaylist,
                         onDefaultPlaylistSelected = viewModel::setDefaultPlaylist,
                         onFilmsSeriesUrlChanged = viewModel::setFilmsSeriesUrl,
+                        onFilmsSeriesUrl2Changed = viewModel::setFilmsSeriesUrl2,
                         onRequestReset = viewModel::requestReset
                     )
                     SettingsSection.Player -> PlayerSectionBodyTv(
@@ -265,6 +272,7 @@ private fun GeneralSectionBodyTv(
     onResumeToggled: (Boolean) -> Unit,
     onDefaultPlaylistSelected: (String?) -> Unit,
     onFilmsSeriesUrlChanged: (String?) -> Unit,
+    onFilmsSeriesUrl2Changed: (String?) -> Unit,
     onRequestReset: () -> Unit
 ) {
     Column(
@@ -292,8 +300,17 @@ private fun GeneralSectionBodyTv(
         )
 
         FilmsSeriesUrlSettingTv(
+            title = "Lien Films et Séries — Stream 1",
             currentUrl = uiState.generalSettings.filmsSeriesUrl,
+            defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL,
             onSave = onFilmsSeriesUrlChanged
+        )
+
+        FilmsSeriesUrlSettingTv(
+            title = "Lien Films et Séries — Stream 2",
+            currentUrl = uiState.generalSettings.filmsSeriesUrl2,
+            defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL_2,
+            onSave = onFilmsSeriesUrl2Changed
         )
 
         ResetSettingTv(onRequestReset = onRequestReset)
@@ -375,14 +392,16 @@ private fun ResetSettingTv(onRequestReset: () -> Unit) {
 
 /** Équivalent TV de `FilmsSeriesUrlSetting` (mobile, `SettingsScreen.kt`) — même logique
  *  brouillon local + "Enregistrer", `OutlinedTextField` (`material3`, pas `tv.material3`,
- *  qui n'a pas d'équivalent champ de texte — cohérent avec le reste de cet écran). */
+ *  qui n'a pas d'équivalent champ de texte — cohérent avec le reste de cet écran).
+ *  Réutilisé pour les deux liens ("Stream 1"/"Stream 2", French-Stream 08/08) — voir la
+ *  doc de son équivalent mobile pour le détail de [title]/[defaultUrl]. */
 @Composable
-private fun FilmsSeriesUrlSettingTv(currentUrl: String?, onSave: (String?) -> Unit) {
+private fun FilmsSeriesUrlSettingTv(title: String, currentUrl: String?, defaultUrl: String, onSave: (String?) -> Unit) {
     var draft by remember(currentUrl) { mutableStateOf(currentUrl.orEmpty()) }
-    val effectiveUrl = currentUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
+    val effectiveUrl = currentUrl ?: defaultUrl
 
     SettingBlockTv(
-        title = "Lien Films et Séries",
+        title = title,
         subtitle = "Plateforme ouverte par la section \"Films et Séries\" de l'accueil. Vide = valeur par défaut ($effectiveUrl)."
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -872,8 +891,39 @@ private fun ChannelNumberingSectionBodyTv(
     }
 }
 
+/**
+ * Équivalent TV de [ChannelNumberingRow] (mobile, `SettingsScreen.kt` — voir sa doc pour
+ * le détail du mécanisme de validation/perte de focus, identique ici). Différence TV
+ * (Modification 08/08) : le focus D-pad arrive sur le numéro affiché comme sur n'importe
+ * quel élément focusable de cet écran ; l'appui OK/Entrée (déjà traité par
+ * [Modifier.clickable] en environnement TV Compose, aucun `onKeyEvent` dédié requis, cf.
+ * les autres lignes cliquables de cet écran) déclenche la même transformation en
+ * [OutlinedTextField], qui ouvre alors le clavier système en incrustation.
+ */
 @Composable
 private fun ChannelNumberingRowTv(channel: Channel, onSetCustomNumber: (Int?) -> Unit) {
+    var isEditingNumber by remember(channel.id) { mutableStateOf(false) }
+    var editedNumberText by remember(channel.id) { mutableStateOf("") }
+    val numberFieldFocusRequester = remember(channel.id) { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+
+    fun commitEditedNumber() {
+        editedNumberText.trim().toIntOrNull()?.let { onSetCustomNumber(it) }
+        isEditingNumber = false
+    }
+
+    // Même mécanique que côté mobile (voir ChannelNumberingRow, SettingsScreen.kt) :
+    // requestFocus() + show() explicite du clavier système, qui s'affiche en incrustation
+    // sur Android TV pour un champ focusé exactement comme les autres OutlinedTextField déjà
+    // présents sur cet écran (URL de playlist, etc.) — aucun mécanisme nouveau introduit ici.
+    LaunchedEffect(isEditingNumber) {
+        if (isEditingNumber) {
+            numberFieldFocusRequester.requestFocus()
+            keyboardController?.show()
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -898,9 +948,29 @@ private fun ChannelNumberingRowTv(channel: Channel, onSetCustomNumber: (Int?) ->
                     M3Text("Réinitialiser")
                 }
             }
-            Button(onClick = { onSetCustomNumber((channel.displayNumber ?: 0) - 1) }) { Text("−") }
-            Text(text = (channel.displayNumber ?: 0).toString(), color = DpFlixColors.OnBackground, fontSize = 18.sp)
-            Button(onClick = { onSetCustomNumber((channel.displayNumber ?: 0) + 1) }) { Text("+") }
+            if (isEditingNumber) {
+                OutlinedTextField(
+                    value = editedNumberText,
+                    onValueChange = { editedNumberText = it.filter(Char::isDigit) },
+                    modifier = Modifier
+                        .width(80.dp)
+                        .focusRequester(numberFieldFocusRequester)
+                        .onFocusChanged { state -> if (!state.isFocused) commitEditedNumber() },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
+                    keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
+                )
+            } else {
+                Text(
+                    text = (channel.displayNumber ?: 0).toString(),
+                    color = DpFlixColors.OnBackground,
+                    fontSize = 18.sp,
+                    modifier = Modifier.clickable {
+                        editedNumberText = (channel.displayNumber ?: 0).toString()
+                        isEditingNumber = true
+                    }
+                )
+            }
         }
     }
 }

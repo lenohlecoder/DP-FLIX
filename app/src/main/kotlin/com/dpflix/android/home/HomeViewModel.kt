@@ -103,6 +103,16 @@ class HomeViewModel(private val appRepository: AppRepository) : ViewModel() {
     fun resumePreviewPlaybackIfNeeded() {
         _uiState.update { it.copy(previewPlaybackActive = true) }
     }
+
+    /**
+     * Barre de recherche (§4.4, ajout du 8 août 2026) — voir la doc de
+     * [HomeUiState.searchQuery]. Ne filtre rien ici : se contente de publier le texte tapé,
+     * [HomeScreen] dérive la liste filtrée à l'affichage (évite de dupliquer l'état des
+     * chaînes déjà présent dans [HomeUiState.categories]).
+     */
+    fun onSearchQueryChanged(query: String) {
+        _uiState.update { it.copy(searchQuery = query) }
+    }
 }
 
 class HomeViewModelFactory(private val appRepository: AppRepository) : ViewModelProvider.Factory {

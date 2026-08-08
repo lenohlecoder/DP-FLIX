@@ -1,6 +1,8 @@
 package com.dpflix.android.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,10 +10,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,12 +27,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -40,6 +47,8 @@ import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ChannelCategory
+import com.dpflix.android.filmsseries.FilmsSeriesStreamPickerTv
+import com.dpflix.android.player.PlayerScreen
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.ui.ChannelLogo
 import com.dpflix.android.ui.DpFlixBackground
@@ -72,12 +81,39 @@ import com.dpflix.android.ui.theme.DpFlixColors
  * `hasRequestedInitialFocus`) — même mécanique que partout ailleurs côté TV depuis
  * l'étape 2b (rien n'est focus par défaut sur Android TV).
  *
- * ## Mini-lecteur retiré (27 juillet 2026)
- * Le mini-aperçu (§4.4 "Zone haute") a été supprimé côté TV pour la même raison que côté
- * mobile (voir [HomeScreen]) : il plantait systématiquement au passage en plein écran
- * (deux `PlayerController`/ExoPlayer vivant en même temps pendant la transition). Un clic
- * sur une chaîne ([ChannelCategoryListTv]/[HomeViewModel.onChannelClicked]) navigue
- * désormais directement vers le lecteur plein écran, comme côté mobile.
+ * ## Mini-lecteur retiré (27 juillet 2026), réintégré (8 août 2026)
+ * Le mini-aperçu (§4.4 "Zone haute") avait été supprimé côté TV pour la même raison que
+ * côté mobile (voir [HomeScreen]) : il plantait systématiquement au passage en plein écran
+ * (deux `PlayerController`/ExoPlayer vivant en même temps pendant la transition). Voir
+ * "Mini-lecteur réintégré (8 août 2026)" plus bas pour le retour de cet écran, une fois la
+ * cause du crash corrigée à la racine.
+ *
+ * ## Mini-lecteur réintégré (8 août 2026)
+ * Retiré le 27 juillet 2026 (crash à la transition plein écran, voir plus bas), le
+ * mini-aperçu (§4.4 "Zone haute") revient ici avec **exactement le même principe de
+ * disposition que côté mobile** ([HomeScreen.MiniPlayer]) : vidéo en haut (sous l'en-tête,
+ * au-dessus des rangées de chaînes), nom + programme en dessous, bouton de fermeture en
+ * surimpression. Même état partagé aussi (`HomeUiState.previewChannel`/
+ * `previewProgramTitle`/`previewPlaybackActive`, déjà commun aux deux écrans depuis
+ * l'origine — voir la doc de classe ci-dessus) : un clic sur une chaîne ouvre/bascule
+ * l'aperçu ici exactement comme sur mobile, un second clic sur la même chaîne pendant que
+ * son aperçu est actif passe en plein écran.
+ *
+ * La cause du crash de juillet (deux `ExoPlayer` vivants en même temps pendant la
+ * transition vers le plein écran) a depuis été corrigée à la racine côté mobile, dans
+ * l'état PARTAGÉ [HomeViewModel] lui-même ([HomeViewModel.suspendPreviewPlayback]/
+ * [HomeViewModel.resumePreviewPlaybackIfNeeded]) — pas dans [HomeScreen] mobile
+ * spécifiquement. Cet écran reprend donc le MÊME mécanisme de sécurité que mobile plutôt
+ * que d'en réinventer un : `pendingFullscreenChannelId` + `LaunchedEffect` qui attend que
+ * `previewPlaybackActive` soit repassé à `false` (donc que la recomposition ait eu lieu)
+ * PUIS laisse passer une frame Compose supplémentaire (`withFrameNanos`) avant de naviguer
+ * — voir la doc de [HomeScreen] (mobile) pour le détail complet du problème que ça évite.
+ *
+ * `selectedChannelId` (passé à [ChannelCategoryListTv]/[ChannelCardTv]) redevient
+ * `preview?.id` au lieu de `null` codé en dur : le texte "En aperçu" sous la carte, déjà
+ * prévu dans [ChannelCardTv] depuis le voyant de focus du 6 août mais resté mort tant que
+ * le mini-lecteur était absent, redevient donc utile — distinct du voyant de focus rouge
+ * (bordure), qui lui suit le D-pad indépendamment de ce qui est en train de jouer.
  *
  * ## Bouton Guide TV retiré (25 juillet 2026), remplacé par Films et Séries (07/08)
  * Le bouton "Guide TV" ([com.dpflix.android.epg.EpgGuideScreenTv], §4.6) qui vivait ici
@@ -103,7 +139,7 @@ import com.dpflix.android.ui.theme.DpFlixColors
 fun HomeScreenTv(
     appRepository: AppRepository,
     onNavigateToSettings: () -> Unit,
-    onNavigateToFilmsSeries: () -> Unit,
+    onNavigateToFilmsSeries: (streamIndex: Int) -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -112,10 +148,29 @@ fun HomeScreenTv(
     )
     val uiState by viewModel.uiState.collectAsState()
 
+    // Sélecteur "Stream 1"/"Stream 2" (French-Stream, 08/08) — voir la doc équivalente
+    // côté mobile (HomeScreen.kt).
+    var showFilmsSeriesPicker by remember { mutableStateOf(false) }
+
     val filmsSeriesFocusRequester = remember { FocusRequester() }
     val settingsFocusRequester = remember { FocusRequester() }
     val firstChannelFocusRequester = remember { FocusRequester() }
     var hasRequestedInitialFocus by remember { mutableStateOf(false) }
+
+    // Mini-lecteur (§ réintégration 8 août 2026) : même garde-fou que côté mobile — voir
+    // la doc de classe ci-dessus et celle de [HomeScreen] pour le détail complet.
+    LaunchedEffect(Unit) {
+        viewModel.resumePreviewPlaybackIfNeeded()
+    }
+    var pendingFullscreenChannelId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(pendingFullscreenChannelId, uiState.previewPlaybackActive) {
+        val channelId = pendingFullscreenChannelId
+        if (channelId != null && !uiState.previewPlaybackActive) {
+            withFrameNanos { }
+            pendingFullscreenChannelId = null
+            onNavigateToPlayerFullscreen(channelId)
+        }
+    }
 
     // Recherche (§ demande utilisateur, 2026-08-06) : voir la doc de la fonction.
     var searchActive by remember { mutableStateOf(false) }
@@ -175,7 +230,7 @@ fun HomeScreenTv(
                             )
                         }
                         Button(
-                            onClick = onNavigateToFilmsSeries,
+                            onClick = { showFilmsSeriesPicker = true },
                             modifier = Modifier
                                 .focusRequester(filmsSeriesFocusRequester)
                                 .padding(start = 12.dp)
@@ -193,6 +248,20 @@ fun HomeScreenTv(
                     }
                 }
 
+                val preview = uiState.previewChannel
+                if (preview != null) {
+                    MiniPlayerTv(
+                        channel = preview,
+                        programTitle = uiState.previewProgramTitle,
+                        playbackActive = uiState.previewPlaybackActive,
+                        onExpand = {
+                            viewModel.suspendPreviewPlayback()
+                            pendingFullscreenChannelId = preview.id
+                        },
+                        onDismiss = viewModel::dismissPreview
+                    )
+                }
+
                 when {
                     !uiState.hasActivePlaylist -> EmptyStateTv(text = "Aucune playlist active.")
                     uiState.categories.all { it.channels.isEmpty() } -> EmptyStateTv(
@@ -203,14 +272,27 @@ fun HomeScreenTv(
                     )
                     else -> ChannelCategoryListTv(
                         categories = filteredCategories,
-                        selectedChannelId = null,
+                        selectedChannelId = preview?.id,
                         firstChannelFocusRequester = firstChannelFocusRequester,
                         onChannelClick = { channel ->
                             val goFullscreen = viewModel.onChannelClicked(channel)
-                            if (goFullscreen) onNavigateToPlayerFullscreen(channel.id)
+                            if (goFullscreen) {
+                                viewModel.suspendPreviewPlayback()
+                                pendingFullscreenChannelId = channel.id
+                            }
                         }
                     )
                 }
+            }
+
+            if (showFilmsSeriesPicker) {
+                FilmsSeriesStreamPickerTv(
+                    onSelectStream = { streamIndex ->
+                        showFilmsSeriesPicker = false
+                        onNavigateToFilmsSeries(streamIndex)
+                    },
+                    onDismiss = { showFilmsSeriesPicker = false }
+                )
             }
         }
     }
@@ -324,6 +406,78 @@ private fun ChannelCardTv(
             Text(text = channel.name, color = DpFlixColors.OnBackground, fontSize = 16.sp)
             if (isSelected) {
                 Text(text = "En aperçu", color = DpFlixColors.Red, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+/**
+ * Zone haute (§4.4, réintégration TV du 8 août 2026) — même principe de disposition que
+ * [HomeScreen.MiniPlayer] (mobile) : vidéo (avec le son, [PlayerScreen] gère déjà l'audio
+ * et ses propres états de chargement/erreur, réutilisé tel quel) + nom de chaîne/programme
+ * en dessous, bouton de fermeture en surimpression. Hauteur un peu plus généreuse
+ * (280.dp vs 200.dp mobile) pour rester proportionnée à un écran TV, mêmes marges
+ * horizontales que le reste de cet écran (48.dp, voir l'en-tête/[CategoryRowTv]).
+ *
+ * `.clickable` (D-pad OK/Entrée aussi bien que télécommande tactile le cas échéant) plutôt
+ * qu'un `tv.material3.Button` : un `Button` imposerait son padding/fond par défaut, en
+ * conflit avec la vidéo qui doit occuper tout le rectangle — même choix que côté mobile
+ * (`Modifier.clickable` sur un `Box`), `clickable` restant nativement navigable au D-pad
+ * (focusable + réagit à la touche Entrée) sans composant TV dédié.
+ *
+ * [playbackActive] : même garde que mobile (voir la doc de
+ * [HomeUiState.previewPlaybackActive]) — n'instancie [PlayerScreen] que si `true`, pour ne
+ * jamais avoir deux `ExoPlayer` vivants en même temps pendant la transition vers le plein
+ * écran (cause du crash de juillet, voir la doc de [HomeScreenTv]).
+ */
+@Composable
+private fun MiniPlayerTv(
+    channel: Channel,
+    programTitle: String?,
+    playbackActive: Boolean,
+    onExpand: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 48.dp, vertical = 8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(280.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color.Black)
+                .clickable(onClick = onExpand)
+        ) {
+            if (playbackActive) {
+                PlayerScreen(channel = channel, modifier = Modifier.fillMaxSize(), osdEnabled = false)
+            }
+            IconButton(onClick = onDismiss, modifier = Modifier.align(Alignment.TopEnd)) {
+                Icon(
+                    imageVector = Icons.Filled.Close,
+                    contentDescription = "Fermer l'aperçu",
+                    tint = Color.White
+                )
+            }
+        }
+        Column(modifier = Modifier.padding(top = 8.dp)) {
+            Text(
+                text = channel.name,
+                color = DpFlixColors.OnBackground,
+                fontSize = 20.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            if (programTitle != null) {
+                Text(
+                    text = programTitle,
+                    color = DpFlixColors.OnBackgroundMuted,
+                    fontSize = 16.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
         }
     }

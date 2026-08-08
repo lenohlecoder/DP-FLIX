@@ -29,4 +29,5 @@ internal object SettingsKeys {
     val DEFAULT_VIDEO_QUALITY_CAP = stringPreferencesKey("general_default_video_quality_cap")
     val DEFAULT_PLAYLIST_ID = stringPreferencesKey("general_default_playlist_id")
     val FILMS_SERIES_URL = stringPreferencesKey("general_films_series_url")
+    val FILMS_SERIES_URL_2 = stringPreferencesKey("general_films_series_url_2")
 }

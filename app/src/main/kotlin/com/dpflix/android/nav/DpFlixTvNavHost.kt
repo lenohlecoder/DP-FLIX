@@ -122,17 +122,29 @@ fun DpFlixTvNavHost(
             HomeScreenTv(
                 appRepository = appRepository,
                 onNavigateToSettings = { navController.navigate(DpFlixDestination.Settings.route) },
-                onNavigateToFilmsSeries = { navController.navigate(DpFlixDestination.FilmsSeries.route) },
+                onNavigateToFilmsSeries = { streamIndex ->
+                    navController.navigate(DpFlixDestination.FilmsSeries.createRoute(streamIndex))
+                },
                 onNavigateToPlayerFullscreen = { channelId ->
                     navController.navigate(DpFlixDestination.PlayerFullscreen.createRoute(channelId))
                 }
             )
         }
 
-        composable(DpFlixDestination.FilmsSeries.route) {
+        composable(
+            route = DpFlixDestination.FilmsSeries.route,
+            arguments = listOf(
+                navArgument(DpFlixDestination.FilmsSeries.ARG_STREAM_INDEX) {
+                    type = NavType.IntType
+                    defaultValue = 1
+                }
+            )
+        ) { backStackEntry ->
+            val streamIndex = backStackEntry.arguments?.getInt(DpFlixDestination.FilmsSeries.ARG_STREAM_INDEX) ?: 1
             FilmsSeriesScreenTv(
                 appRepository = appRepository,
-                onNavigateHome = { navController.popBackStack() }
+                onNavigateHome = { navController.popBackStack() },
+                streamIndex = streamIndex
             )
         }
 

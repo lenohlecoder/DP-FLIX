@@ -296,7 +296,21 @@ class XtreamClient(
             playerApiUrl(credentials, action = "get_short_epg", streamId = streamId, limit = limit)
         )
         val shortPrograms = (shortEpgOutcome as? GetOutcome.Body)?.let { parseEpgListings(it.text) }
-        if (!shortPrograms.isNullOrEmpty()) {
+        // Fix (bug signalé 07/08/2026, TF1 HD Xtream : "Aucun programme passé disponible"
+        // alors que Televizo affiche un vrai historique sur la même chaîne) : plusieurs
+        // panels répondent à get_short_epg par une poignée d'entrées centrées sur le
+        // direct (programme en cours + quelques suivants), JAMAIS de passé - exactement
+        // le cas anticipé dans la doc de cette fonction ("jamais de passé"), mais
+        // l'ancien test isNullOrEmpty() jugeait quand même ce résultat "exploitable" et
+        // court-circuitait le repli vers get_simple_data_table, le seul des deux à
+        // vraiment proposer un historique chez ces panels. ReplayRepository.fetchPastPrograms
+        // filtre ensuite sur endMillis <= maintenant : un short_epg sans aucun programme
+        // déjà terminé aboutissait donc systématiquement à une liste vide, indiscernable
+        // pour l'utilisateur d'une chaîne réellement sans replay. "Exploitable" exige
+        // désormais au moins un programme réellement terminé - seul ce qui compte pour du
+        // replay/catch-up, même critère que le filtre de ReplayRepository.
+        val now = System.currentTimeMillis()
+        if (!shortPrograms.isNullOrEmpty() && shortPrograms.any { it.endMillis <= now }) {
             return@withContext XtreamResult.Success(shortPrograms)
         }
 
