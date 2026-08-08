@@ -138,5 +138,6 @@ sealed class DpFlixDestination(val route: String) {
 
     companion object {
         const val ARG_CHANNEL_ID = PlayerFullscreen.ARG_CHANNEL_ID
+        const val ARG_STREAM_INDEX = FilmsSeries.ARG_STREAM_INDEX
     }
 }
