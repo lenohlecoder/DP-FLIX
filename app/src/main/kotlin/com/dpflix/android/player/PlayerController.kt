@@ -1713,14 +1713,17 @@ class PlayerController(
 
     /**
      * Lève le plafond de débit posé par [applyBufferGuardBitrateCap]
-     * (`clearVideoBitrateConstraints`) sans toucher au plafond de résolution manuel
+     * (`setMaxVideoBitrate(Int.MAX_VALUE)`, pas de méthode "clear" dédiée côté Media3)
+     * sans toucher au plafond de résolution manuel
      * éventuellement posé par [setQualityOverride] — même logique de composition que
      * [applyBufferGuardBitrateCap], dans l'autre sens.
      */
     private fun clearBufferGuardBitrateCap() {
         bufferGuardQualityCapped = false
         trackSelector.parameters = trackSelector.buildUponParameters()
-            .clearVideoBitrateConstraints()
+            // Media3 n'expose pas de "clear" dédié au débit : on repose la valeur par
+            // défaut (aucun plafond) via setMaxVideoBitrate.
+            .setMaxVideoBitrate(Int.MAX_VALUE)
             .build()
     }
 
