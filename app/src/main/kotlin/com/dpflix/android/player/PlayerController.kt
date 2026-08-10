@@ -534,11 +534,30 @@ class PlayerController(
         }
 
         val requestedDelayMs = (currentSettings.bufferSafetyMarginSeconds * 1000).coerceAtLeast(0)
+
+        // Fix (2026-08-09) — voir MIN_BUFFER_HEADROOM_MS : ces deux seuils sont calculés
+        // AVANT `maxBufferMs` (et sans être plafonnés par lui pour l'instant) précisément
+        // pour que `maxBufferMs` puisse ensuite se caler dessus si besoin — plutôt que
+        // l'ancien ordre (maxBufferMs d'abord, ces seuils recoercés dessous ensuite), qui
+        // écrasait silencieusement toute marge sur les réglages bas où
+        // BUFFER_GUARD_LOW_WATERMARK_MS dominait déjà le calcul.
+        val bufferForPlaybackMsRaw = (requestedDelayMs / 3)
+            .coerceAtLeast(BUFFER_GUARD_LOW_WATERMARK_MS)
+        val bufferForPlaybackAfterRebufferMsRaw = (bufferForPlaybackMsRaw + 5_000)
+            .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
+
         // Fusion (2026-08-06) : plus de valeur utilisateur independante pour maxBufferMs -
         // voir la doc de classe juste au-dessus et celle de
         // [PlayerSettings.bufferSafetyMarginSeconds].
+        // Fix (2026-08-09) : `maxBufferMs` doit désormais aussi dépasser
+        // `bufferForPlaybackAfterRebufferMsRaw` d'au moins MIN_BUFFER_HEADROOM_MS — sans
+        // cela, sur un réglage bas, le seuil de reprise après rebuffer (déjà tiré vers le
+        // haut par le plancher de démarrage, voir MIN_BUFFER_HEADROOM_MS) pouvait se
+        // retrouver à égalité avec le plafond calculé à partir du seul `requestedDelayMs`,
+        // ne laissant aucune marge réelle pour `minBufferMs` un peu plus bas.
         val maxBufferMs = (requestedDelayMs + LIVE_DELAY_HEADROOM_MS)
             .coerceAtLeast(MIN_MAX_BUFFER_MS)
+            .coerceAtLeast(bufferForPlaybackAfterRebufferMsRaw + MIN_BUFFER_HEADROOM_MS)
         // Fix (2026-08-08) — démarrage souple : `bufferForPlaybackMs` (seuil de démarrage)
         // n'a plus besoin d'attendre l'INTÉGRALITÉ de `requestedDelayMs` avant la première
         // image — sur une marge de sécurité élevée (ex. 60s), ça imposait ~60s d'écran
@@ -550,16 +569,12 @@ class PlayerController(
         // [BUFFER_GUARD_LOW_WATERMARK_MS] (~15s) — même seuil que la surveillance active,
         // fusionné volontairement en une seule valeur commune plutôt que deux réglages
         // proches mais distincts.
-        val bufferForPlaybackMs = (requestedDelayMs / 3)
-            .coerceAtLeast(BUFFER_GUARD_LOW_WATERMARK_MS)
-            .coerceAtMost(maxBufferMs)
+        val bufferForPlaybackMs = bufferForPlaybackMsRaw.coerceAtMost(maxBufferMs)
         // Fix (2026-08-08) : après un rebuffer, on redemande un peu plus que le seuil de
         // démarrage initial (marge supplémentaire, `+5s`) plutôt que de repartir du même
         // seuil bas qui vient justement de s'épuiser — sans quoi un flux qui alterne
         // stall/reprise pourrait reboucler sur des rebuffers rapprochés.
-        val bufferForPlaybackAfterRebufferMs = (bufferForPlaybackMs + 5_000)
-            .coerceAtLeast(DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS)
-            .coerceAtMost(maxBufferMs)
+        val bufferForPlaybackAfterRebufferMs = bufferForPlaybackAfterRebufferMsRaw.coerceAtMost(maxBufferMs)
         // Fix (2026-08-05) : minBufferMs etait calcule independamment (maxBufferMs / 2)
         // AVANT que bufferForPlaybackMs/bufferForPlaybackAfterRebufferMs ne soient connus,
         // sans jamais verifier qu'il restait au-dessus - Media3 exige pourtant
@@ -570,9 +585,14 @@ class PlayerController(
         // Reproduit avec les reglages par defaut actuels : maxBufferMs=30000 ->
         // minBufferMs=15000 par l'ancien calcul, mais bufferForPlaybackMs=20000
         // (liveDelaySeconds=20s, v4) - 15000 < 20000, crash systematique.
+        // Fix (2026-08-09) : `coerceAtMost(maxBufferMs - MIN_BUFFER_HEADROOM_MS)` en plus de
+        // l'ancien `coerceAtMost(maxBufferMs)` — voir MIN_BUFFER_HEADROOM_MS, cette borne
+        // supplémentaire est désormais TOUJOURS satisfiable sans violer la contrainte Media3
+        // ci-dessus, puisque `maxBufferMs` est construit plus haut pour toujours dépasser
+        // `bufferForPlaybackAfterRebufferMs` d'au moins cette marge.
         val minBufferMs = (maxBufferMs / 2)
             .coerceAtLeast(bufferForPlaybackAfterRebufferMs)
-            .coerceAtMost(maxBufferMs)
+            .coerceAtMost(maxBufferMs - MIN_BUFFER_HEADROOM_MS)
 
         // Fix (2026-08-05) — vrai plafond en octets (targetBufferBytes) qui, avec
         // setPrioritizeTimeOverSizeThresholds(false), l'EMPORTE sur maxBufferMs des qu'il
@@ -1632,6 +1652,20 @@ class PlayerController(
         // (le tampon "augmente et diminue progressivement" sans se vider au moindre
         // ralentissement transitoire).
         private const val LIVE_DELAY_HEADROOM_MS = 10_000
+
+        // Fix (2026-08-09) — voir buildLoadControl : constat utilisateur, sur un réglage de
+        // marge de sécurité bas (5-10s), le tampon subissait des micro-coupures récurrentes
+        // en lecture plein écran, mais semblait "récupérer" en visitant Réglages/Diagnostic
+        // puis en revenant. Cause réelle : sur ces réglages bas, BUFFER_GUARD_LOW_WATERMARK_MS
+        // (15s, le plancher de démarrage) dominait le calcul de bufferForPlaybackAfterRebufferMs,
+        // qui à son tour forçait minBufferMs à rejoindre EXACTEMENT maxBufferMs (les deux
+        // coercitions successives convergeaient vers la même valeur) — zéro marge entre "le
+        // tampon s'arrête de se remplir" et "il recommence à se remplir" : le chargeur ne
+        // pouvait structurellement jamais garder de coussin au-delà du seuil de démarrage,
+        // donc le moindre accroc réseau tombait directement à sec, sans rien en réserve.
+        // Cette marge garantit désormais TOUJOURS un vrai matelas entre les deux seuils, quel
+        // que soit le réglage — voir le calcul de `maxBufferMs`/`minBufferMs` ci-dessus.
+        private const val MIN_BUFFER_HEADROOM_MS = 10_000
 
         // Fix (2026-08-05) — voir reconnectProgressiveStream : intervalle minimal entre
         // deux reconnexions du flux progressif, pour eviter un enchainement de
