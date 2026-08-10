@@ -1,18 +1,22 @@
 package com.dpflix.android.player
 
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
+import android.os.storage.StorageManager
 import androidx.media3.common.C
 import androidx.media3.common.Format
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
-import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.CacheWriter
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DecoderReuseEvaluation
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -40,6 +44,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * État exposé par [PlayerController] à l'UI (§7 étape 5a : "contrôle basique play/pause/erreur").
@@ -103,6 +108,39 @@ enum class PlaybackMode {
 data class QualityOption(val height: Int) {
     val label: String get() = "${height}p"
 }
+
+/**
+ * Fix (2026-08-10) — Étape 3a : photographie instantanée des mesures collectées en continu
+ * par [PlayerController.startBufferManager], en vue du calcul de cible adaptative de
+ * l'étape 3b (écart cible/actuel pondéré par le ratio débit, plafond RAM). Volontairement
+ * Collecte pure côté 3a ; depuis l'étape 3c, [sampleBufferManager] enchaîne sur
+ * [evaluateBufferGuard] pour piloter le plafond de débit ABR à partir de la cible
+ * adaptative dérivée de ces mêmes mesures.
+ *
+ * @property bufferedMs Tampon actuellement disponible (`ExoPlayer.totalBufferedDuration`,
+ *   même source que [PlayerController.currentBufferedSeconds]) — la "bufferedPosition".
+ * @property networkThroughputKbps Débit réseau RÉEL le plus récent, tel qu'estimé par le
+ *   `BandwidthMeter` d'ExoPlayer (`onBandwidthEstimate`, même source que
+ *   [PlayerController.networkThroughputKbps]) — `null` tant qu'aucune mesure n'est encore
+ *   remontée (juste après [PlayerController.playChannel]/[PlayerController.playReplay]).
+ * @property videoBitrateKbps Débit de la piste vidéo actuellement décodée
+ *   (`onVideoInputFormatChanged`, même source que [PlayerController.streamBitrateKbps]) —
+ *   distinct de [networkThroughputKbps] : c'est ce que la piste EXIGE, pas ce que le réseau
+ *   peut fournir ; leur écart est justement ce que l'étape 3b pondérera ("ratio débit").
+ * @property fillRateRatio Vitesse de remplissage/consommation du tampon sur l'intervalle
+ *   écoulé depuis l'échantillon précédent : `1.0` = le tampon se remplit exactement à la
+ *   vitesse où la lecture le consomme (stable), `>1.0` = il se remplit plus vite qu'il n'est
+ *   consommé (tampon qui grossit), `<1.0` = il se vide (réseau trop lent pour le débit
+ *   courant). `null` pour le tout premier échantillon d'une session ([PlayerController.startPlayback])
+ *   ou juste après une discontinuité de position (seek, rechargement) où la variation de
+ *   [bufferedMs] ne reflète pas un vrai régime de remplissage.
+ */
+data class BufferManagerSnapshot(
+    val bufferedMs: Long,
+    val networkThroughputKbps: Long?,
+    val videoBitrateKbps: Long?,
+    val fillRateRatio: Float?
+)
 
 /**
  * Encapsule le cycle de vie d'un [ExoPlayer] pour la lecture d'une [Channel] (§7 étape 5a/5b/5c/5d).
@@ -259,31 +297,89 @@ class PlayerController(
     private var watchdogJob: Job? = null
 
     /**
-     * Fix (2026-08-08) — surveillance active du tampon pendant la lecture, en complément
-     * du watchdog de blocage ci-dessus : [scheduleWatchdog] ne réagit qu'à un blocage DÉJÀ
-     * visible (`STATE_BUFFERING`) ; `DefaultLoadControl` lui-même n'a aucune notion de
-     * "réagir dès qu'il reste moins de X secondes" pendant une lecture qui continue. Un
-     * poll léger et peu punitif ([startBufferGuard]/[evaluateBufferGuard]) comble cet
-     * écart : sous [BUFFER_GUARD_LOW_WATERMARK_MS] de tampon restant, ralentit légèrement
-     * la vitesse de lecture (`PlaybackParameters`, quasi imperceptible) plutôt que de
-     * laisser le tampon s'épuiser jusqu'au vrai blocage — revient à 1x avec hystérésis une
-     * fois [BUFFER_GUARD_RECOVER_WATERMARK_MS] regagnés, pour ne pas osciller. Volontairement
-     * PAS un recul de lecture (rewind) : `setBackBuffer(0, false)` (voir [buildLoadControl])
-     * jette déjà le tampon joué par choix délibéré (§6, mouvement continu) ; rouvrir un
-     * back buffer juste pour permettre un recul coûterait de la mémoire pour un bénéfice
-     * plus faible qu'un simple ralentissement, à peine perceptible.
+     * Fix (2026-08-08, révisé 2026-08-10, intégration 3c 2026-08-10) — mémoire d'hystérésis
+     * de la réaction ABR pilotée par le BufferManager ([evaluateBufferGuard], appelé depuis
+     * [sampleBufferManager]) : `true` = un plafond de débit
+     * ([BUFFER_GUARD_MAX_BITRATE_BPS]) est actuellement posé via [trackSelector].
      *
-     * Une instance par `ExoPlayer` construit (voir [buildExoPlayer]) — annulée et
-     * relancée à chaque reconstruction, jamais partagée entre deux instances successives
-     * (comme [trackSelector]).
+     * Historique : avant l'étape 3c, un poll dédié (`bufferGuardJob`) réagissait à des
+     * seuils fixes ([BUFFER_GUARD_LOW_WATERMARK_MS] / [BUFFER_GUARD_RECOVER_WATERMARK_MS]).
+     * L'étape 3c a fusionné cette décision dans le poll BufferManager : les seuils sont
+     * désormais relatifs à la cible adaptative ([_adaptiveTargetBufferMs], étapes 3b1/3b2),
+     * et l'ancien job séparé a disparu — un seul poll, une seule source de vérité.
+     *
+     * Remis à `false` à chaque nouvelle session ([startPlayback]) et à chaque nouvel
+     * `ExoPlayer` ([buildExoPlayer]).
      */
-    private var bufferGuardJob: Job? = null
+    private var bufferGuardQualityCapped = false
 
-    /** Vitesse actuellement ralentie par [evaluateBufferGuard] — évite de réappliquer
-     *  `playbackParameters` à chaque poll tant que rien n'a changé, et sert de mémoire
-     *  d'hystérésis (voir la doc de [bufferGuardJob]). Remis à `false` à chaque nouvelle
-     *  session ([startPlayback]) et à chaque nouvel `ExoPlayer` ([buildExoPlayer]). */
-    private var playbackSpeedLowered = false
+    /**
+     * Fix (2026-08-10) — Étape 3a + 3c : tâche de collecte continue du
+     * [BufferManagerSnapshot] ET de la réaction ABR qui en découle (voir
+     * [sampleBufferManager]/[evaluateBufferGuard]). Une instance par `ExoPlayer` construit
+     * ([buildExoPlayer]), jamais partagée entre deux instances successives (comme
+     * [trackSelector]).
+     */
+    private var bufferManagerJob: Job? = null
+
+    /** Dernier [BufferManagerSnapshot] collecté par [bufferManagerJob] — voir sa doc et
+     *  celle de [sampleBufferManager]. `null` tant qu'aucun poll n'a encore eu lieu. */
+    private val _bufferManagerSnapshot = MutableStateFlow<BufferManagerSnapshot?>(null)
+    val bufferManagerSnapshot: StateFlow<BufferManagerSnapshot?> = _bufferManagerSnapshot
+
+    /**
+     * Fix (2026-08-10) — Étape 3b : dernière cible adaptative calculée par
+     * [computeAdaptiveTargetBufferMs] à partir du [BufferManagerSnapshot] courant — voir
+     * sa doc pour le calcul (écart cible-actuel pondéré par le ratio débit + plafond
+     * selon RAM disponible, étapes 3b (1/2)+(2/2)). `null` tant qu'aucun
+     * [BufferManagerSnapshot] n'a encore été collecté (même cycle de vie que
+     * [_bufferManagerSnapshot], mis à jour juste après lui dans [sampleBufferManager]).
+     *
+     * Pilotage actif depuis l'étape 3c : [evaluateBufferGuard] (appelé depuis
+     * [sampleBufferManager]) s'en sert comme référence pour décider d'un plafond de
+     * débit ABR. Ne reconstruit en revanche pas `DefaultLoadControl` à chaud — celui-ci
+     * reste configuré à la construction de l'`ExoPlayer` ([buildLoadControl]).
+     */
+    private val _adaptiveTargetBufferMs = MutableStateFlow<Long?>(null)
+    val adaptiveTargetBufferMs: StateFlow<Long?> = _adaptiveTargetBufferMs
+
+    /**
+     * Fix (2026-08-10) — Étape 5 : tâche de préchargement disque, distincte de
+     * [bufferManagerJob] (qui collecte + réagit ABR) mais calée sur la même fenêtre
+     * cible ([_adaptiveTargetBufferMs]). Une instance par `ExoPlayer` construit
+     * ([buildExoPlayer]), annulée dans [release].
+     *
+     * Actif UNIQUEMENT en [PlaybackMode.REPLAY] avec tampon hybride activé (5d) :
+     * en LIVE le préchargement anticipé n'a pas de sens (fenêtre live qui avance,
+     * segments déjà obsolètes) et concurrencerait la lecture pour le débit réseau.
+     */
+    private var prefetcherJob: Job? = null
+
+    /**
+     * Étape 5c — horodatage jusqu'auquel le prefetcher reste en pause après un seek
+     * (D-pad / barre de progression). `0` = pas de pause en cours.
+     */
+    private var prefetchPausedUntilElapsedRealtimeMs: Long = 0L
+
+    /**
+     * Étape 5c — dernière position de lecture observée par le prefetcher, pour détecter
+     * un saut de position (seek) même si le listener n'a pas encore signalé la
+     * discontinuité. `-1` = pas encore de référence.
+     */
+    private var lastObservedPlaybackPositionMs: Long = -1L
+
+    /**
+     * Horodatage ([SystemClock.elapsedRealtime], insensible aux changements d'heure système
+     * contrairement à `System.currentTimeMillis()`) du dernier échantillon [bufferManagerJob]
+     * — avec [lastBufferManagerBufferedMs], sert à dériver [BufferManagerSnapshot.fillRateRatio]
+     * entre deux ticks. `-1L` = pas encore de référence (nouvelle session, voir
+     * [resetBufferManagerRateTracking]) : le prochain échantillon n'aura pas de
+     * [BufferManagerSnapshot.fillRateRatio] calculable, faute de point de comparaison.
+     */
+    private var lastBufferManagerSampleElapsedRealtimeMs: Long = -1L
+
+    /** Tampon ([ExoPlayer.totalBufferedDuration]) mesuré à [lastBufferManagerSampleElapsedRealtimeMs]. */
+    private var lastBufferManagerBufferedMs: Long = 0L
 
     /** Dernière chaîne demandée via [playChannel], nécessaire au rechargement complet du watchdog. */
     private var currentChannel: Channel? = null
@@ -440,11 +536,93 @@ class PlayerController(
         return if (!currentSettings.hybridBufferEnabled) {
             upstreamFactory
         } else {
-            val maxSizeBytes = currentSettings.diskCacheMaxSizeMb.coerceAtLeast(0) * BYTES_PER_MB
+            val maxSizeBytes = calculateDynamicDiskCacheMaxSizeBytes(currentSettings)
             CacheDataSource.Factory()
                 .setCache(MediaCacheProvider.get(context, maxSizeBytes))
                 .setUpstreamDataSourceFactory(upstreamFactory)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+        }
+    }
+
+    /**
+     * Étape 4 — Cache disque dynamique.
+     *
+     * La limite configurée dans [PlayerSettings.diskCacheMaxSizeMb] reste un plafond
+     * volontaire, mais elle n'est plus utilisée aveuglément : la taille réellement
+     * demandée à [MediaCacheProvider] est bornée par l'espace de stockage actuellement
+     * allouable par Android.
+     *
+     * On conserve une réserve de 20 % de l'espace allouable afin que le cache ne puisse
+     * pas monopoliser tout le stockage disponible. Si Android ne fournit pas
+     * [StorageManager.getAllocatableBytes] (API < 26) ou si l'appel échoue, on retombe
+     * sur l'espace libre de [context.cacheDir] via [android.os.StatFs].
+     *
+     * `diskCacheMaxSizeMb == 0` signifiait auparavant "illimité". Pour l'étape 4, ce
+     * mode signifie désormais "pas de plafond utilisateur" : le plafond effectif reste
+     * donc déterminé par le stockage réellement disponible, avec la réserve de sécurité.
+     *
+     * Le calcul est effectué au moment de la construction du [CacheDataSource]. Le
+     * [MediaCacheProvider] conserve ensuite son [androidx.media3.datasource.cache.SimpleCache]
+     * partagé et son évictor pour toute la durée de vie du process, ce qui évite d'ouvrir
+     * deux caches concurrents sur le même dossier.
+     */
+    private fun calculateDynamicDiskCacheMaxSizeBytes(currentSettings: PlayerSettings): Long {
+        val configuredMaxBytes = if (currentSettings.diskCacheMaxSizeMb > 0L) {
+            safeMegabytesToBytes(currentSettings.diskCacheMaxSizeMb)
+        } else {
+            Long.MAX_VALUE
+        }
+
+        val allocatableBytes = queryAllocatableStorageBytes()
+        if (allocatableBytes <= 0L) {
+            return configuredMaxBytes
+        }
+
+        // Ne laisse jamais le cache consommer la totalité de l'espace que le système
+        // considère actuellement comme allouable à l'application.
+        val safeAllocatableBytes =
+            (allocatableBytes.toDouble() * DISK_CACHE_ALLOCATABLE_FRACTION)
+                .toLong()
+                .coerceAtLeast(0L)
+
+        return minOf(configuredMaxBytes, safeAllocatableBytes)
+    }
+
+    /**
+     * Espace réellement allouable à l'application sur le volume interne.
+     *
+     * [StorageManager.getAllocatableBytes] est préférable à un simple `availableBytes`
+     * car Android tient compte de l'espace réservé/récupérable pour l'application.
+     * Le fallback [android.os.StatFs] garde le comportement fonctionnel sur API 23-25.
+     */
+    private fun queryAllocatableStorageBytes(): Long {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val storageManager =
+                    context.getSystemService(Context.STORAGE_SERVICE) as? StorageManager
+                if (storageManager != null) {
+                    val allocatable = storageManager.getAllocatableBytes(StorageManager.UUID_DEFAULT)
+                    if (allocatable > 0L) return allocatable
+                }
+            } catch (_: Exception) {
+                // Fallback StatFs ci-dessous : le cache reste optionnel et ne doit jamais
+                // empêcher la lecture si Android refuse la requête de stockage.
+            }
+        }
+
+        return try {
+            android.os.StatFs(context.cacheDir.absolutePath).availableBytes
+        } catch (_: Exception) {
+            0L
+        }
+    }
+
+    private fun safeMegabytesToBytes(megabytes: Long): Long {
+        if (megabytes <= 0L) return 0L
+        return if (megabytes > Long.MAX_VALUE / BYTES_PER_MB) {
+            Long.MAX_VALUE
+        } else {
+            megabytes * BYTES_PER_MB
         }
     }
 
@@ -518,17 +696,9 @@ class PlayerController(
         // sans surcharge) — démarrage le plus rapide possible, aucune cible de retard. Voir
         // la doc de [PlayerSettings.directModeEnabled].
         //
-        // Étape R5a (4/4) — Mode replay : même raisonnement, même repli. Un flux
-        // `timeshift.php` n'est plus un direct : il n'y a ni "retard cible sur le direct" à
-        // maintenir ni risque de rattraper un vrai bord live, donc aucune raison d'imposer
-        // l'accumulation volontaire de tampon avant démarrage (`bufferForPlaybackMs`
-        // dérivé de `bufferSafetyMarginSeconds` plus bas) qui n'a de sens qu'en direct. Ce
-        // réglage bas niveau d'ExoPlayer est figé à la construction du `LoadControl` — donc
-        // de l'`ExoPlayer` lui-même — et ne peut pas être changé à chaud sur une instance
-        // déjà construite (contrairement à `LiveConfiguration`, une propriété du
-        // `MediaItem`, voir [startPlayback]) : [rebuildExoPlayerIfModeChanged] est le
-        // mécanisme qui garantit qu'une VRAIE transition direct↔replay reconstruit bien
-        // l'`ExoPlayer` pour que ce court-circuit s'applique réellement.
+        // Étape R5a (4/4) — Mode replay : même court-circuit, pour la même raison qu'en
+        // direct — pas de retard cible sur le direct à maintenir, pas de risque de
+        // rattraper un vrai bord live puisqu'il n'y a pas de direct ici.
         if (currentSettings.directModeEnabled || mode == PlaybackMode.REPLAY) {
             return DefaultLoadControl.Builder().build()
         }
@@ -680,11 +850,20 @@ class PlayerController(
             .setLoadControl(buildLoadControl(settings, mode))
             .build()
         attachListeners(newPlayer)
-        // Fix (2026-08-08) : voir la doc de [bufferGuardJob] — une instance de la
-        // surveillance active du tampon par `ExoPlayer` construit, jamais partagée entre
-        // deux instances successives (même principe que [trackSelector] juste au-dessus).
-        playbackSpeedLowered = false
-        startBufferGuard(newPlayer)
+        // Fix (2026-08-08 / 3c 2026-08-10) : une nouvelle instance d'`ExoPlayer` repart
+        // toujours débit libre (pas d'héritage d'un plafond posé sur l'instance précédente).
+        // La réaction ABR est désormais pilotée par [bufferManagerJob] (étape 3c), plus
+        // par un job séparé.
+        bufferGuardQualityCapped = false
+        // Fix (2026-08-10) — Étape 3a + 3c : voir la doc de [bufferManagerJob] (une
+        // instance par ExoPlayer reconstruit).
+        resetBufferManagerRateTracking()
+        startBufferManager(newPlayer)
+        // Fix (2026-08-10) — Étape 5 : prefetcher (replay + cache hybride uniquement,
+        // gardes appliqués à chaque tick).
+        lastObservedPlaybackPositionMs = -1L
+        prefetchPausedUntilElapsedRealtimeMs = 0L
+        startPrefetcher(newPlayer)
         return newPlayer
     }
 
@@ -784,6 +963,20 @@ class PlayerController(
 
                 override fun onTracksChanged(tracks: Tracks) {
                     updateAvailableQualities(tracks)
+                }
+
+                // Étape 5c — seek utilisateur (D-pad / barre de progression / seekTo) :
+                // pause immédiate du prefetcher pour ne pas télécharger l'ancienne fenêtre.
+                override fun onPositionDiscontinuity(
+                    oldPosition: Player.PositionInfo,
+                    newPosition: Player.PositionInfo,
+                    reason: Int
+                ) {
+                    if (reason == Player.DISCONTINUITY_REASON_SEEK ||
+                        reason == Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT
+                    ) {
+                        pausePrefetchForSeek()
+                    }
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
@@ -1196,12 +1389,33 @@ class PlayerController(
         exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
         exoPlayer.playWhenReady = true
-        // Fix (2026-08-08) : voir la doc de [bufferGuardJob]/[playbackSpeedLowered] — une
-        // nouvelle session (zap, nouveau replay, reconnexion) repart toujours à vitesse
-        // normale, jamais héritée d'un ralentissement décidé pour l'ancien flux/la
-        // position précédente.
-        playbackSpeedLowered = false
-        exoPlayer.playbackParameters = PlaybackParameters.DEFAULT
+        // Fix (2026-08-08, révisé 2026-08-10 / 3c) : voir la doc de
+        // [bufferGuardQualityCapped] — une nouvelle session (zap, nouveau replay,
+        // reconnexion) repart toujours débit libre, jamais héritée d'un plafond décidé
+        // pour l'ancien flux/la position précédente.
+        bufferGuardQualityCapped = false
+        clearBufferGuardBitrateCap()
+        // Fix (2026-08-10) — Étape 5 : nouvelle session → repart sans pause seek ni
+        // ancrage de position (évite de hériter d'un état de prefetch de l'ancien flux).
+        lastObservedPlaybackPositionMs = -1L
+        prefetchPausedUntilElapsedRealtimeMs = 0L
+        // Fix (2026-08-10) — Étape 3a : un nouveau `MediaItem` fait sauter
+        // `totalBufferedDuration` à ~0 sans rapport avec le régime de remplissage qui
+        // précédait (ancien flux, ancienne position) — repartir sans référence évite un
+        // fillRateRatio aberrant sur le tout premier échantillon de la nouvelle session.
+        resetBufferManagerRateTracking()
+    }
+
+    /**
+     * Fix (2026-08-10) — voir la doc de [lastBufferManagerSampleElapsedRealtimeMs].
+     * Remet aussi à `null` [_adaptiveTargetBufferMs] (étape 3b (1/2)) : une cible
+     * adaptative calculée pour l'ancienne session (ancien flux, ancien régime de
+     * remplissage) n'a pas plus de sens à survivre au changement que le
+     * [BufferManagerSnapshot] dont elle dérive.
+     */
+    private fun resetBufferManagerRateTracking() {
+        lastBufferManagerSampleElapsedRealtimeMs = -1L
+        _adaptiveTargetBufferMs.value = null
     }
 
     /** Bascule play/pause (§7 étape 5a : "contrôle basique play/pause"). Sans effet en état [PlayerUiState.Error]. */
@@ -1419,65 +1633,260 @@ class PlayerController(
     }
 
     /**
-     * Fix (2026-08-08) — démarre le poll de [bufferGuardJob] sur [target] (voir sa doc
-     * pour le "pourquoi" : `DefaultLoadControl` ne réagit qu'au blocage complet, rien
-     * entre un tampon plein et zéro). Annule tout poll précédent avant d'en relancer un
-     * (un seul actif à la fois, comme [scheduleWatchdog]) — pertinent ici parce que
-     * [buildExoPlayer] peut être rappelée (reconfiguration, transition direct↔replay)
-     * alors qu'un poll précédent, sur l'ANCIEN `ExoPlayer` déjà libéré, tournerait encore
-     * dans le vide sans cette annulation.
-     */
-    private fun startBufferGuard(target: ExoPlayer) {
-        bufferGuardJob?.cancel()
-        bufferGuardJob = controllerScope.launch {
-            while (isActive) {
-                delay(BUFFER_GUARD_POLL_INTERVAL_MS)
-                evaluateBufferGuard(target)
-            }
-        }
-    }
-
-    /**
-     * Fix (2026-08-08) — un tick du poll de [bufferGuardJob], voir sa doc pour la vue
-     * d'ensemble. Volontairement peu punitif par rapport au watchdog de blocage
-     * ([scheduleWatchdog]) : n'agit QUE pendant une lecture déjà en cours
-     * (`STATE_READY` + `playWhenReady`), jamais pendant l'accumulation initiale avant la
-     * première image (où un tampon sous le seuil est normal, pas un signal d'alerte) ni
-     * pendant une pause volontaire de l'utilisateur.
+     * Fix (2026-08-08, révisé 2026-08-10, intégration 3c 2026-08-10) — réaction ABR
+     * pilotée par la cible adaptative du BufferManager (étapes 3b/3c). Appelée à chaque
+     * tick de [sampleBufferManager] APRÈS le recalcul de [_adaptiveTargetBufferMs], pour
+     * que la décision porte toujours sur la cible la plus fraîche.
+     *
+     * Volontairement peu punitif par rapport au watchdog de blocage ([scheduleWatchdog]) :
+     * n'agit QUE pendant une lecture déjà en cours (`STATE_READY` + `playWhenReady`),
+     * jamais pendant l'accumulation initiale avant la première image (où un tampon sous
+     * le seuil est normal) ni pendant une pause volontaire de l'utilisateur.
      *
      * Mode direct ([PlayerSettings.directModeEnabled]) : entièrement court-circuité —
-     * cohérent avec "tout désactiver d'un coup" (voir la doc de ce réglage), restaure
-     * d'abord la vitesse normale si elle avait été abaissée avant que le mode direct ne
-     * soit activé en cours de lecture.
+     * cohérent avec "tout désactiver d'un coup" (voir la doc de ce réglage), lève d'abord
+     * le plafond de débit s'il avait été posé avant que le mode direct ne soit activé en
+     * cours de lecture.
      *
-     * Hystérésis (§ description utilisateur, "20-25s") : le ralentissement ne se lève
-     * qu'à [BUFFER_GUARD_RECOVER_WATERMARK_MS], nettement au-dessus du seuil de
-     * déclenchement [BUFFER_GUARD_LOW_WATERMARK_MS] — sans cet écart, un tampon qui
-     * oscille juste autour d'un seuil unique ferait osciller la vitesse de lecture en
-     * continu (0.9x/1x/0.9x/1x...), perceptible et inutilement agressif.
+     * Seuils (étape 3c) :
+     * - si une cible adaptative est déjà disponible : bas = max(plancher absolu 15s,
+     *   70 % de la cible), reprise = max(bas + hystérésis historique ~7s, 90 % de la
+     *   cible) — l'hystérésis évite d'osciller la qualité autour d'un unique seuil ;
+     * - sinon (tout début de session, avant le premier snapshot) : repli temporaire sur
+     *   les anciens seuils fixes [BUFFER_GUARD_LOW_WATERMARK_MS] /
+     *   [BUFFER_GUARD_RECOVER_WATERMARK_MS], le temps que 3b produise une première cible.
      */
     private fun evaluateBufferGuard(target: ExoPlayer) {
         if (settings.directModeEnabled) {
-            if (playbackSpeedLowered) restorePlaybackSpeed(target)
+            if (bufferGuardQualityCapped) clearBufferGuardBitrateCap()
             return
         }
         if (target.playbackState != Player.STATE_READY || !target.playWhenReady) return
 
         val bufferedMs = target.totalBufferedDuration
+        val adaptiveTarget = _adaptiveTargetBufferMs.value
+
+        val lowMs: Long
+        val recoverMs: Long
+        if (adaptiveTarget == null) {
+            // Repli : pas encore de cible adaptative (premier tick de session).
+            lowMs = BUFFER_GUARD_LOW_WATERMARK_MS.toLong()
+            recoverMs = BUFFER_GUARD_RECOVER_WATERMARK_MS.toLong()
+        } else {
+            lowMs = maxOf(
+                BUFFER_GUARD_LOW_WATERMARK_MS.toLong(),
+                (adaptiveTarget * BUFFER_GUARD_ADAPTIVE_LOW_RATIO).toLong()
+            )
+            val hysteresisMs =
+                (BUFFER_GUARD_RECOVER_WATERMARK_MS - BUFFER_GUARD_LOW_WATERMARK_MS).toLong()
+            recoverMs = maxOf(
+                lowMs + hysteresisMs,
+                (adaptiveTarget * BUFFER_GUARD_ADAPTIVE_RECOVER_RATIO).toLong()
+            )
+        }
+
         when {
-            bufferedMs < BUFFER_GUARD_LOW_WATERMARK_MS && !playbackSpeedLowered -> {
-                playbackSpeedLowered = true
-                target.playbackParameters = BUFFER_GUARD_SLOWDOWN_SPEED
+            bufferedMs < lowMs && !bufferGuardQualityCapped -> {
+                applyBufferGuardBitrateCap()
             }
-            bufferedMs >= BUFFER_GUARD_RECOVER_WATERMARK_MS && playbackSpeedLowered -> {
-                restorePlaybackSpeed(target)
+            bufferedMs >= recoverMs && bufferGuardQualityCapped -> {
+                clearBufferGuardBitrateCap()
             }
         }
     }
 
-    private fun restorePlaybackSpeed(target: ExoPlayer) {
-        playbackSpeedLowered = false
-        target.playbackParameters = PlaybackParameters.DEFAULT
+    /**
+     * Pose le plafond de débit [BUFFER_GUARD_MAX_BITRATE_BPS] (§5.1, étape 5c ABR) via
+     * `setMaxVideoBitrate` — combiné à `buildUponParameters()`, donc préserve tout plafond
+     * de résolution déjà posé par [setQualityOverride] (§8d8, choix manuel utilisateur) :
+     * les deux contraintes s'appliquent ensemble, l'ABR restant libre de choisir la piste
+     * la plus adaptée sous CES DEUX plafonds combinés. `trackSelector.parameters`
+     * s'applique à chaud sur le `Player` déjà en cours de lecture, comme
+     * [setQualityOverride] — pas besoin de relancer la lecture.
+     */
+    private fun applyBufferGuardBitrateCap() {
+        bufferGuardQualityCapped = true
+        trackSelector.parameters = trackSelector.buildUponParameters()
+            .setMaxVideoBitrate(BUFFER_GUARD_MAX_BITRATE_BPS)
+            .build()
+    }
+
+    /**
+     * Lève le plafond de débit posé par [applyBufferGuardBitrateCap]
+     * (`clearVideoBitrateConstraints`) sans toucher au plafond de résolution manuel
+     * éventuellement posé par [setQualityOverride] — même logique de composition que
+     * [applyBufferGuardBitrateCap], dans l'autre sens.
+     */
+    private fun clearBufferGuardBitrateCap() {
+        bufferGuardQualityCapped = false
+        trackSelector.parameters = trackSelector.buildUponParameters()
+            .clearVideoBitrateConstraints()
+            .build()
+    }
+
+    /**
+     * Fix (2026-08-10) — Étape 3a + 3c : démarre le poll de [bufferManagerJob] sur
+     * [target]. La collecte de mesures (3a) tourne volontairement SANS le garde-fou
+     * `STATE_READY` + `playWhenReady` : on veut aussi observer l'accumulation initiale
+     * et les pauses. La réaction ABR (3c, [evaluateBufferGuard]) applique elle-même ce
+     * garde-fou en interne. Annule tout poll précédent avant d'en relancer un (un seul
+     * actif à la fois, pertinent quand [buildExoPlayer] reconstruit l'instance).
+     */
+    private fun startBufferManager(target: ExoPlayer) {
+        bufferManagerJob?.cancel()
+        bufferManagerJob = controllerScope.launch {
+            while (isActive) {
+                delay(BUFFER_MANAGER_POLL_INTERVAL_MS)
+                sampleBufferManager(target)
+            }
+        }
+    }
+
+    /**
+     * Fix (2026-08-10) — Étape 3a : un tick du poll de [bufferManagerJob]. Rassemble les
+     * quatre mesures de la vue d'ensemble (bufferedPosition, débit réseau réel, débit
+     * vidéo, vitesse de remplissage/consommation) dans un [BufferManagerSnapshot] :
+     *
+     * - `bufferedMs` : lu directement sur [target], natif ExoPlayer (comme
+     *   [currentBufferedSeconds]).
+     * - `networkThroughputKbps`/`videoBitrateKbps` : pas de nouvelle instrumentation —
+     *   déjà alimentées en continu par l'`AnalyticsListener` existant (§5.5, voir
+     *   [_networkThroughputKbps]/[_streamBitrateKbps]), simplement relues ici pour figer
+     *   les trois mesures dans le MÊME instantané plutôt que de laisser l'étape 3b lire
+     *   trois `StateFlow` non synchronisés entre eux.
+     * - `fillRateRatio` : dérivé, pas mesuré nativement — voir le calcul ci-dessous et la
+     *   doc de [BufferManagerSnapshot.fillRateRatio] pour son interprétation.
+     */
+    private fun sampleBufferManager(target: ExoPlayer) {
+        val nowElapsedRealtimeMs = SystemClock.elapsedRealtime()
+        val bufferedMs = target.totalBufferedDuration
+
+        val fillRateRatio = if (lastBufferManagerSampleElapsedRealtimeMs < 0L) {
+            null
+        } else {
+            val elapsedMs = nowElapsedRealtimeMs - lastBufferManagerSampleElapsedRealtimeMs
+            if (elapsedMs <= 0L) {
+                null
+            } else {
+                // Sur l'intervalle écoulé, la lecture (à 1x) a consommé `elapsedMs` de
+                // tampon ; ce qui a effectivement été gagné ou perdu sur `bufferedMs` est
+                // donc TOUJOURS relatif à cette consommation de référence, pas à zéro —
+                // d'où le "+ elapsedMs" : sans lui, un tampon parfaitement stable (aucun
+                // problème réseau) afficherait un delta de 0 au lieu d'un ratio de 1.0.
+                val deltaBufferedMs = bufferedMs - lastBufferManagerBufferedMs
+                (deltaBufferedMs + elapsedMs).toFloat() / elapsedMs.toFloat()
+            }
+        }
+
+        lastBufferManagerSampleElapsedRealtimeMs = nowElapsedRealtimeMs
+        lastBufferManagerBufferedMs = bufferedMs
+
+        val newSnapshot = BufferManagerSnapshot(
+            bufferedMs = bufferedMs,
+            networkThroughputKbps = _networkThroughputKbps.value,
+            videoBitrateKbps = _streamBitrateKbps.value,
+            fillRateRatio = fillRateRatio
+        )
+        _bufferManagerSnapshot.value = newSnapshot
+
+        // Fix (2026-08-10) — Étape 3b : voir la doc de [computeAdaptiveTargetBufferMs]
+        // et de [_adaptiveTargetBufferMs]. `requestedTargetMs` = même cible "nominale" que
+        // `requestedDelayMs` dans [buildLoadControl] (settings.bufferSafetyMarginSeconds) —
+        // recalculée ici plutôt que lue depuis un champ partagé : [buildLoadControl] ne
+        // conserve pas sa valeur intermédiaire au-delà de la construction du LoadControl,
+        // et la reproduire ici reste une seule multiplication triviale, pas une vraie
+        // duplication de logique.
+        val requestedTargetMs = (settings.bufferSafetyMarginSeconds * 1000).coerceAtLeast(0)
+        _adaptiveTargetBufferMs.value = computeAdaptiveTargetBufferMs(newSnapshot, requestedTargetMs)
+
+        // Fix (2026-08-10) — Étape 3c : la réaction ABR (plafond de débit) s'appuie
+        // désormais sur la cible adaptative qui vient d'être recalculée, plus sur des
+        // seuils fixes indépendants. Voir [evaluateBufferGuard].
+        evaluateBufferGuard(target)
+    }
+
+    /**
+     * Fix (2026-08-10) — Étape 3b : cible adaptative de tampon — écart cible-actuel
+     * pondéré par le ratio débit (§ vue d'ensemble, étape 3b (1/2)), puis plafonné selon
+     * la RAM heap réellement disponible (étape 3b (2/2)). Le résultat alimente
+     * [_adaptiveTargetBufferMs], consommé immédiatement par [evaluateBufferGuard]
+     * (étape 3c) pour la réaction ABR. Ne reconstruit en revanche pas encore
+     * `DefaultLoadControl` à chaud — hors périmètre de 3c.
+     *
+     * Principe (3b 1/2) : [requestedTargetMs] est la cible "nominale" déjà configurée par
+     * l'utilisateur (`settings.bufferSafetyMarginSeconds`, même valeur que
+     * `requestedDelayMs` dans [buildLoadControl]) — un tampon voulu FIXE, indépendant des
+     * conditions réseau réelles. L'écart entre cette cible et le tampon RÉELLEMENT observé
+     * ([BufferManagerSnapshot.bufferedMs]) est le signal brut d'ajustement ; il est ensuite
+     * pondéré par le ratio débit (débit réseau réel / débit exigé par la piste vidéo en
+     * cours, voir [BufferManagerSnapshot.networkThroughputKbps]/[BufferManagerSnapshot.videoBitrateKbps]) :
+     * - ratio > 1 (le réseau fournit PLUS que ce que la piste consomme) : le réseau a de la
+     *   marge, l'écart entre cible et tampon actuel peut être comblé plus vite — inutile de
+     *   viser une cible plus prudente que ce que le réseau permet réellement d'atteindre
+     *   confortablement.
+     * - ratio < 1 (le réseau fournit MOINS que la piste ne l'exige) : le réseau est déjà
+     *   sous tension ; combler l'écart au même rythme accélérerait l'épuisement du tampon
+     *   plutôt que sa reconstitution — l'ajustement est donc freiné en proportion.
+     * - ratio absent (`networkThroughputKbps`/`videoBitrateKbps` pas encore mesurés, voir
+     *   la doc de [BufferManagerSnapshot]) : aucune pondération fiable disponible, la cible
+     *   nominale est retournée telle quelle (ratio neutre de 1.0) plutôt que de risquer un
+     *   ajustement basé sur une mesure absente.
+     *
+     * Plafond RAM (3b 2/2) : le résultat ci-dessus est ensuite borné par le haut via
+     * [maxBufferMsAffordableByRam] — une cible qui dépasse ce que le heap libre peut
+     * réellement contenir (au débit de crête [ASSUMED_PEAK_BITRATE_KBPS]) n'a aucun
+     * sens opérationnel et risquerait de pousser le process vers un OOM. Le plancher
+     * reste [BUFFER_GUARD_LOW_WATERMARK_MS] — jamais une cible sous le plancher
+     * absolu déjà utilisé comme seuil de réaction ABR (étape 3c).
+     */
+    private fun computeAdaptiveTargetBufferMs(
+        snapshot: BufferManagerSnapshot,
+        requestedTargetMs: Int
+    ): Long {
+        val throughputKbps = snapshot.networkThroughputKbps
+        val videoBitrateKbps = snapshot.videoBitrateKbps
+        val throughputRatio = if (throughputKbps != null && videoBitrateKbps != null && videoBitrateKbps > 0) {
+            throughputKbps.toFloat() / videoBitrateKbps.toFloat()
+        } else {
+            1.0f
+        }
+        val gapMs = requestedTargetMs - snapshot.bufferedMs
+        val adjustedTargetMs = requestedTargetMs + (gapMs * throughputRatio).toLong()
+        // Étape 3b (2/2) : plafond haut dérivé de la RAM heap disponible.
+        val ramCappedMs = adjustedTargetMs.coerceAtMost(maxBufferMsAffordableByRam())
+        return ramCappedMs.coerceAtLeast(BUFFER_GUARD_LOW_WATERMARK_MS.toLong())
+    }
+
+    /**
+     * Fix (2026-08-10) — Étape 3b (2/2) : plafond haut de la cible adaptative, dérivé de
+     * la RAM heap réellement disponible au moment du calcul.
+     *
+     * Même hypothèse de débit de crête que [buildLoadControl] ([ASSUMED_PEAK_BITRATE_KBPS])
+     * pour rester cohérent avec le dimensionnement déjà en place du `targetBufferBytes` :
+     * si le LoadControl estime qu'un tampon de N ms coûte X octets à 80 Mbit/s, la cible
+     * adaptative ne doit pas viser plus que ce que le heap libre peut encore accueillir
+     * sous la même hypothèse.
+     *
+     * Fraction utilisable ([RAM_BUFFER_USABLE_FRACTION]) volontairement conservatrice :
+     * décodeur, UI Compose, cache disque Media3 et le reste du process coexistent dans le
+     * même heap — allouer tout le libre au tampon risque un OOM dès qu'une autre allocation
+     * concurrente arrive. On ne prend donc qu'une part du libre, pas la totalité.
+     *
+     * Formule (octets → ms) :
+     *   bytes ≈ ms × (kbps × 1000 / 8) / 1000 = ms × kbps / 8
+     *   → ms = bytes × 8 / kbps
+     *
+     * Retourne [Long.MAX_VALUE] si le débit de crête est invalide (ne doit jamais arriver
+     * avec la constante actuelle) pour ne pas écraser artificiellement la cible.
+     */
+    private fun maxBufferMsAffordableByRam(): Long {
+        val runtime = Runtime.getRuntime()
+        val maxHeapBytes = runtime.maxMemory()
+        val usedBytes = runtime.totalMemory() - runtime.freeMemory()
+        val freeBytes = (maxHeapBytes - usedBytes).coerceAtLeast(0L)
+        val usableBytes = (freeBytes.toDouble() * RAM_BUFFER_USABLE_FRACTION).toLong()
+        if (ASSUMED_PEAK_BITRATE_KBPS <= 0L) return Long.MAX_VALUE
+        return (usableBytes * 8L) / ASSUMED_PEAK_BITRATE_KBPS
     }
 
     /**
@@ -1503,6 +1912,181 @@ class PlayerController(
     // -> rembobinage au debut du buffer -> rejoue le meme passage -> re-blocage au meme
     // point relatif -> boucle infinie, avec un ecart au direct qui ne fait qu'augmenter
     // puisque la lecture ne progresse jamais au-dela du point de blocage initial.
+
+    // -------------------------------------------------------------------------
+    // Étape 5 — Prefetcher (replay uniquement)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Fix (2026-08-10) — Étape 5a/5d : démarre le poll du prefetcher sur [target].
+     * No-op si le tampon hybride est désactivé (pas de [SimpleCache] partagé à nourrir).
+     * Le garde-fou REPLAY est appliqué à chaque tick ([runPrefetchTick]), pas ici :
+     * un même `ExoPlayer` peut basculer LIVE↔REPLAY via [rebuildExoPlayerIfModeChanged],
+     * et le job doit survivre pour se réactiver dès qu'on repasse en replay.
+     */
+    private fun startPrefetcher(target: ExoPlayer) {
+        prefetcherJob?.cancel()
+        if (!settings.hybridBufferEnabled) return
+        prefetcherJob = controllerScope.launch {
+            while (isActive) {
+                delay(PREFETCH_POLL_INTERVAL_MS)
+                runPrefetchTick(target)
+            }
+        }
+    }
+
+    /**
+     * Étape 5c — suspend le prefetch pendant [PREFETCH_SEEK_PAUSE_MS] après un seek
+     * (discontinuité ou saut de position détecté). Évite de télécharger la mauvaise
+     * fenêtre pendant que l'utilisateur navigue au D-pad / à la barre de progression.
+     */
+    private fun pausePrefetchForSeek() {
+        prefetchPausedUntilElapsedRealtimeMs =
+            SystemClock.elapsedRealtime() + PREFETCH_SEEK_PAUSE_MS
+        lastObservedPlaybackPositionMs = -1L
+    }
+
+    /**
+     * Fix (2026-08-10) — Étape 5b/5c/5d/5e : un tick du prefetcher.
+     *
+     * Conditions d'activation (toutes requises) :
+     * - mode [PlaybackMode.REPLAY] (5d) ;
+     * - tampon hybride activé (sinon pas de cache disque partagé) ;
+     * - pas en pause seek (5c) ;
+     * - lecture en cours ou au moins un MediaItem chargé avec URI connue ;
+     * - cache disque pas déjà saturé (5e).
+     *
+     * Fenêtre à précharger (5b) : juste au-delà du tampon déjà tenu par ExoPlayer
+     * (`currentPosition + totalBufferedDuration`), sur une durée égale à la cible
+     * adaptative ([_adaptiveTargetBufferMs]) — accumulation continue devant la tête
+     * de lecture, pas un re-téléchargement de ce qui est déjà bufferisé en RAM.
+     *
+     * Téléchargement (5a/5e) : [CacheWriter] sur le MÊME [SimpleCache] que le
+     * [CacheDataSource] de lecture ([MediaCacheProvider]), par morceaux de
+     * [PREFETCH_CHUNK_BYTES] pour pouvoir s'interrompre vite en cas de seek.
+     * Les plages déjà présentes en cache sont sautées (`getCachedBytes` / `isCached`).
+     */
+    private suspend fun runPrefetchTick(target: ExoPlayer) {
+        if (_playbackMode.value != PlaybackMode.REPLAY) return
+        if (!settings.hybridBufferEnabled) return
+        if (SystemClock.elapsedRealtime() < prefetchPausedUntilElapsedRealtimeMs) return
+
+        val uri = currentPlaybackUri ?: return
+        if (target.playbackState == Player.STATE_IDLE ||
+            target.playbackState == Player.STATE_ENDED
+        ) return
+
+        val positionMs = target.currentPosition.coerceAtLeast(0L)
+        // 5c — détection de seek par saut de position (complément au listener).
+        if (lastObservedPlaybackPositionMs >= 0L) {
+            val deltaMs = positionMs - lastObservedPlaybackPositionMs
+            // Un saut en avant > 3s non expliqué par le temps de poll, ou un retour en
+            // arrière quelconque, est traité comme un seek utilisateur.
+            if (deltaMs < -500L || deltaMs > PREFETCH_POLL_INTERVAL_MS + 3_000L) {
+                pausePrefetchForSeek()
+                lastObservedPlaybackPositionMs = positionMs
+                return
+            }
+        }
+        lastObservedPlaybackPositionMs = positionMs
+
+        val bufferedMs = target.totalBufferedDuration.coerceAtLeast(0L)
+        val adaptiveTarget = _adaptiveTargetBufferMs.value
+            ?: (settings.bufferSafetyMarginSeconds * 1000L).coerceAtLeast(
+                BUFFER_GUARD_LOW_WATERMARK_MS.toLong()
+            )
+        // Fenêtre à précharger : juste après ce qu'ExoPlayer tient déjà.
+        val windowStartMs = positionMs + bufferedMs
+        val windowEndMs = windowStartMs + adaptiveTarget
+        if (windowEndMs <= windowStartMs) return
+
+        val bitrateKbps = (_streamBitrateKbps.value?.takeIf { it > 0 }
+            ?: ASSUMED_PEAK_BITRATE_KBPS)
+        val startBytes = msToEstimatedBytes(windowStartMs, bitrateKbps)
+        val endBytes = msToEstimatedBytes(windowEndMs, bitrateKbps)
+        if (endBytes <= startBytes) return
+
+        val maxSizeBytes = calculateDynamicDiskCacheMaxSizeBytes(settings)
+        val cache = MediaCacheProvider.get(context, maxSizeBytes)
+        // 5e — ne pas pousser un cache déjà proche de sa limite.
+        val currentCacheBytes = cache.cacheSpace
+        if (maxSizeBytes > 0L && currentCacheBytes >= (maxSizeBytes.toDouble() * 0.95).toLong()) {
+            return
+        }
+
+        withContext(Dispatchers.IO) {
+            prefetchByteRange(cache, uri, startBytes, endBytes)
+        }
+    }
+
+    /**
+     * Étape 5a/5e — télécharge [startBytes, endBytes) dans le [cache] partagé, par
+     * morceaux. Partage le même schéma de clé de cache que le [CacheDataSource] de
+     * lecture (URI seule, factory Media3 par défaut) : un segment écrit ici est
+     * immédiatement relisible par ExoPlayer sans second téléchargement.
+     */
+    private fun prefetchByteRange(
+        cache: Cache,
+        uri: String,
+        startBytes: Long,
+        endBytes: Long
+    ) {
+        val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        val cacheDataSource = CacheDataSource.Factory()
+            .setCache(cache)
+            .setUpstreamDataSourceFactory(upstreamFactory)
+            // FLAG_IGNORE_CACHE_ON_ERROR : si une écriture échoue, on abandonne ce
+            // morceau plutôt que de faire échouer toute la session de lecture.
+            .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+            .createDataSource()
+
+        var offset = startBytes
+        while (offset < endBytes) {
+            // Seek intervenu pendant le téléchargement : on s'arrête immédiatement.
+            if (SystemClock.elapsedRealtime() < prefetchPausedUntilElapsedRealtimeMs) return
+            // Mode basculé hors REPLAY en cours de route.
+            if (_playbackMode.value != PlaybackMode.REPLAY) return
+
+            val remaining = endBytes - offset
+            val chunkLength = minOf(remaining, PREFETCH_CHUNK_BYTES)
+            // 5e — déjà en cache (région continue) : sauter ce morceau pour éviter le
+            // double téléchargement. getCachedLength renvoie la longueur continue cachée
+            // depuis offset, ou une valeur négative s'il y a un trou.
+            val cachedLength = cache.getCachedLength(uri, offset, chunkLength)
+            if (cachedLength >= chunkLength) {
+                offset += chunkLength
+                continue
+            }
+
+            val dataSpec = DataSpec.Builder()
+                .setUri(uri)
+                .setPosition(offset)
+                .setLength(chunkLength)
+                .setKey(uri) // même clé que le CacheDataSource de lecture (URI)
+                .build()
+            try {
+                CacheWriter(
+                    cacheDataSource,
+                    dataSpec,
+                    /* temporaryBuffer= */ null,
+                    /* progressListener= */ null
+                ).cache()
+            } catch (_: Exception) {
+                // Préchargement best-effort : une erreur réseau/IO sur un morceau
+                // n'interrompt ni la lecture ni les ticks suivants.
+                return
+            }
+            offset += chunkLength
+        }
+    }
+
+    /** Conversion temps → octets estimés sous l'hypothèse de débit [bitrateKbps]. */
+    private fun msToEstimatedBytes(positionMs: Long, bitrateKbps: Long): Long {
+        if (positionMs <= 0L || bitrateKbps <= 0L) return 0L
+        // bytes = ms * (kbps * 1000 / 8) / 1000 = ms * kbps / 8
+        return (positionMs * bitrateKbps) / 8L
+    }
+
     private fun isRealLiveWindow(): Boolean = exoPlayer.currentLiveOffset != C.TIME_UNSET
 
     // Étape R5a (2/4) : en REPLAY, ni seekToDefaultPosition() (reviendrait vers le bord
@@ -1601,7 +2185,8 @@ class PlayerController(
     /** À appeler impérativement quand l'écran qui détient ce controller disparaît. */
     fun release() {
         cancelWatchdog()
-        bufferGuardJob?.cancel()
+        bufferManagerJob?.cancel()
+        prefetcherJob?.cancel()
         controllerScope.cancel()
         exoPlayer.release()
     }
@@ -1616,6 +2201,11 @@ class PlayerController(
         // l'utilisateur sur certains flux .ts bruts non ré-encodés, pour rester valable
         // même sur un flux encore plus lourd.
         private const val ASSUMED_PEAK_BITRATE_KBPS = 80_000L
+
+        // Étape 4 — fraction maximale de l'espace réellement allouable que le cache
+        // peut occuper. Le reste est laissé au système, aux fichiers temporaires, aux
+        // autres données de l'application et aux opérations d'E/S.
+        private const val DISK_CACHE_ALLOCATABLE_FRACTION = 0.80
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_MS = 2_500
         private const val DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS = 5_000
 
@@ -1629,22 +2219,55 @@ class PlayerController(
         // nativement pour les opérateurs de comparaison entre types numériques.
         private const val BUFFER_GUARD_LOW_WATERMARK_MS = 15_000
 
-        // Fix (2026-08-08) — voir evaluateBufferGuard : seuil de reprise à 1x, nettement
-        // au-dessus du seuil de déclenchement pour l'hystérésis (description utilisateur :
-        // "20-25s"). Valeur médiane de cette fourchette.
+        // Fix (2026-08-08) — voir evaluateBufferGuard : seuil de reprise fixe (repli
+        // quand aucune cible adaptative n'est encore disponible) et base de l'hystérésis
+        // relative en 3c (écart recover−low ≈ 7s). Valeur médiane de la fourchette
+        // utilisateur "20-25s".
         private const val BUFFER_GUARD_RECOVER_WATERMARK_MS = 22_000
 
-        // Fix (2026-08-08) — voir startBufferGuard : "un petit poll, beaucoup moins
-        // punitif" que le watchdog de blocage (qui, lui, attend 15s/20s avant de réagir à
-        // un blocage déjà là) — 2s reste largement assez réactif pour un ralentissement
-        // de vitesse, pas assez fréquent pour peser sur le thread principal.
-        private const val BUFFER_GUARD_POLL_INTERVAL_MS = 2_000L
+        // Fix (2026-08-10) — Étape 3c : ratios de la cible adaptative pour les seuils
+        // bas / reprise de [evaluateBufferGuard]. 0.70 / 0.90 laissent une hystérésis
+        // d'environ 20 % de la cible (plus l'écart absolu recover−low en plancher),
+        // suffisante pour ne pas osciller la qualité autour d'un unique seuil.
+        private const val BUFFER_GUARD_ADAPTIVE_LOW_RATIO = 0.70
+        private const val BUFFER_GUARD_ADAPTIVE_RECOVER_RATIO = 0.90
 
-        // Fix (2026-08-08) — voir evaluateBufferGuard : ralentissement "quasi
-        // imperceptible à l'oreille/l'œil" (description utilisateur, fourchette
-        // 0.9x-0.95x) plutôt qu'un recul de lecture, incompatible avec setBackBuffer(0,
-        // false) — voir la doc de [bufferGuardJob].
-        private val BUFFER_GUARD_SLOWDOWN_SPEED = PlaybackParameters(0.93f)
+        // Fix (2026-08-10) — voir startBufferManager (Étape 3a + 3c) : cadence unique du
+        // poll BufferManager (collecte + réaction ABR). 2s reste assez réactif pour un
+        // plafond de débit, pas assez fréquent pour peser sur le thread principal.
+        private const val BUFFER_MANAGER_POLL_INTERVAL_MS = 2_000L
+
+        // Fix (2026-08-10) — Étape 5 : cadence du prefetcher. Un peu plus lente que le
+        // BufferManager (3s) : le téléchargement d'un morceau peut déjà prendre du temps
+        // sur IO, pas besoin de relancer trop souvent.
+        private const val PREFETCH_POLL_INTERVAL_MS = 3_000L
+
+        // Fix (2026-08-10) — Étape 5c : durée de pause du prefetcher après un seek
+        // (laisse le temps à ExoPlayer de se stabiliser sur la nouvelle position avant
+        // de reprendre l'accumulation devant la tête de lecture).
+        private const val PREFETCH_SEEK_PAUSE_MS = 2_000L
+
+        // Fix (2026-08-10) — Étape 5a/5e : taille d'un morceau préchargé. Assez grand
+        // pour limiter le nombre de requêtes HTTP, assez petit pour s'interrompre vite
+        // si un seek arrive en cours de téléchargement (~1 Mo).
+        private const val PREFETCH_CHUNK_BYTES = 1L * 1024L * 1024L
+
+        // Fix (2026-08-10) — Étape 3b (2/2) : fraction du heap libre allouable au tampon
+        // adaptatif (voir [maxBufferMsAffordableByRam]). Conservatrice volontairement
+        // (0.4) : le reste reste disponible pour décodeur, UI Compose, cache disque
+        // Media3, etc. — allouer tout le libre risquerait un OOM dès qu'une allocation
+        // concurrente arrive.
+        private const val RAM_BUFFER_USABLE_FRACTION = 0.4
+
+        // Fix (2026-08-10) — voir evaluateBufferGuard/applyBufferGuardBitrateCap :
+        // plafond de débit (bits/s) imposé quand le tampon descend sous le seuil bas
+        // (fixe ou relatif à la cible adaptative, étape 3c) — réaction ABR (§5.1)
+        // plutôt que l'ancien ralentissement de vitesse de lecture, incompatible avec
+        // setBackBuffer(0, false). Valeur volontairement basse (qualité "SD",
+        // ~800 kbit/s) pour réduire vite et fort la consommation de débit dès le
+        // déclenchement, plutôt qu'un plafond proche du débit courant qui laisserait
+        // le tampon continuer de s'épuiser le temps que l'ABR converge.
+        private const val BUFFER_GUARD_MAX_BITRATE_BPS = 800_000
 
         // Fix (2026-08-05) — voir buildLoadControl : marge ajoutee au-dela du retard
         // demande pour garantir que maxBufferMs peut TOUJOURS le contenir entierement,
