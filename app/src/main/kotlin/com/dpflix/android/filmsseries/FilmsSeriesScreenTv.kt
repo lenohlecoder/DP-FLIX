@@ -11,11 +11,11 @@ import com.dpflix.android.repository.AppRepository
  * Comme anticipé dans la doc de [FilmsSeriesScreen] : cet écran est une simple `WebView`
  * plein écran (verrouillage domaine + double-appui retour), sans disposition D-pad
  * spécifique à adapter — contrairement au reste de l'app (mobile `material3` vs TV
- * `androidx.tv.material3`), il n'y a donc rien à dupliquer ici. Ce wrapper existe
- * uniquement pour exposer l'écran sous un nom dédié côté TV (cohérent avec le pattern
- * `XxxScreen`/`XxxScreenTv` du reste de la navigation, voir `DpFlixTvNavHost`), et pour
- * garder la porte ouverte à une éventuelle divergence future sans avoir à toucher au
- * graphe de navigation TV.
+ * `androidx.tv.material3`), il n'y a donc rien à dupliquer ici. `showVirtualCursor = true`
+ * (§ demande utilisateur, 09/08) est en revanche spécifique à ce wrapper : un site web
+ * ordinaire n'étant pas conçu pour une navigation D-pad, un curseur superposé, déplacé par
+ * les flèches de la télécommande, remplace le clic tactile absent sur TV — voir la doc de
+ * [FilmsSeriesScreen] pour le détail de l'implémentation.
  */
 @Composable
 fun FilmsSeriesScreenTv(
@@ -28,6 +28,7 @@ fun FilmsSeriesScreenTv(
         appRepository = appRepository,
         onNavigateHome = onNavigateHome,
         streamIndex = streamIndex,
+        showVirtualCursor = true,
         modifier = modifier
     )
 }

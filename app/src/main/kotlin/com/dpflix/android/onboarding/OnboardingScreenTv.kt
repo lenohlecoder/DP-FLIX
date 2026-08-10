@@ -3,6 +3,8 @@ package com.dpflix.android.onboarding
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.OutlinedTextField
@@ -20,11 +23,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -32,7 +39,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
 import com.dpflix.android.model.PlaylistType
@@ -63,13 +69,30 @@ import com.dpflix.android.ui.theme.DpFlixColors
  * enregistrée) n'a rien vers quoi annuler — même choix que [OnboardingScreen] mobile,
  * qui n'a pas non plus ce bouton à ce stade.
  *
- * ## Pas de `Checkbox`/`Icon` `tv-material3`
+ * ## Cartes de choix et champs : `clickable`/focus manuel plutôt que composants `tv-material3`
+ * (§ demande utilisateur, révisé 09/08) [ChooseTypeStepTv] utilisait un `tv.material3.Button`
+ * pour "Liste de lecture M3U"/"Xtream Codes" — mais ce composant impose son propre style
+ * par défaut (fond/bordure), resté visible même sans focus D-pad, contrairement à
+ * l'intention (surbrillance rouge réservée à la carte réellement focalisée). Remplacé par
+ * un `Box` + `Modifier.clickable` (nativement navigable D-pad, focusable + réagit à
+ * Entrée) où l'on pilote nous-mêmes bordure/fond selon [isFocused] — voir
+ * [SelectableCardTv] plus bas, même principe que `ChannelCardTv` côté accueil TV.
+ *
+ * ## Ordre de focus explicite dans les formulaires (§ demande utilisateur, 09/08)
+ * Les champs de [XtreamFormStepTv]/[M3uFormStepTv] (colonne centrale) et les boutons
+ * Suivant/Précédent (colonne de droite, [OnboardingActionsTv]) sont dans des `Column`
+ * différentes d'une même `Row` — la recherche de focus D-pad par proximité spatiale ne
+ * traversait pas correctement cette frontière (le D-pad restait cantonné aux deux boutons
+ * d'action, sans jamais atteindre les champs). Chaque champ et bouton porte maintenant un
+ * [FocusRequester] dédié, chaîné explicitement via `Modifier.focusProperties { down = ...;
+ * up = ... }` : premier champ → champ suivant → ... → dernier champ → Suivant → Précédent,
+ * et retour. Traversée déterministe, indépendante de la disposition visuelle.
+ *
+ * ## Pas de `Checkbox` `tv-material3`
  * La version de `androidx.tv.material3` utilisée par le projet (voir
- * `gradle/libs.versions.toml`) n'expose ni case à cocher ni composant d'icône — la case
- * "Inclure les chaînes de télévision" (§4.2) est donc un simple [Button] dont le texte
- * bascule ☑/☐ au clic ([IncludeTvChannelsToggle] plus bas), plutôt qu'un vrai composant
- * de case à cocher. Le champ de saisie de texte pose le même problème (`tv-material3` ne
- * fournit pas de `TextField`) — voir la note sur [TvTextField] ci-dessous.
+ * `gradle/libs.versions.toml`) n'expose pas de case à cocher — la case "Inclure les
+ * chaînes de télévision" (§4.2) reste un simple [SelectableCardTv] dont le texte bascule
+ * ☑/☐ au clic ([IncludeTvChannelsToggle] plus bas).
  *
  * ## `OutlinedTextField` Material3 réutilisé tel quel pour la saisie de texte
  * Faute de composant de saisie dans `tv-material3`, les champs (adresse serveur,
@@ -123,6 +146,7 @@ fun OnboardingScreenTv(
 @Composable
 private fun ChooseTypeStepTv(onSelect: (PlaylistType) -> Unit) {
     val firstChoiceFocusRequester = remember { FocusRequester() }
+    val secondChoiceFocusRequester = remember { FocusRequester() }
 
     Row(
         modifier = Modifier
@@ -145,20 +169,18 @@ private fun ChooseTypeStepTv(onSelect: (PlaylistType) -> Unit) {
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterVertically)
         ) {
-            Button(
+            SelectableCardTv(
+                text = "Liste de lecture M3U",
                 onClick = { onSelect(PlaylistType.M3U) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(firstChoiceFocusRequester)
-            ) {
-                Text("Liste de lecture M3U")
-            }
-            Button(
+                focusRequester = firstChoiceFocusRequester,
+                modifier = Modifier.focusProperties { down = secondChoiceFocusRequester }
+            )
+            SelectableCardTv(
+                text = "Xtream Codes",
                 onClick = { onSelect(PlaylistType.XTREAM) },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Xtream Codes")
-            }
+                focusRequester = secondChoiceFocusRequester,
+                modifier = Modifier.focusProperties { up = firstChoiceFocusRequester }
+            )
         }
     }
 
@@ -176,39 +198,69 @@ private fun XtreamFormStepTv(
     onSubmit: () -> Unit
 ) {
     val form = state.xtreamForm
-    val firstFieldFocusRequester = remember { FocusRequester() }
+    val serverFocusRequester = remember { FocusRequester() }
+    val usernameFocusRequester = remember { FocusRequester() }
+    val passwordFocusRequester = remember { FocusRequester() }
+    val toggleFocusRequester = remember { FocusRequester() }
+    val submitFocusRequester = remember { FocusRequester() }
+    val backFocusRequester = remember { FocusRequester() }
 
     OnboardingScaffoldTv(
         title = "Xtream Code",
         subtitle = null,
         errorMessage = state.errorMessage,
-        actions = { OnboardingActionsTv(isSubmitting = state.isSubmitting, onBack = onBack, onSubmit = onSubmit) }
+        actions = {
+            OnboardingActionsTv(
+                isSubmitting = state.isSubmitting,
+                onBack = onBack,
+                onSubmit = onSubmit,
+                submitFocusRequester = submitFocusRequester,
+                backFocusRequester = backFocusRequester,
+                previousFocusRequester = toggleFocusRequester
+            )
+        }
     ) {
         TvTextField(
             value = form.serverUrl,
             onValueChange = { value -> onFormChange { it.copy(serverUrl = value) } },
             label = "Adresse du serveur",
-            focusRequester = firstFieldFocusRequester
+            focusRequester = serverFocusRequester,
+            modifier = Modifier.focusProperties { down = usernameFocusRequester }
         )
         TvTextField(
             value = form.username,
             onValueChange = { value -> onFormChange { it.copy(username = value) } },
-            label = "Nom d'utilisateur"
+            label = "Nom d'utilisateur",
+            focusRequester = usernameFocusRequester,
+            modifier = Modifier.focusProperties {
+                up = serverFocusRequester
+                down = passwordFocusRequester
+            }
         )
         TvTextField(
             value = form.password,
             onValueChange = { value -> onFormChange { it.copy(password = value) } },
             label = "Mot de passe",
-            visualTransformation = PasswordVisualTransformation()
+            visualTransformation = PasswordVisualTransformation(),
+            focusRequester = passwordFocusRequester,
+            modifier = Modifier.focusProperties {
+                up = usernameFocusRequester
+                down = toggleFocusRequester
+            }
         )
         IncludeTvChannelsToggle(
             checked = form.includeTvChannels,
-            onToggle = { checked -> onFormChange { it.copy(includeTvChannels = checked) } }
+            onToggle = { checked -> onFormChange { it.copy(includeTvChannels = checked) } },
+            focusRequester = toggleFocusRequester,
+            modifier = Modifier.focusProperties {
+                up = passwordFocusRequester
+                down = submitFocusRequester
+            }
         )
     }
 
     LaunchedEffect(Unit) {
-        firstFieldFocusRequester.requestFocus()
+        serverFocusRequester.requestFocus()
     }
 }
 
@@ -221,7 +273,11 @@ private fun M3uFormStepTv(
     onSubmit: () -> Unit
 ) {
     val form = state.m3uForm
-    val firstFieldFocusRequester = remember { FocusRequester() }
+    val nameFocusRequester = remember { FocusRequester() }
+    val urlFocusRequester = remember { FocusRequester() }
+    val importFocusRequester = remember { FocusRequester() }
+    val submitFocusRequester = remember { FocusRequester() }
+    val backFocusRequester = remember { FocusRequester() }
     val filePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             onFormChange { it.copy(localFileUri = uri, localFileName = uri.lastPathSegment) }
@@ -232,13 +288,23 @@ private fun M3uFormStepTv(
         title = "Liste de lecture M3U",
         subtitle = null,
         errorMessage = state.errorMessage,
-        actions = { OnboardingActionsTv(isSubmitting = state.isSubmitting, onBack = onBack, onSubmit = onSubmit) }
+        actions = {
+            OnboardingActionsTv(
+                isSubmitting = state.isSubmitting,
+                onBack = onBack,
+                onSubmit = onSubmit,
+                submitFocusRequester = submitFocusRequester,
+                backFocusRequester = backFocusRequester,
+                previousFocusRequester = importFocusRequester
+            )
+        }
     ) {
         TvTextField(
             value = form.name,
             onValueChange = { value -> onFormChange { it.copy(name = value) } },
             label = "Nom",
-            focusRequester = firstFieldFocusRequester
+            focusRequester = nameFocusRequester,
+            modifier = Modifier.focusProperties { down = urlFocusRequester }
         )
         TvTextField(
             value = form.url,
@@ -246,21 +312,29 @@ private fun M3uFormStepTv(
                 // Une URL saisie et un fichier importé sont mutuellement exclusifs (§4.2 : "en alternative").
                 onFormChange { it.copy(url = value, localFileUri = null, localFileName = null) }
             },
-            label = "URL de la playlist"
+            label = "URL de la playlist",
+            focusRequester = urlFocusRequester,
+            modifier = Modifier.focusProperties {
+                up = nameFocusRequester
+                down = importFocusRequester
+            }
         )
         Text("— ou —", color = DpFlixColors.OnBackgroundMuted)
-        Button(
+        SelectableCardTv(
+            text = form.localFileName?.let { "Fichier : $it" } ?: "Importer un fichier local (.m3u / .m3u8)",
             onClick = {
                 filePickerLauncher.launch(arrayOf("audio/x-mpegurl", "application/x-mpegurl", "application/octet-stream", "*/*"))
             },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(form.localFileName?.let { "Fichier : $it" } ?: "Importer un fichier local (.m3u / .m3u8)")
-        }
+            focusRequester = importFocusRequester,
+            modifier = Modifier.focusProperties {
+                up = urlFocusRequester
+                down = submitFocusRequester
+            }
+        )
     }
 
     LaunchedEffect(Unit) {
-        firstFieldFocusRequester.requestFocus()
+        nameFocusRequester.requestFocus()
     }
 }
 
@@ -310,19 +384,44 @@ private fun OnboardingScaffoldTv(
     }
 }
 
-/** Boutons "Suivant" / "Précédent" (§4.2), empilés verticalement (colonne de droite du scaffold). */
+/**
+ * Boutons "Suivant" / "Précédent" (§4.2), empilés verticalement (colonne de droite du
+ * scaffold). [submitFocusRequester]/[backFocusRequester] permettent au dernier champ du
+ * formulaire de descendre explicitement jusqu'ici (voir la doc de [OnboardingScreenTv]) ;
+ * [previousFocusRequester] referme la boucle dans l'autre sens (remonter depuis "Suivant"
+ * vers le dernier champ de contenu).
+ */
 @Composable
-private fun OnboardingActionsTv(isSubmitting: Boolean, onBack: () -> Unit, onSubmit: () -> Unit) {
-    Button(onClick = onSubmit, enabled = !isSubmitting, modifier = Modifier.fillMaxWidth()) {
-        if (isSubmitting) {
-            CircularProgressIndicator(modifier = Modifier.padding(2.dp), color = Color.White, strokeWidth = 2.dp)
+private fun OnboardingActionsTv(
+    isSubmitting: Boolean,
+    onBack: () -> Unit,
+    onSubmit: () -> Unit,
+    submitFocusRequester: FocusRequester,
+    backFocusRequester: FocusRequester,
+    previousFocusRequester: FocusRequester
+) {
+    SelectableCardTv(
+        text = "Suivant",
+        onClick = onSubmit,
+        enabled = !isSubmitting,
+        focusRequester = submitFocusRequester,
+        modifier = Modifier.focusProperties {
+            up = previousFocusRequester
+            down = backFocusRequester
+        },
+        content = if (isSubmitting) {
+            { CircularProgressIndicator(modifier = Modifier.padding(2.dp), color = Color.White, strokeWidth = 2.dp) }
         } else {
-            Text("Suivant")
+            null
         }
-    }
-    Button(onClick = onBack, enabled = !isSubmitting, modifier = Modifier.fillMaxWidth()) {
-        Text("Précédent")
-    }
+    )
+    SelectableCardTv(
+        text = "Précédent",
+        onClick = onBack,
+        enabled = !isSubmitting,
+        focusRequester = backFocusRequester,
+        modifier = Modifier.focusProperties { up = submitFocusRequester }
+    )
 }
 
 /**
@@ -330,9 +429,55 @@ private fun OnboardingActionsTv(isSubmitting: Boolean, onBack: () -> Unit, onSub
  * [OnboardingScreenTv] sur l'absence de `Checkbox` dans `tv-material3` à ce stade.
  */
 @Composable
-private fun IncludeTvChannelsToggle(checked: Boolean, onToggle: (Boolean) -> Unit) {
-    Button(onClick = { onToggle(!checked) }, modifier = Modifier.fillMaxWidth()) {
-        Text(if (checked) "☑ Inclure les chaînes de télévision" else "☐ Inclure les chaînes de télévision")
+private fun IncludeTvChannelsToggle(
+    checked: Boolean,
+    onToggle: (Boolean) -> Unit,
+    focusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier
+) {
+    SelectableCardTv(
+        text = if (checked) "☑ Inclure les chaînes de télévision" else "☐ Inclure les chaînes de télévision",
+        onClick = { onToggle(!checked) },
+        focusRequester = focusRequester,
+        modifier = modifier
+    )
+}
+
+/**
+ * Carte cliquable générique (choix, bouton d'action, bascule) — voir la doc de
+ * [OnboardingScreenTv] sur pourquoi ceci remplace `tv.material3.Button` ici : bordure
+ * rouge UNIQUEMENT quand [isFocused] est vrai ([Modifier.onFocusChanged]), fond neutre
+ * sinon — jamais de contour visible sur une carte qui n'a pas le focus D-pad.
+ */
+@Composable
+private fun SelectableCardTv(
+    text: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    focusRequester: FocusRequester? = null,
+    content: (@Composable () -> Unit)? = null
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .onFocusChanged { isFocused = it.isFocused }
+            .background(DpFlixColors.Surface, shape = RoundedCornerShape(8.dp))
+            .border(
+                width = if (isFocused) 3.dp else 0.dp,
+                color = DpFlixColors.Red,
+                shape = RoundedCornerShape(8.dp)
+            )
+            .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 14.dp)
+    ) {
+        if (content != null) {
+            content()
+        } else {
+            Text(text = text, color = DpFlixColors.OnBackground, fontSize = 16.sp)
+        }
     }
 }
 
@@ -340,7 +485,8 @@ private fun IncludeTvChannelsToggle(checked: Boolean, onToggle: (Boolean) -> Uni
  * Champ de saisie de texte — voir la doc de [OnboardingScreenTv] sur la réutilisation
  * d'`OutlinedTextField` Material3 faute de composant `tv-material3` équivalent. Couleurs
  * de marque appliquées explicitement (comme la version mobile, `DpFlixTextField`) : pas
- * besoin d'un `androidx.compose.material3.MaterialTheme` ambiant pour ça.
+ * besoin d'un `androidx.compose.material3.MaterialTheme` ambiant pour ça. [modifier] permet
+ * d'y attacher l'ordre de focus explicite (voir la doc de [OnboardingScreenTv]).
  */
 @Composable
 private fun TvTextField(
@@ -348,7 +494,8 @@ private fun TvTextField(
     onValueChange: (String) -> Unit,
     label: String,
     visualTransformation: VisualTransformation = VisualTransformation.None,
-    focusRequester: FocusRequester? = null
+    focusRequester: FocusRequester? = null,
+    modifier: Modifier = Modifier
 ) {
     OutlinedTextField(
         value = value,
@@ -356,7 +503,7 @@ private fun TvTextField(
         label = { androidx.compose.material3.Text(label) },
         singleLine = true,
         visualTransformation = visualTransformation,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .let { if (focusRequester != null) it.focusRequester(focusRequester) else it },
         colors = OutlinedTextFieldDefaults.colors(

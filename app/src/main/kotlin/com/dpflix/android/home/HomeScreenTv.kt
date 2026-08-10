@@ -369,11 +369,21 @@ private fun CategoryRowTv(
 }
 
 /**
- * Voyant de focus (§ demande utilisateur, 2026-08-06) : bordure rouge qui suit la carte
- * ayant le focus D-pad ([isFocused], `Modifier.onFocusChanged`) — distincte du "En aperçu"
- * ci-dessous ([isSelected], chaîne réellement en lecture dans le mini-lecteur), les deux
- * pouvant être vrais sur deux cartes différentes en même temps (on navigue avec les
- * flèches loin de la chaîne qu'on écoute).
+ * Voyant de focus (§ demande utilisateur, 2026-08-06, révisé 09/08) : bordure rouge qui
+ * suit la carte ayant le focus D-pad ([isFocused], `Modifier.onFocusChanged`) — distincte
+ * du "En aperçu" ci-dessous ([isSelected], chaîne réellement en lecture dans le
+ * mini-lecteur), les deux pouvant être vrais sur deux cartes différentes en même temps (on
+ * navigue avec les flèches loin de la chaîne qu'on écoute).
+ *
+ * `Box` + `Modifier.clickable` plutôt qu'un `tv.material3.Button` (§ demande utilisateur :
+ * toutes les cartes affichaient un cadre visible même sans focus) : le `Button` TV impose
+ * son propre style par défaut (fond/bordure/échelle au focus) qui se superposait à notre
+ * bordure conditionnelle et restait visible même à l'état non focalisé. `clickable` reste
+ * nativement navigable au D-pad (focusable + réagit à Entrée) sans ce style imposé — même
+ * choix déjà fait pour [MiniPlayerTv] plus bas dans ce fichier, pour la même raison.
+ * `maxLines = 1` + `TextOverflow.Ellipsis` sur le nom : un nom trop long pour la largeur
+ * fixe de la carte (160.dp) passait à la ligne et se faisait tronquer verticalement par la
+ * `LazyRow` pendant le défilement plutôt que proprement raccourci avec "…".
  */
 @Composable
 private fun ChannelCardTv(
@@ -383,30 +393,36 @@ private fun ChannelCardTv(
     onClick: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    Button(
-        onClick = onClick,
+    Column(
         modifier = Modifier
             .width(160.dp)
             .onFocusChanged { isFocused = it.isFocused }
             .clip(RoundedCornerShape(8.dp))
+            .background(DpFlixColors.Surface)
             .border(
                 width = if (isFocused) 3.dp else 0.dp,
                 color = DpFlixColors.Red,
                 shape = RoundedCornerShape(8.dp)
             )
             .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
+            .clickable(onClick = onClick)
+            .padding(8.dp)
     ) {
-        Column {
-            channel.displayNumber?.let { number ->
-                Text(text = "$number", color = DpFlixColors.OnBackgroundMuted, fontSize = 14.sp)
-            }
-            // [Fix logos accueil] voir la doc de com.dpflix.android.ui.ChannelLogo —
-            // même correctif que côté mobile (HomeScreen.ChannelCard).
-            ChannelLogo(channel = channel, size = 48.dp)
-            Text(text = channel.name, color = DpFlixColors.OnBackground, fontSize = 16.sp)
-            if (isSelected) {
-                Text(text = "En aperçu", color = DpFlixColors.Red, fontSize = 12.sp)
-            }
+        channel.displayNumber?.let { number ->
+            Text(text = "$number", color = DpFlixColors.OnBackgroundMuted, fontSize = 14.sp)
+        }
+        // [Fix logos accueil] voir la doc de com.dpflix.android.ui.ChannelLogo —
+        // même correctif que côté mobile (HomeScreen.ChannelCard).
+        ChannelLogo(channel = channel, size = 48.dp)
+        Text(
+            text = channel.name,
+            color = DpFlixColors.OnBackground,
+            fontSize = 16.sp,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (isSelected) {
+            Text(text = "En aperçu", color = DpFlixColors.Red, fontSize = 12.sp)
         }
     }
 }
