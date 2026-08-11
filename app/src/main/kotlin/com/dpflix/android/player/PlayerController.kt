@@ -2506,8 +2506,8 @@ class PlayerController(
      * Ouvre une connexion HTTP courte et isolée (hors [Cache], via [httpDataSourceFactory]
      * directement) demandant [PROBE_RANGE_BYTES] à partir de [probeOffsetBytes], puis
      * inspecte l'en-tête `Content-Range` de la réponse : un serveur qui honore vraiment le
-     * Range répond en 206 avec un `Content-Range: bytes <probeOffsetBytes>-.../*`. Toute
-     * réponse sans ce `Content-Range` (200 plein flux, ou `Content-Range` démarrant à un
+     * Range répond en 206 avec un `Content-Range` dont le début vaut `probeOffsetBytes`.
+     * Toute réponse sans ce `Content-Range` (200 plein flux, ou `Content-Range` démarrant à un
      * autre offset que celui demandé) signale un Range non fiable sur ce panel.
      *
      * Une sonde qui échoue pour une raison réseau (timeout, erreur IO) ne doit pas, à
