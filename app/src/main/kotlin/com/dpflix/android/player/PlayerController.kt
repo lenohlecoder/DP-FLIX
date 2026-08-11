@@ -1625,7 +1625,7 @@ class PlayerController(
 
         var downloadedBytes = 0L
         try {
-            while (isActive && downloadedBytes < effectiveTargetBytes) {
+            while (coroutineContext.isActive && downloadedBytes < effectiveTargetBytes) {
                 if (SystemClock.elapsedRealtime() >= deadlineElapsedRealtimeMs) break
                 if (currentPlaybackUri != uri) return // zap / annulation
 
@@ -1669,7 +1669,7 @@ class PlayerController(
             // Best-effort : on tente un démarrage dégradé ci-dessous.
         }
 
-        if (!isActive || currentPlaybackUri != uri) return
+        if (!coroutineContext.isActive || currentPlaybackUri != uri) return
 
         if (downloadedBytes <= 0L) {
             _uiState.value = PlayerUiState.Error(

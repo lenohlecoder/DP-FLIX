@@ -937,6 +937,11 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
 private fun osdIsPlaying(uiState: PlayerUiState): Boolean = when (uiState) {
     is PlayerUiState.Ready -> uiState.isPlaying
     is PlayerUiState.Buffering -> true
+    // Fix (revue 2026-08-11, build CI) — même traitement que Buffering ci-dessus : l'étape
+    // 3a d'initial prebuffer LIVE est elle aussi un chargement avant la première image,
+    // playWhenReady déjà à true côté PlayerController (voir startPlayback), donc l'icône
+    // doit refléter "en lecture" pendant cette phase, pas "en pause".
+    is PlayerUiState.InitialPrebuffering -> true
     is PlayerUiState.Idle, is PlayerUiState.Error -> false
 }
 
