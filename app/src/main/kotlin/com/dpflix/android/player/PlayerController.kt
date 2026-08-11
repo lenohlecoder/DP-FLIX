@@ -1588,7 +1588,9 @@ class PlayerController(
     private suspend fun runInitialLivePrebuffer(uri: String, forcedMimeType: String?) {
         val targetSeconds = settings.initialPrebufferSeconds.coerceAtLeast(0)
         val targetMs = targetSeconds * 1000L
-        val bitrateKbps = ASSUMED_PEAK_BITRATE_KBPS
+        // Fix (revue 2026-08-11) : PAS ASSUMED_PEAK_BITRATE_KBPS ici — voir sa doc et celle
+        // d'ASSUMED_INITIAL_PREBUFFER_BITRATE_KBPS juste au-dessus dans le companion object.
+        val bitrateKbps = ASSUMED_INITIAL_PREBUFFER_BITRATE_KBPS
         val targetBytes = msToEstimatedBytes(targetMs, bitrateKbps)
         if (targetBytes <= 0L) {
             commitLivePlaybackAfterPrebuffer(uri, forcedMimeType)
@@ -2669,6 +2671,22 @@ class PlayerController(
         // l'utilisateur sur certains flux .ts bruts non ré-encodés, pour rester valable
         // même sur un flux encore plus lourd.
         private const val ASSUMED_PEAK_BITRATE_KBPS = 80_000L
+
+        // Fix (revue 2026-08-11, bug 403/509 en LIVE) — débit RÉALISTE (pas un pire cas de
+        // dimensionnement comme ASSUMED_PEAK_BITRATE_KBPS ci-dessus) utilisé UNIQUEMENT pour
+        // estimer combien d'octets télécharger réellement lors du prebuffer initial LIVE
+        // ([runInitialLivePrebuffer]), avant toute mesure réelle ([_streamBitrateKbps] est
+        // encore `null` à ce stade, la lecture n'a pas commencé). Utiliser
+        // ASSUMED_PEAK_BITRATE_KBPS (80 Mbps, marge de sécurité pour du DIMENSIONNEMENT de
+        // capacité RAM/disque, jamais gênant en soi) pour cette décision-ci revenait à
+        // demander ~100 Mo pour "10 secondes" de préchargement sur un flux qui n'en pèse
+        // en réalité que quelques Mo — d'où un chargement interminable ET une rafale de
+        // dizaines de requêtes Range consécutives sur le panel (403/509, quasi tous les
+        // panels IPTV bornent les connexions/le débit par client). 6 Mbps reste généreux
+        // pour la plupart des flux IPTV (HD standard) sans jamais forcer un tel excès ;
+        // reste un réglage pragmatique, à ajuster si des chaînes 4K légitimes s'avèrent
+        // systématiquement sous-préchargées en pratique.
+        private const val ASSUMED_INITIAL_PREBUFFER_BITRATE_KBPS = 6_000L
 
         // Étape 4 — fraction maximale de l'espace réellement allouable que le cache
         // peut occuper. Le reste est laissé au système, aux fichiers temporaires, aux
