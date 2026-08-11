@@ -100,12 +100,19 @@ class FilmDownloadNotifier(context: Context) {
     }
 
     private fun notifId(downloadId: String): Int =
-        (NOTIF_BASE xor downloadId.hashCode()) and 0x7FFFFFFF
+        (NOTIF_BASE.toInt() xor downloadId.hashCode()) and 0x7FFFFFFF
 
     companion object {
         const val CHANNEL_ID = "film_downloads"
         const val EXTRA_OPEN_DOWNLOADS = "com.dpflix.android.OPEN_FILM_DOWNLOADS"
         private const val REQUEST_OPEN_DOWNLOADS = 41001
-        private const val NOTIF_BASE = 0xF11D_0000
+        // Fix build Codemagic : 0xF11D_0000 dépasse Int.MAX_VALUE (2 147 483 647), donc
+        // Kotlin l'infère en Long — incompatible avec le retour Int de notifId() ci-dessus
+        // et avec `xor` sur un Int (downloadId.hashCode()). `L` explicite lève l'ambiguïté
+        // à la déclaration ; `.toInt()` (appelé dans le corps de fonction, pas dans ce
+        // const val — une conversion n'est pas autorisée dans un initialiseur const)
+        // réinterprète les mêmes bits en Int (négatif, sans importance : seul le mélange
+        // bit à bit puis `and 0x7FFFFFFF` compte pour obtenir un ID positif).
+        private const val NOTIF_BASE = 0xF11D_0000L
     }
 }
