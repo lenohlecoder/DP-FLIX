@@ -34,6 +34,7 @@ import com.dpflix.android.settings.DiagnosticErrorEntry
 import com.dpflix.android.settings.PlayerSettings
 import com.dpflix.android.settings.SettingsDataStore
 import java.io.IOException
+import kotlin.coroutines.coroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
