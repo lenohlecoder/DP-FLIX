@@ -36,6 +36,21 @@ data class PlayerSettings(
     /** Sous-réglage affiché uniquement si `hybridBufferEnabled` (§5.1), mais toujours stocké. */
     val diskCacheMaxSizeMb: Long = DEFAULT_DISK_CACHE_MAX_SIZE_MB,
     /**
+     * Fix (revue 2026-08-11, vue d'ensemble étape 1) — durée (en secondes) accumulée dans
+     * le cache disque hybride avant de démarrer réellement la lecture d'une chaîne LIVE
+     * (voir [com.dpflix.android.player.PlayerController.runInitialLivePrebuffer]). Ne
+     * s'applique JAMAIS au replay (démarrage immédiat inchangé, comportement historique).
+     *
+     * ⚠️ Sous-réglage de [hybridBufferEnabled], comme `diskCacheMaxSizeMb` ci-dessus, mais
+     * avec une nuance importante : contrairement à `diskCacheMaxSizeMb` (purement
+     * dimensionnel, sans effet si le tampon hybride est éteint), une valeur non nulle ici
+     * pourrait laisser croire à tort que le préchargement initial LIVE est actif même
+     * tampon hybride désactivé — d'où l'écran Réglages qui n'affiche ce champ QUE si
+     * `hybridBufferEnabled` est vrai (voir `PlayerSectionBody`/`PlayerSectionBodyTv`),
+     * exactement comme `diskCacheMaxSizeMb`, pour éviter cette confusion.
+     */
+    val initialPrebufferSeconds: Int = DEFAULT_INITIAL_PREBUFFER_SECONDS,
+    /**
      * Fix (2026-08-05) : "Mode direct" — désactive d'un coup toute la gestion de
      * tampon/retard volontaire (§5.1/§6) : `bufferSafetyMarginSeconds` et `ramCacheSizeMb`
      * sont ignorés tant que ce mode est actif — voir
@@ -55,6 +70,7 @@ data class PlayerSettings(
         require(bufferSafetyMarginSeconds >= 0) { "La marge de sécurité du tampon ne peut pas être négative" }
         require(ramCacheSizeMb >= 0) { "La taille du cache RAM ne peut pas être négative" }
         require(diskCacheMaxSizeMb >= 0) { "La taille max du cache disque ne peut pas être négative" }
+        require(initialPrebufferSeconds >= 0) { "Le préchargement initial LIVE ne peut pas être négatif" }
     }
 
     companion object {
@@ -75,5 +91,7 @@ data class PlayerSettings(
         // tampon avant la fusion (voir la doc du champ ci-dessus).
         const val DEFAULT_BUFFER_SAFETY_MARGIN_SECONDS = 20
         const val DEFAULT_DISK_CACHE_MAX_SIZE_MB = 500L
+        /** Vue d'ensemble étape 1 (revue 2026-08-11) — 60s, valeur de départ documentée. */
+        const val DEFAULT_INITIAL_PREBUFFER_SECONDS = 60
     }
 }

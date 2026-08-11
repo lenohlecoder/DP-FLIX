@@ -261,6 +261,19 @@ class SettingsViewModel(
     }
 
     /**
+     * Fix (revue 2026-08-11, vue d'ensemble étape 1) — voir la doc de
+     * [PlayerSettings.initialPrebufferSeconds]. `0` désactive le blocage initial LIVE
+     * (retour au démarrage immédiat historique) sans avoir à éteindre tout le tampon
+     * hybride.
+     */
+    fun setInitialPrebufferSeconds(seconds: Int) {
+        val clamped = seconds.coerceIn(INITIAL_PREBUFFER_MIN, INITIAL_PREBUFFER_MAX)
+        viewModelScope.launch {
+            appRepository.settings.updatePlayerSettings { it.copy(initialPrebufferSeconds = clamped) }
+        }
+    }
+
+    /**
      * "Vider le cache" (§5.1) : `MediaCacheProvider.clear` était déjà prêt depuis 5c, en
      * attente de ce bouton. [SettingsUiState.cacheClearedTick] permet à l'écran d'afficher
      * une confirmation transitoire ("Cache vidé") sans dépendance à un `SnackbarHost`.
@@ -426,4 +439,6 @@ private const val BUFFER_SAFETY_MARGIN_MAX = 60
 private const val RAM_CACHE_MIN = 25
 private const val RAM_CACHE_MAX = 1000
 private const val DISK_CACHE_MAX = 10_000L
+private const val INITIAL_PREBUFFER_MIN = 0
+private const val INITIAL_PREBUFFER_MAX = 180
 private const val BYTES_PER_MB = 1024L * 1024L

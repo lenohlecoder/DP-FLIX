@@ -164,6 +164,7 @@ fun SettingsScreenTv(
                         onRamCacheChange = viewModel::setRamCacheSizeMb,
                         onHybridBufferToggled = viewModel::setHybridBufferEnabled,
                         onDiskCacheMaxChange = viewModel::setDiskCacheMaxSizeMb,
+                        onInitialPrebufferChange = viewModel::setInitialPrebufferSeconds,
                         onClearDiskCache = viewModel::clearDiskCache,
                         onDirectModeToggled = viewModel::setDirectModeEnabled
                     )
@@ -428,6 +429,7 @@ private fun PlayerSectionBodyTv(
     onRamCacheChange: (Int) -> Unit,
     onHybridBufferToggled: (Boolean) -> Unit,
     onDiskCacheMaxChange: (Long) -> Unit,
+    onInitialPrebufferChange: (Int) -> Unit,
     onClearDiskCache: () -> Unit,
     onDirectModeToggled: (Boolean) -> Unit
 ) {
@@ -481,11 +483,25 @@ private fun PlayerSectionBodyTv(
             )
         }
 
-        SettingBlockTv(title = "Tampon hybride", subtitle = "Écrit les segments sur le disque avant lecture, en plus du cache RAM.") {
+        SettingBlockTv(
+            title = "Tampon hybride",
+            subtitle = "Écrit les segments sur le disque avant lecture, en plus du cache RAM. Active aussi le préchargement initial en direct ci-dessous."
+        ) {
             Switch(checked = settings.hybridBufferEnabled, onCheckedChange = onHybridBufferToggled)
         }
 
         if (settings.hybridBufferEnabled) {
+            StepperSettingTv(
+                title = "Préchargement initial (direct)",
+                subtitle = "Durée accumulée sur le disque avant de démarrer une chaîne en direct (0 = démarrage immédiat, comme avant). Sans effet sur le replay.",
+                value = settings.initialPrebufferSeconds.toLong(),
+                step = 10L,
+                unit = "s",
+                unlimitedAtZero = false,
+                firstItemFocusRequester = null,
+                onValueChange = { onInitialPrebufferChange(it.toInt()) }
+            )
+
             StepperSettingTv(
                 title = "Taille max du cache disque",
                 subtitle = "0 = illimité.",

@@ -14,6 +14,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.HttpDataSource
 import androidx.media3.datasource.cache.Cache
 import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.cache.CacheWriter
@@ -59,7 +60,21 @@ sealed class PlayerUiState {
     /** Aucune chaîne chargée (avant le premier [PlayerController.playChannel]). */
     object Idle : PlayerUiState()
 
-    /** Chargement en cours (`Player.STATE_BUFFERING`), avant la toute première image. */
+    /**
+     * Étape 3a (initial prebuffer LIVE) — phase dédiée d'accumulation disque avant la
+     * première image, distincte de [Buffering] (qui reste le `STATE_BUFFERING` habituel
+     * d'ExoPlayer une fois la lecture lancée). Affiché uniquement en [PlaybackMode.LIVE]
+     * tant que [PlayerSettings.initialPrebufferSeconds] n'est pas encore atteint dans le
+     * cache hybride (ou jusqu'au timeout dégradé, voir [PlayerController.runInitialLivePrebuffer]).
+     * Le replay ne passe jamais par cet état (démarrage immédiat, étape 1).
+     *
+     * @property progressSeconds secondes déjà préchargées (estimation débit), utile pour
+     *   une éventuelle barre de progression UI ; `null` si pas encore de mesure fiable.
+     */
+    data class InitialPrebuffering(val progressSeconds: Float? = null) : PlayerUiState()
+
+    /** Chargement en cours (`Player.STATE_BUFFERING`), avant la toute première image
+     *  (ou rebuffer en cours de lecture). */
     object Buffering : PlayerUiState()
 
     /** Lecture en cours ou en pause — `isPlaying` distingue les deux pour l'icône play/pause. */
@@ -344,16 +359,79 @@ class PlayerController(
     val adaptiveTargetBufferMs: StateFlow<Long?> = _adaptiveTargetBufferMs
 
     /**
-     * Fix (2026-08-10) — Étape 5 : tâche de préchargement disque, distincte de
-     * [bufferManagerJob] (qui collecte + réagit ABR) mais calée sur la même fenêtre
-     * cible ([_adaptiveTargetBufferMs]). Une instance par `ExoPlayer` construit
-     * ([buildExoPlayer]), annulée dans [release].
+     * Fix (2026-08-10) — Étape 5, étendu LIVE (2026-08-10 vue d'ensemble étape 2) :
+     * tâche de préchargement disque, distincte de [bufferManagerJob] (qui collecte +
+     * réagit ABR) mais calée sur la même fenêtre cible ([_adaptiveTargetBufferMs]).
+     * Une instance par `ExoPlayer` construit ([buildExoPlayer]), annulée dans [release].
      *
-     * Actif UNIQUEMENT en [PlaybackMode.REPLAY] avec tampon hybride activé (5d) :
-     * en LIVE le préchargement anticipé n'a pas de sens (fenêtre live qui avance,
-     * segments déjà obsolètes) et concurrencerait la lecture pour le débit réseau.
+     * Actif en [PlaybackMode.REPLAY] ET en [PlaybackMode.LIVE] dès que le tampon hybride
+     * est activé. En LIVE, le point de départ de la fenêtre est ancré sur
+     * [livePrefetchSessionOriginMs] (instant de lancement de la chaîne), pas sur l'edge
+     * live qui continue d'avancer — voir [runPrefetchTick] et l'étape 2b.
      */
     private var prefetcherJob: Job? = null
+
+    /**
+     * Étape 3 (initial prebuffer LIVE) — coroutine qui bloque le démarrage de la lecture
+     * jusqu'à ce que [PlayerSettings.initialPrebufferSeconds] soit atteint dans le cache
+     * disque (ou timeout). Distincte de [prefetcherJob] (poll continu en arrière-plan).
+     * Annulée à chaque zap / [release] / bascule replay.
+     */
+    private var initialPrebufferJob: Job? = null
+
+    /**
+     * Étape 2b / 4 — origine figée de la session LIVE pour le prefetcher et le démarrage
+     * de lecture. Posée au lancement de [playChannel] / [runInitialLivePrebuffer] :
+     * toutes les positions de prefetch et le `seekTo(0)` initial sont relatifs à cet
+     * ancrage, pas à l'edge live réel qui avance. `null` hors session LIVE prébufférée.
+     *
+     * En pratique : on traite le flux live comme un progressif à position de départ
+     * figée dès le clic (étape 4), exactement comme un replay démarré à t=0 de son
+     * propre point de vue.
+     */
+    private var livePrefetchSessionOriginMs: Long? = null
+
+    /**
+     * Fix (revue 2026-08-11, bug cache LIVE périmé) — support Range HTTP confirmé pour la
+     * session LIVE en cours. `true` par défaut (optimiste) tant qu'aucune sonde n'a
+     * infirmé le Range ([probeRangeSupport]) ; passe à `false` dès qu'une réponse ne
+     * confirme pas un `Content-Range` démarrant à l'offset demandé — dans ce cas
+     * [runInitialLivePrebuffer] et [runPrefetchTick] cessent de chaîner des blocs à un
+     * offset > 0 (seul l'offset 0, trivialement identique à "le direct maintenant", reste
+     * sollicité). Réinitialisé à `true` à chaque nouvelle session LIVE prébufférée (mêmes
+     * points que [livePrefetchSessionOriginMs]) : un panel qui échoue la sonde une fois
+     * pourrait très bien la réussir à la prochaine chaîne.
+     */
+    private var liveRangeSupportConfirmed: Boolean = true
+
+    /**
+     * Fix (revue 2026-08-11, bug cache LIVE périmé) — clé de cache disque utilisée pour
+     * TOUT accès (lecture ET préchargement) pendant une session LIVE prébufférée.
+     *
+     * Avant ce fix, [prefetchByteRange]/[runInitialLivePrebuffer] utilisaient l'URI seule
+     * comme clé ([Cache] partagé, persistant pour toute la durée du process) : re-zapper
+     * sur une chaîne déjà regardée plus tôt dans la session retrouvait les anciens octets
+     * en cache et les servait comme "déjà téléchargés", alors qu'en direct les octets à
+     * l'offset 0 d'il y a 10 minutes ne représentent plus "maintenant". Correct pour le
+     * replay (fichier VOD figé, d'où [PlaybackMode.REPLAY] qui garde l'URI seule
+     * ci-dessous), faux pour le direct.
+     *
+     * En LIVE avec [livePrefetchSessionOriginMs] non nul, la clé inclut cet ancrage de
+     * session (posé une seule fois par vrai zap dans [startPlayback], conservé lors d'une
+     * simple reconnexion [skipInitialPrebuffer]) : deux sessions LIVE distinctes sur la
+     * MÊME URI obtiennent deux clés différentes et ne partagent donc plus aucun octet en
+     * cache, tandis que les téléchargements successifs (initial prebuffer + prefetcher
+     * continu) d'UNE MÊME session continuent de se voir mutuellement, comme voulu par
+     * l'étape 5e (pas de double téléchargement au sein d'une session).
+     */
+    private fun liveAwareCacheKey(uri: String): String {
+        val originMs = livePrefetchSessionOriginMs
+        return if (_playbackMode.value == PlaybackMode.LIVE && originMs != null) {
+            "$uri#live-session-$originMs"
+        } else {
+            uri
+        }
+    }
 
     /**
      * Étape 5c — horodatage jusqu'auquel le prefetcher reste en pause après un seek
@@ -498,6 +576,18 @@ class PlayerController(
     private var liveAnchorElapsedRealtimeMs: Long? = null
     private var liveAnchorPositionMs: Long? = null
 
+    // Fix (2026-08-10) — Étape 3/4 : point de départ de l'estimation d'écart au direct
+    // (voir currentLiveEdgeOffsetSeconds), figé au même instant que liveAnchor* ci-dessus.
+    // Avant l'initial prebuffer LIVE, ce retard au démarrage valait TOUJOURS
+    // [PlayerSettings.bufferSafetyMarginSeconds] (seule source de retard volontaire).
+    // Avec le prebuffer, le vrai retard au premier STATE_READY est le temps mur
+    // réellement écoulé depuis [livePrefetchSessionOriginMs] (peut différer nettement de
+    // [PlayerSettings.initialPrebufferSeconds] : réseau plus lent/rapide que l'hypothèse de
+    // débit, ou repli dégradé après timeout) — sans ce champ, l'estimation resterait
+    // ancrée sur bufferSafetyMarginSeconds et sous-évaluerait le retard réel après un
+    // prebuffer. `null` tant qu'aucune session n'a encore atteint son premier STATE_READY.
+    private var liveAnchorInitialOffsetMs: Long? = null
+
     private fun alternateContainerUri(uri: String): String? = when {
         uri.endsWith(".m3u8", ignoreCase = true) -> uri.dropLast(5) + ".ts"
         uri.endsWith(".ts", ignoreCase = true) -> uri.dropLast(3) + ".m3u8"
@@ -541,6 +631,13 @@ class PlayerController(
                 .setCache(MediaCacheProvider.get(context, maxSizeBytes))
                 .setUpstreamDataSourceFactory(upstreamFactory)
                 .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR)
+                // Fix (revue 2026-08-11, bug cache LIVE périmé) : la lecture doit résoudre
+                // la MÊME clé que le préchargement ([liveAwareCacheKey]), sans quoi elle
+                // continuerait à lire/écrire sous l'URI seule pendant qu'un re-zap LIVE
+                // écrit sous une clé de session distincte — les deux caches divergeraient
+                // silencieusement (aucun octet partagé, tout le travail du prefetcher
+                // deviendrait inutile) au lieu de corriger réellement le bug.
+                .setCacheKeyFactory { dataSpec -> liveAwareCacheKey(dataSpec.uri.toString()) }
         }
     }
 
@@ -696,10 +793,22 @@ class PlayerController(
         // sans surcharge) — démarrage le plus rapide possible, aucune cible de retard. Voir
         // la doc de [PlayerSettings.directModeEnabled].
         //
-        // Étape R5a (4/4) — Mode replay : même court-circuit, pour la même raison qu'en
-        // direct — pas de retard cible sur le direct à maintenir, pas de risque de
-        // rattraper un vrai bord live puisqu'il n'y a pas de direct ici.
-        if (currentSettings.directModeEnabled || mode == PlaybackMode.REPLAY) {
+        // Fix (2026-08-10) — Étape 1 : mode replay retiré de ce court-circuit. L'ancien
+        // raisonnement (Étape R5a (4/4), voir historique) traitait le replay comme le mode
+        // direct au motif qu'il n'y a "ni retard cible sur le direct à maintenir ni risque
+        // de rattraper un vrai bord live" : correct, mais ça revenait à jeter TOUS les
+        // réglages perso de tampon (`bufferSafetyMarginSeconds`, `ramCacheSizeMb`...) en
+        // replay, pas seulement le raisonnement "retard cible" qui ne s'y applique pas.
+        // Un replay bénéficie tout autant qu'un direct d'un tampon dimensionné selon la
+        // config utilisateur (démarrage moins abrupt, marge avant rebuffer, plafond RAM
+        // cohérent) — seul le mode direct doit repartir des valeurs par défaut d'ExoPlayer.
+        // Ce réglage bas niveau reste figé à la construction du `LoadControl` — donc de
+        // l'`ExoPlayer` lui-même — et ne peut pas être changé à chaud sur une instance déjà
+        // construite (contrairement à `LiveConfiguration`, une propriété du `MediaItem`,
+        // voir [startPlayback]) : [rebuildExoPlayerIfModeChanged] reste le mécanisme qui
+        // garantit qu'une VRAIE transition direct↔replay reconstruit bien l'`ExoPlayer`
+        // pour que ce court-circuit (désormais direct uniquement) s'applique réellement.
+        if (currentSettings.directModeEnabled) {
             return DefaultLoadControl.Builder().build()
         }
 
@@ -1029,7 +1138,11 @@ class PlayerController(
                                 "(${next.mimeType ?: "détection automatique"})" +
                                 (networkDetail?.let { " — $it" } ?: "")
                         )
-                        startPlayback(next.uri, forcedMimeType = next.mimeType)
+                        startPlayback(
+                            next.uri,
+                            forcedMimeType = next.mimeType,
+                            skipInitialPrebuffer = true
+                        )
                         return
                     }
                     // Media3 a déjà épuisé ses tentatives (ResilientLoadErrorHandlingPolicy)
@@ -1121,6 +1234,11 @@ class PlayerController(
         // transitoire du player (ex. passage à STATE_IDLE pendant qu'il abandonne) :
         // seul playChannel() doit pouvoir sortir de l'état Error.
         if (_uiState.value is PlayerUiState.Error) return
+        // Étape 3a : pendant l'initial prebuffer, le player n'est pas encore préparé —
+        // les callbacks d'état ExoPlayer ne doivent pas écraser InitialPrebuffering
+        // (c'est runInitialLivePrebuffer / commitLivePlaybackAfterPrebuffer qui pilotent
+        // la transition).
+        if (_uiState.value is PlayerUiState.InitialPrebuffering) return
 
         val wasBuffering = _uiState.value is PlayerUiState.Buffering
         val newState = when (exoPlayer.playbackState) {
@@ -1157,6 +1275,12 @@ class PlayerController(
             if (liveAnchorElapsedRealtimeMs == null) {
                 liveAnchorElapsedRealtimeMs = SystemClock.elapsedRealtime()
                 liveAnchorPositionMs = exoPlayer.currentPosition
+                // Fix (2026-08-10) : retard réel au démarrage — temps mur écoulé depuis
+                // l'origine de session si un prebuffer a eu lieu (étape 3/4), sinon repli
+                // sur le retard cible historique (bufferSafetyMarginSeconds).
+                liveAnchorInitialOffsetMs = livePrefetchSessionOriginMs?.let { originMs ->
+                    SystemClock.elapsedRealtime() - originMs
+                } ?: (settings.bufferSafetyMarginSeconds * 1000L)
             }
         }
     }
@@ -1249,7 +1373,12 @@ class PlayerController(
         _playbackMode.value = PlaybackMode.LIVE
         _replayProgram.value = null
         cancelWatchdog()
-        _uiState.value = PlayerUiState.Buffering
+        // Étape 3a/6a : zap LIVE = nouveau pipeline complet. L'état InitialPrebuffering
+        // (ou Buffering en repli) est posé par startPlayback selon que le prebuffer
+        // initial s'applique ou non.
+        initialPrebufferJob?.cancel()
+        initialPrebufferJob = null
+        livePrefetchSessionOriginMs = null
         // 8d6 : les pistes de la chaine precedente n'ont plus cours - remis a vide en
         // attendant que onTracksChanged reannonce les pistes du nouveau flux (evite
         // d'afficher brievement des resolutions qui ne correspondent plus a rien).
@@ -1279,8 +1408,17 @@ class PlayerController(
         // session/configuration precedente).
         liveAnchorElapsedRealtimeMs = null
         liveAnchorPositionMs = null
+        liveAnchorInitialOffsetMs = null
         lastReconnectAtElapsedRealtimeMs = 0L
-        scheduleWatchdog()
+        // Fix (2026-08-10) — Étape 3/6 : NE PLUS armer le watchdog ici. Avant l'initial
+        // prebuffer LIVE, cet appel démarrait le minuteur (15s puis 20s) avant même que
+        // le prebuffer commence — sur un réseau lent (le cas où le prebuffer est le plus
+        // utile), le watchdog interrompait le préchargement en cours (démarrage forcé en
+        // dégradé, puis rechargement complet en boucle) avant même d'avoir laissé sa
+        // chance à [INITIAL_PREBUFFER_TIMEOUT_MS] (90s). Le watchdog est désormais armé
+        // au bon moment, une fois la lecture RÉELLEMENT commise — voir [startPlayback] /
+        // [commitLivePlaybackAfterPrebuffer].
+        // Étape 6a : chaque zap LIVE relance le pipeline (prebuffer initial inclus).
         startPlayback(channel.streamUrl)
     }
 
@@ -1327,6 +1465,10 @@ class PlayerController(
         _playbackMode.value = PlaybackMode.REPLAY
         _replayProgram.value = program
         cancelWatchdog()
+        // Étape 1 / 6b : le replay ne fait jamais d'initial prebuffer — démarrage immédiat.
+        initialPrebufferJob?.cancel()
+        initialPrebufferJob = null
+        livePrefetchSessionOriginMs = null
         _uiState.value = PlayerUiState.Buffering
         _availableQualities.value = emptyList()
         setQualityOverride(null)
@@ -1341,8 +1483,10 @@ class PlayerController(
         behindLiveWindowRecoveries = 0
         liveAnchorElapsedRealtimeMs = null
         liveAnchorPositionMs = null
+        liveAnchorInitialOffsetMs = null
         lastReconnectAtElapsedRealtimeMs = 0L
-        scheduleWatchdog()
+        // Fix (2026-08-10) : voir la doc de playChannel — armé désormais dans
+        // startPlayback lui-même, au moment où la lecture est réellement commise.
         startPlayback(timeshiftUrl)
     }
 
@@ -1357,8 +1501,26 @@ class PlayerController(
      * `DefaultMediaSourceFactory` deviner seul : lève l'ambiguïté quand le Content-Type
      * renvoyé par le panel est absent ou trompeur, cause plausible du
      * PARSING_CONTAINER_UNSUPPORTED initial même sans changement d'extension.
+     *
+     * Étape 3 (vue d'ensemble 2026-08-10) — en [PlaybackMode.LIVE], si le tampon hybride
+     * est actif et [PlayerSettings.initialPrebufferSeconds] > 0 (et pas mode direct),
+     * la lecture n'est PAS démarrée immédiatement : [runInitialLivePrebuffer] accumule
+     * d'abord le seuil demandé dans le cache disque, puis [commitLivePlaybackAfterPrebuffer]
+     * lance réellement le player (étape 4 : démarrage au début de ce qui a été téléchargé).
+     * Le replay et les cas dégradés (cache hybride off, mode direct, seuil 0) gardent le
+     * chemin historique immédiat.
      */
-    private fun startPlayback(uri: String, forcedMimeType: String? = null) {
+    /**
+     * @param skipInitialPrebuffer si `true`, force le chemin historique immédiat
+     *   (utilisé par le fallback conteneur et [reconnectProgressiveStream] : ce ne sont
+     *   pas de vrais zaps, le prebuffer initial de 60s ne doit pas se rejouer à chaque
+     *   tentative de secours).
+     */
+    private fun startPlayback(
+        uri: String,
+        forcedMimeType: String? = null,
+        skipInitialPrebuffer: Boolean = false
+    ) {
         // Fix (2026-08-05) : retenus pour [reconnectProgressiveStream] - reconnecter un
         // flux .ts progressif doit rouvrir EXACTEMENT la meme URI/mimeType que la
         // tentative en cours (celle eventuellement issue de containerFallbackQueue), pas
@@ -1366,18 +1528,197 @@ class PlayerController(
         // justement echoue au sniffing de conteneur.
         currentPlaybackUri = uri
         currentPlaybackMimeType = forcedMimeType
+
+        // Fix (2026-08-08, révisé 2026-08-10 / 3c) : une nouvelle session repart toujours
+        // débit libre.
+        bufferGuardQualityCapped = false
+        clearBufferGuardBitrateCap()
+        lastObservedPlaybackPositionMs = -1L
+        prefetchPausedUntilElapsedRealtimeMs = 0L
+        resetBufferManagerRateTracking()
+
+        val shouldInitialPrebuffer = !skipInitialPrebuffer &&
+            _playbackMode.value == PlaybackMode.LIVE &&
+            !settings.directModeEnabled &&
+            settings.hybridBufferEnabled &&
+            settings.initialPrebufferSeconds > 0
+
+        if (shouldInitialPrebuffer) {
+            // Étape 3a/3b : bloquer prepare/play jusqu'à seuil atteint (ou timeout 3c).
+            livePrefetchSessionOriginMs = SystemClock.elapsedRealtime()
+            // Fix (revue 2026-08-11, hypothèse Range HTTP) : nouvelle session LIVE =
+            // nouvelle chance pour le panel, on repart optimiste ; [runInitialLivePrebuffer]
+            // réévalue via [probeRangeSupport] si le seuil dépasse un chunk.
+            liveRangeSupportConfirmed = true
+            _uiState.value = PlayerUiState.InitialPrebuffering(progressSeconds = 0f)
+            initialPrebufferJob?.cancel()
+            initialPrebufferJob = controllerScope.launch {
+                runInitialLivePrebuffer(uri, forcedMimeType)
+            }
+            return
+        }
+
+        // Chemin historique (replay, mode direct, cache hybride off, seuil 0,
+        // reconnexion / fallback conteneur).
+        if (!skipInitialPrebuffer) {
+            livePrefetchSessionOriginMs = null
+        }
+        _uiState.value = PlayerUiState.Buffering
+        // Fix (2026-08-10) : voir la doc plus haut — le watchdog s'arme ici, au moment où
+        // la lecture est réellement commise, plutôt qu'en amont dans playChannel/
+        // playReplay (ce qui le faisait tourner pendant l'initial prebuffer LIVE).
+        scheduleWatchdog()
+        commitPlaybackMediaItem(uri, forcedMimeType, startAtPositionZero = false)
+    }
+
+    /**
+     * Étape 3b/3c/4 — phase bloquante d'accumulation disque avant la première image en LIVE.
+     *
+     * Télécharge depuis l'octet 0 (origine de session, étape 2b) jusqu'à
+     * [PlayerSettings.initialPrebufferSeconds] estimés, via le même [prefetchByteRange]
+     * que le prefetcher continu. Met à jour [PlayerUiState.InitialPrebuffering] au fil
+     * de l'eau.
+     *
+     * Timeout ([INITIAL_PREBUFFER_TIMEOUT_MS], étape 3c) : si le seuil n'est pas atteint,
+     * on démarre quand même en dégradé avec ce qui a pu être téléchargé (plutôt qu'une
+     * erreur bloquante — un réseau lent reste utilisable, même avec un coussin réduit).
+     * Si strictement rien n'a pu être mis en cache, on bascule sur [PlayerUiState.Error].
+     */
+    private suspend fun runInitialLivePrebuffer(uri: String, forcedMimeType: String?) {
+        val targetSeconds = settings.initialPrebufferSeconds.coerceAtLeast(0)
+        val targetMs = targetSeconds * 1000L
+        val bitrateKbps = ASSUMED_PEAK_BITRATE_KBPS
+        val targetBytes = msToEstimatedBytes(targetMs, bitrateKbps)
+        if (targetBytes <= 0L) {
+            commitLivePlaybackAfterPrebuffer(uri, forcedMimeType)
+            return
+        }
+
+        val maxSizeBytes = calculateDynamicDiskCacheMaxSizeBytes(settings)
+        val cache = MediaCacheProvider.get(context, maxSizeBytes)
+        val deadlineElapsedRealtimeMs =
+            SystemClock.elapsedRealtime() + INITIAL_PREBUFFER_TIMEOUT_MS
+
+        // Fix (revue 2026-08-11, hypothèse Range HTTP) : si le seuil dépasse un seul
+        // chunk, on va devoir demander des offsets > 0 en connexions séparées. On sonde
+        // AVANT de s'engager : un panel qui sert "maintenant" à toute nouvelle connexion,
+        // quel que soit l'offset demandé, romprait la continuité du flux si on continuait
+        // à chaîner des blocs à l'aveugle. Si la sonde échoue, on borne targetBytes à UN
+        // seul chunk (offset 0, trivialement correct : c'est ce que "maintenant" sert de
+        // toute façon) — démarrage dégradé avec un tampon initial réduit plutôt qu'un flux
+        // corrompu. Voir [liveRangeSupportConfirmed] pour l'effet sur le prefetcher continu.
+        var effectiveTargetBytes = targetBytes
+        if (targetBytes > PREFETCH_CHUNK_BYTES) {
+            val rangeOk = withContext(Dispatchers.IO) {
+                probeRangeSupport(uri, PREFETCH_CHUNK_BYTES)
+            }
+            liveRangeSupportConfirmed = rangeOk
+            if (!rangeOk) {
+                effectiveTargetBytes = PREFETCH_CHUNK_BYTES
+                appendRecentError(
+                    "Préchargement initial réduit : ce panel ne semble pas honorer les " +
+                        "requêtes Range sur le flux direct (tampon initial limité à un seul " +
+                        "bloc au lieu de $targetSeconds s)."
+                )
+            }
+        }
+
+        var downloadedBytes = 0L
+        try {
+            while (isActive && downloadedBytes < effectiveTargetBytes) {
+                if (SystemClock.elapsedRealtime() >= deadlineElapsedRealtimeMs) break
+                if (currentPlaybackUri != uri) return // zap / annulation
+
+                val remaining = effectiveTargetBytes - downloadedBytes
+                val chunkLength = minOf(remaining, PREFETCH_CHUNK_BYTES)
+                // Déjà en cache ? (re-zap rapide sur la MÊME session LIVE uniquement,
+                // voir liveAwareCacheKey — plus de faux "déjà en cache" entre deux zaps).
+                val cacheKey = liveAwareCacheKey(uri)
+                val cachedLength = cache.getCachedLength(cacheKey, downloadedBytes, chunkLength)
+                if (cachedLength >= chunkLength) {
+                    downloadedBytes += chunkLength
+                } else {
+                    withContext(Dispatchers.IO) {
+                        prefetchByteRange(
+                            cache,
+                            uri,
+                            downloadedBytes,
+                            downloadedBytes + chunkLength
+                        )
+                    }
+                    // Après écriture, relire la longueur réellement présente.
+                    val after = cache.getCachedLength(cacheKey, downloadedBytes, chunkLength)
+                    if (after > 0L) {
+                        downloadedBytes += after.coerceAtMost(chunkLength)
+                    } else {
+                        // Rien de nouveau (réseau mort sur ce morceau) : petite pause
+                        // pour éviter un spin, le timeout global gère l'abandon.
+                        delay(500L)
+                    }
+                }
+
+                val progressSec =
+                    (downloadedBytes.toDouble() * 8.0 / bitrateKbps.toDouble() / 1000.0)
+                        .toFloat()
+                        .coerceAtMost(targetSeconds.toFloat())
+                if (_uiState.value is PlayerUiState.InitialPrebuffering) {
+                    _uiState.value = PlayerUiState.InitialPrebuffering(progressSeconds = progressSec)
+                }
+            }
+        } catch (_: Exception) {
+            // Best-effort : on tente un démarrage dégradé ci-dessous.
+        }
+
+        if (!isActive || currentPlaybackUri != uri) return
+
+        if (downloadedBytes <= 0L) {
+            _uiState.value = PlayerUiState.Error(
+                "Préchargement initial impossible (réseau trop lent ou flux injoignable)"
+            )
+            return
+        }
+
+        // Étape 3c : seuil atteint OU timeout avec au moins quelques données → démarrage
+        // (dégradé si sous le seuil). Étape 4 : lecture au début de ce qui a été chargé.
+        commitLivePlaybackAfterPrebuffer(uri, forcedMimeType)
+    }
+
+    /**
+     * Étape 4 — une fois le prebuffer initial constitué (ou timeout dégradé), lance la
+     * lecture au début de la fenêtre téléchargée (position 0 relative à l'origine de
+     * session). Pas de LiveConfiguration.targetOffsetMs : le direct est désormais lu
+     * comme un flux progressif à point de départ figé, exactement comme un replay à t=0.
+     */
+    private fun commitLivePlaybackAfterPrebuffer(uri: String, forcedMimeType: String?) {
+        _uiState.value = PlayerUiState.Buffering
+        // Fix (2026-08-10) : voir la doc de playChannel — le watchdog ne doit s'armer
+        // qu'à partir d'ici (fin du prebuffer initial), jamais pendant celui-ci.
+        scheduleWatchdog()
+        commitPlaybackMediaItem(uri, forcedMimeType, startAtPositionZero = true)
+    }
+
+    /**
+     * Pose le [MediaItem], prépare et lance la lecture. [startAtPositionZero] = true
+     * après un initial prebuffer LIVE (étape 4) : on force `seekTo(0)` pour démarrer au
+     * début de ce qui a été préchargé plutôt qu'à l'edge live.
+     */
+    private fun commitPlaybackMediaItem(
+        uri: String,
+        forcedMimeType: String?,
+        startAtPositionZero: Boolean
+    ) {
         val mediaItem = MediaItem.Builder()
             .setUri(uri)
             .apply { (forcedMimeType ?: mimeTypeForUri(uri))?.let { setMimeType(it) } }
             .apply {
-                // Fix (2026-08-05) — Mode direct : aucun retard volontaire visé, on ne pose
-                // pas de LiveConfiguration personnalisée (Media3 garde son comportement natif
-                // par défaut). Voir la doc de [PlayerSettings.directModeEnabled].
-                //
-                // Étape R5a (4/4) — Mode replay : même repli, pour la même raison qu'en
-                // buildLoadControl (voir sa doc) — un flux timeshift.php n'a pas de retard
-                // cible sur un direct à maintenir puisqu'il n'y a pas de direct ici.
-                if (!settings.directModeEnabled && _playbackMode.value == PlaybackMode.LIVE) {
+                // Après initial prebuffer LIVE (startAtPositionZero), on NE pose PAS de
+                // LiveConfiguration : le flux est traité comme progressif à origine figée
+                // (étape 4). Sinon, comportement historique (retard cible via targetOffsetMs)
+                // pour le chemin sans prebuffer (mode direct déjà exclu en amont).
+                if (!startAtPositionZero &&
+                    !settings.directModeEnabled &&
+                    _playbackMode.value == PlaybackMode.LIVE
+                ) {
                     setLiveConfiguration(
                         MediaItem.LiveConfiguration.Builder()
                             .setTargetOffsetMs(settings.bufferSafetyMarginSeconds * 1000L)
@@ -1388,22 +1729,10 @@ class PlayerController(
             .build()
         exoPlayer.setMediaItem(mediaItem)
         exoPlayer.prepare()
+        if (startAtPositionZero) {
+            exoPlayer.seekTo(0L)
+        }
         exoPlayer.playWhenReady = true
-        // Fix (2026-08-08, révisé 2026-08-10 / 3c) : voir la doc de
-        // [bufferGuardQualityCapped] — une nouvelle session (zap, nouveau replay,
-        // reconnexion) repart toujours débit libre, jamais héritée d'un plafond décidé
-        // pour l'ancien flux/la position précédente.
-        bufferGuardQualityCapped = false
-        clearBufferGuardBitrateCap()
-        // Fix (2026-08-10) — Étape 5 : nouvelle session → repart sans pause seek ni
-        // ancrage de position (évite de hériter d'un état de prefetch de l'ancien flux).
-        lastObservedPlaybackPositionMs = -1L
-        prefetchPausedUntilElapsedRealtimeMs = 0L
-        // Fix (2026-08-10) — Étape 3a : un nouveau `MediaItem` fait sauter
-        // `totalBufferedDuration` à ~0 sans rapport avec le régime de remplissage qui
-        // précédait (ancien flux, ancienne position) — repartir sans référence évite un
-        // fillRateRatio aberrant sur le tout premier échantillon de la nouvelle session.
-        resetBufferManagerRateTracking()
     }
 
     /**
@@ -1418,9 +1747,12 @@ class PlayerController(
         _adaptiveTargetBufferMs.value = null
     }
 
-    /** Bascule play/pause (§7 étape 5a : "contrôle basique play/pause"). Sans effet en état [PlayerUiState.Error]. */
+    /** Bascule play/pause (§7 étape 5a : "contrôle basique play/pause").
+     *  Sans effet en état [PlayerUiState.Error] ou [PlayerUiState.InitialPrebuffering]
+     *  (la lecture n'est pas encore démarrée). */
     fun togglePlayPause() {
         if (_uiState.value is PlayerUiState.Error) return
+        if (_uiState.value is PlayerUiState.InitialPrebuffering) return
         exoPlayer.playWhenReady = !exoPlayer.playWhenReady
     }
 
@@ -1523,9 +1855,10 @@ class PlayerController(
 
         val anchorWallClockMs = liveAnchorElapsedRealtimeMs ?: return null
         val anchorPositionMs = liveAnchorPositionMs ?: return null
+        val initialOffsetMs = liveAnchorInitialOffsetMs ?: (settings.bufferSafetyMarginSeconds * 1000L)
         val elapsedWallClockMs = SystemClock.elapsedRealtime() - anchorWallClockMs
         val elapsedPlaybackMs = exoPlayer.currentPosition - anchorPositionMs
-        val estimatedMs = (settings.bufferSafetyMarginSeconds * 1000L) + (elapsedWallClockMs - elapsedPlaybackMs)
+        val estimatedMs = initialOffsetMs + (elapsedWallClockMs - elapsedPlaybackMs)
         if (estimatedMs < 0) return null
         return kotlin.math.round(estimatedMs / 100f) / 10f
     }
@@ -1542,7 +1875,10 @@ class PlayerController(
      * équivalent natif fiable et reste `null` — voir la doc de [PlayerMetricsBridge.bufferedSeconds].
      */
     fun currentBufferedSeconds(): Float? {
-        if (_uiState.value is PlayerUiState.Idle || _uiState.value is PlayerUiState.Error) return null
+        if (_uiState.value is PlayerUiState.Idle ||
+            _uiState.value is PlayerUiState.Error ||
+            _uiState.value is PlayerUiState.InitialPrebuffering
+        ) return null
         return kotlin.math.round(exoPlayer.totalBufferedDuration / 100f) / 10f
     }
 
@@ -1664,26 +2000,7 @@ class PlayerController(
         if (target.playbackState != Player.STATE_READY || !target.playWhenReady) return
 
         val bufferedMs = target.totalBufferedDuration
-        val adaptiveTarget = _adaptiveTargetBufferMs.value
-
-        val lowMs: Long
-        val recoverMs: Long
-        if (adaptiveTarget == null) {
-            // Repli : pas encore de cible adaptative (premier tick de session).
-            lowMs = BUFFER_GUARD_LOW_WATERMARK_MS.toLong()
-            recoverMs = BUFFER_GUARD_RECOVER_WATERMARK_MS.toLong()
-        } else {
-            lowMs = maxOf(
-                BUFFER_GUARD_LOW_WATERMARK_MS.toLong(),
-                (adaptiveTarget * BUFFER_GUARD_ADAPTIVE_LOW_RATIO).toLong()
-            )
-            val hysteresisMs =
-                (BUFFER_GUARD_RECOVER_WATERMARK_MS - BUFFER_GUARD_LOW_WATERMARK_MS).toLong()
-            recoverMs = maxOf(
-                lowMs + hysteresisMs,
-                (adaptiveTarget * BUFFER_GUARD_ADAPTIVE_RECOVER_RATIO).toLong()
-            )
-        }
+        val (lowMs, recoverMs) = bufferGuardThresholds(_adaptiveTargetBufferMs.value)
 
         when {
             bufferedMs < lowMs && !bufferGuardQualityCapped -> {
@@ -1693,6 +2010,30 @@ class PlayerController(
                 clearBufferGuardBitrateCap()
             }
         }
+    }
+
+    /**
+     * Fix (2026-08-10) — seuils bas/reprise partagés entre [evaluateBufferGuard] (ABR) et
+     * [runPrefetchTick] (priorité réseau). Extrait sans changement de logique pour que le
+     * prefetcher se cale sur EXACTEMENT le même seuil "tampon en danger" que l'ABR, plutôt
+     * que de dupliquer un calcul qui pourrait diverger avec le temps.
+     */
+    private fun bufferGuardThresholds(adaptiveTarget: Long?): Pair<Long, Long> {
+        if (adaptiveTarget == null) {
+            // Repli : pas encore de cible adaptative (premier tick de session).
+            return BUFFER_GUARD_LOW_WATERMARK_MS.toLong() to BUFFER_GUARD_RECOVER_WATERMARK_MS.toLong()
+        }
+        val lowMs = maxOf(
+            BUFFER_GUARD_LOW_WATERMARK_MS.toLong(),
+            (adaptiveTarget * BUFFER_GUARD_ADAPTIVE_LOW_RATIO).toLong()
+        )
+        val hysteresisMs =
+            (BUFFER_GUARD_RECOVER_WATERMARK_MS - BUFFER_GUARD_LOW_WATERMARK_MS).toLong()
+        val recoverMs = maxOf(
+            lowMs + hysteresisMs,
+            (adaptiveTarget * BUFFER_GUARD_ADAPTIVE_RECOVER_RATIO).toLong()
+        )
+        return lowMs to recoverMs
     }
 
     /**
@@ -1921,11 +2262,10 @@ class PlayerController(
     // -------------------------------------------------------------------------
 
     /**
-     * Fix (2026-08-10) — Étape 5a/5d : démarre le poll du prefetcher sur [target].
-     * No-op si le tampon hybride est désactivé (pas de [SimpleCache] partagé à nourrir).
-     * Le garde-fou REPLAY est appliqué à chaque tick ([runPrefetchTick]), pas ici :
-     * un même `ExoPlayer` peut basculer LIVE↔REPLAY via [rebuildExoPlayerIfModeChanged],
-     * et le job doit survivre pour se réactiver dès qu'on repasse en replay.
+     * Fix (2026-08-10) — Étape 5a/5d, étendu LIVE (vue d'ensemble étape 2) : démarre le
+     * poll du prefetcher sur [target]. No-op si le tampon hybride est désactivé (pas de
+     * [SimpleCache] partagé à nourrir). Le job tourne en LIVE et en REPLAY ; les gardes
+     * de mode/session sont appliqués à chaque tick ([runPrefetchTick]).
      */
     private fun startPrefetcher(target: ExoPlayer) {
         prefetcherJob?.cancel()
@@ -1950,28 +2290,41 @@ class PlayerController(
     }
 
     /**
-     * Fix (2026-08-10) — Étape 5b/5c/5d/5e : un tick du prefetcher.
+     * Fix (2026-08-10) — Étape 5b/5c/5d/5e, étendu LIVE (vue d'ensemble étapes 2 + 5) :
+     * un tick du prefetcher.
      *
      * Conditions d'activation (toutes requises) :
-     * - mode [PlaybackMode.REPLAY] (5d) ;
+     * - mode [PlaybackMode.REPLAY] **ou** [PlaybackMode.LIVE] (étape 2a) ;
      * - tampon hybride activé (sinon pas de cache disque partagé) ;
+     * - pas en phase d'initial prebuffer bloquant (celui-ci a sa propre boucle dédiée) ;
      * - pas en pause seek (5c) ;
      * - lecture en cours ou au moins un MediaItem chargé avec URI connue ;
+     * - tampon de lecture immédiat au-dessus du seuil bas de l'ABR (priorité réseau) ;
      * - cache disque pas déjà saturé (5e).
      *
-     * Fenêtre à précharger (5b) : juste au-delà du tampon déjà tenu par ExoPlayer
-     * (`currentPosition + totalBufferedDuration`), sur une durée égale à la cible
-     * adaptative ([_adaptiveTargetBufferMs]) — accumulation continue devant la tête
-     * de lecture, pas un re-téléchargement de ce qui est déjà bufferisé en RAM.
+     * Fenêtre à précharger :
+     * - **REPLAY** : juste au-delà du tampon déjà tenu par ExoPlayer, durée = cible
+     *   adaptative ([_adaptiveTargetBufferMs]).
+     * - **LIVE** (modèle « épisode ») : blocs **fixes** de
+     *   [PlayerSettings.initialPrebufferSeconds].
+     *   Ex. valeur = 10 s :
+     *   1. bloc 0 [0, 10s) téléchargé en InitialPrebuffering → lance la lecture ;
+     *   2. pendant la lecture, télécharge le bloc 1 [10s, 20s) en arrière-plan ;
+     *   3. dès que ce bloc est complet, il est « rendu » (disponible dans le cache
+     *      partagé, ExoPlayer le lit sans re-télécharger) et on enchaîne sur le bloc 2
+     *      [20s, 30s), etc.
+     *   Les positions sont relatives à l'origine de session (étape 4), pas à l'edge live.
      *
      * Téléchargement (5a/5e) : [CacheWriter] sur le MÊME [SimpleCache] que le
      * [CacheDataSource] de lecture ([MediaCacheProvider]), par morceaux de
-     * [PREFETCH_CHUNK_BYTES] pour pouvoir s'interrompre vite en cas de seek.
-     * Les plages déjà présentes en cache sont sautées (`getCachedBytes` / `isCached`).
+     * [PREFETCH_CHUNK_BYTES]. Les plages déjà en cache sont sautées.
      */
     private suspend fun runPrefetchTick(target: ExoPlayer) {
-        if (_playbackMode.value != PlaybackMode.REPLAY) return
+        // Étape 2a : plus de garde REPLAY-only — le prefetcher tourne aussi en LIVE.
         if (!settings.hybridBufferEnabled) return
+        // Pendant l'initial prebuffer LIVE, la boucle dédiée [runInitialLivePrebuffer]
+        // monopolise le réseau ; le poll continu s'efface pour ne pas concurrencer.
+        if (_uiState.value is PlayerUiState.InitialPrebuffering) return
         if (SystemClock.elapsedRealtime() < prefetchPausedUntilElapsedRealtimeMs) return
 
         val uri = currentPlaybackUri ?: return
@@ -1983,8 +2336,6 @@ class PlayerController(
         // 5c — détection de seek par saut de position (complément au listener).
         if (lastObservedPlaybackPositionMs >= 0L) {
             val deltaMs = positionMs - lastObservedPlaybackPositionMs
-            // Un saut en avant > 3s non expliqué par le temps de poll, ou un retour en
-            // arrière quelconque, est traité comme un seek utilisateur.
             if (deltaMs < -500L || deltaMs > PREFETCH_POLL_INTERVAL_MS + 3_000L) {
                 pausePrefetchForSeek()
                 lastObservedPlaybackPositionMs = positionMs
@@ -1994,12 +2345,46 @@ class PlayerController(
         lastObservedPlaybackPositionMs = positionMs
 
         val bufferedMs = target.totalBufferedDuration.coerceAtLeast(0L)
+
+        // Priorité réseau : tant que le tampon réel est sous le seuil bas ABR,
+        // le prefetcher s'efface (lecture d'abord).
+        val (lowMs, _) = bufferGuardThresholds(_adaptiveTargetBufferMs.value)
+        if (bufferedMs < lowMs) return
+
+        // Déjà couvert par ExoPlayer (RAM) + cache lu : on part de là.
+        val alreadyCoveredMs = positionMs + bufferedMs
+
+        if (_playbackMode.value == PlaybackMode.LIVE && settings.initialPrebufferSeconds > 0) {
+            // Fix (revue 2026-08-11, hypothèse Range HTTP) : si la sonde de
+            // [runInitialLivePrebuffer] a infirmé le Range pour cette session, on ne
+            // chaîne plus aucun bloc au-delà de celui déjà en cache (offset 0) — voir la
+            // doc de [liveRangeSupportConfirmed]. La lecture continue normalement au-delà
+            // via la connexion HTTP unique et continue d'ExoPlayer (pas de nouvelle
+            // requête Range), donc rien n'est perdu, seul le préchargement d'avance
+            // s'arrête.
+            if (!liveRangeSupportConfirmed) return
+            // --- Modèle « épisode » LIVE : blocs fixes de initialPrebufferSeconds ---
+            // Ex. 10s : bloc 0 [0,10), bloc 1 [10,20), bloc 2 [20,30)...
+            // On ne télécharge qu'UN bloc d'avance. Dès qu'il est complet (présent en
+            // cache), le tick suivant enchaîne sur le suivant — comme un épisode livré
+            // puis le téléchargement du suivant qui repart à zéro sur le nouveau bloc.
+            val chunkMs = settings.initialPrebufferSeconds * 1000L
+            // Premier bloc qui n'est pas encore entièrement couvert par la lecture+tampon.
+            val chunkIndex = alreadyCoveredMs / chunkMs
+            val chunkStartMs = chunkIndex * chunkMs
+            val chunkEndMs = chunkStartMs + chunkMs
+            // Ne re-télécharger que ce qui manque dans ce bloc.
+            val downloadFromMs = alreadyCoveredMs.coerceAtLeast(chunkStartMs)
+            prefetchLiveEpisodeChunk(uri, downloadFromMs, chunkEndMs)
+            return
+        }
+
+        // --- REPLAY (ou LIVE sans initialPrebuffer) : cible adaptative historique ---
         val adaptiveTarget = _adaptiveTargetBufferMs.value
             ?: (settings.bufferSafetyMarginSeconds * 1000L).coerceAtLeast(
                 BUFFER_GUARD_LOW_WATERMARK_MS.toLong()
             )
-        // Fenêtre à précharger : juste après ce qu'ExoPlayer tient déjà.
-        val windowStartMs = positionMs + bufferedMs
+        val windowStartMs = alreadyCoveredMs
         val windowEndMs = windowStartMs + adaptiveTarget
         if (windowEndMs <= windowStartMs) return
 
@@ -2011,12 +2396,35 @@ class PlayerController(
 
         val maxSizeBytes = calculateDynamicDiskCacheMaxSizeBytes(settings)
         val cache = MediaCacheProvider.get(context, maxSizeBytes)
-        // 5e — ne pas pousser un cache déjà proche de sa limite.
         val currentCacheBytes = cache.cacheSpace
         if (maxSizeBytes > 0L && currentCacheBytes >= (maxSizeBytes.toDouble() * 0.95).toLong()) {
             return
         }
+        withContext(Dispatchers.IO) {
+            prefetchByteRange(cache, uri, startBytes, endBytes)
+        }
+    }
 
+    /**
+     * LIVE « épisode » : télécharge exactement la plage temporelle [startMs, endMs)
+     * (un bloc de [PlayerSettings.initialPrebufferSeconds]) dans le cache partagé.
+     * Dès que le bloc est complet, il est disponible pour ExoPlayer (lecture sans
+     * second téléchargement) ; le tick suivant enchaîne sur le bloc suivant.
+     */
+    private suspend fun prefetchLiveEpisodeChunk(uri: String, startMs: Long, endMs: Long) {
+        if (endMs <= startMs) return
+        val bitrateKbps = (_streamBitrateKbps.value?.takeIf { it > 0 }
+            ?: ASSUMED_PEAK_BITRATE_KBPS)
+        val startBytes = msToEstimatedBytes(startMs, bitrateKbps)
+        val endBytes = msToEstimatedBytes(endMs, bitrateKbps)
+        if (endBytes <= startBytes) return
+
+        val maxSizeBytes = calculateDynamicDiskCacheMaxSizeBytes(settings)
+        val cache = MediaCacheProvider.get(context, maxSizeBytes)
+        val currentCacheBytes = cache.cacheSpace
+        if (maxSizeBytes > 0L && currentCacheBytes >= (maxSizeBytes.toDouble() * 0.95).toLong()) {
+            return
+        }
         withContext(Dispatchers.IO) {
             prefetchByteRange(cache, uri, startBytes, endBytes)
         }
@@ -2047,15 +2455,21 @@ class PlayerController(
         while (offset < endBytes) {
             // Seek intervenu pendant le téléchargement : on s'arrête immédiatement.
             if (SystemClock.elapsedRealtime() < prefetchPausedUntilElapsedRealtimeMs) return
-            // Mode basculé hors REPLAY en cours de route.
-            if (_playbackMode.value != PlaybackMode.REPLAY) return
+            // Session annulée / zap / bascule de mode pendant le téléchargement.
+            if (currentPlaybackUri != uri) return
 
             val remaining = endBytes - offset
             val chunkLength = minOf(remaining, PREFETCH_CHUNK_BYTES)
+            // Fix (revue 2026-08-11, bug cache LIVE périmé) : même clé que le
+            // CacheDataSource de lecture (voir [liveAwareCacheKey] et son branchement
+            // dans [buildDataSourceFactory]) — URI seule en REPLAY, URI + ancrage de
+            // session en LIVE, pour ne plus jamais réutiliser les octets d'un zap
+            // précédent sur la même chaîne.
+            val cacheKey = liveAwareCacheKey(uri)
             // 5e — déjà en cache (région continue) : sauter ce morceau pour éviter le
             // double téléchargement. getCachedLength renvoie la longueur continue cachée
             // depuis offset, ou une valeur négative s'il y a un trou.
-            val cachedLength = cache.getCachedLength(uri, offset, chunkLength)
+            val cachedLength = cache.getCachedLength(cacheKey, offset, chunkLength)
             if (cachedLength >= chunkLength) {
                 offset += chunkLength
                 continue
@@ -2065,7 +2479,7 @@ class PlayerController(
                 .setUri(uri)
                 .setPosition(offset)
                 .setLength(chunkLength)
-                .setKey(uri) // même clé que le CacheDataSource de lecture (URI)
+                .setKey(cacheKey)
                 .build()
             try {
                 CacheWriter(
@@ -2080,6 +2494,51 @@ class PlayerController(
                 return
             }
             offset += chunkLength
+        }
+    }
+
+    /**
+     * Fix (revue 2026-08-11, hypothèse Range HTTP) — sonde si [uri] honore réellement les
+     * requêtes Range à un offset > 0, plutôt que de servir "le direct maintenant" à toute
+     * nouvelle connexion quel que soit l'offset demandé (comportement documenté ailleurs
+     * dans ce fichier pour ces panels, voir [reconnectProgressiveStream]).
+     *
+     * Ouvre une connexion HTTP courte et isolée (hors [Cache], via [httpDataSourceFactory]
+     * directement) demandant [PROBE_RANGE_BYTES] à partir de [probeOffsetBytes], puis
+     * inspecte l'en-tête `Content-Range` de la réponse : un serveur qui honore vraiment le
+     * Range répond en 206 avec un `Content-Range: bytes <probeOffsetBytes>-.../*`. Toute
+     * réponse sans ce `Content-Range` (200 plein flux, ou `Content-Range` démarrant à un
+     * autre offset que celui demandé) signale un Range non fiable sur ce panel.
+     *
+     * Une sonde qui échoue pour une raison réseau (timeout, erreur IO) ne doit pas, à
+     * elle seule, désactiver la fonctionnalité — seul un `Content-Range` explicitement
+     * incohérent le fait ; sinon un simple aléa réseau dégraderait inutilement chaque
+     * session.
+     */
+    private fun probeRangeSupport(uri: String, probeOffsetBytes: Long): Boolean {
+        if (probeOffsetBytes <= 0L) return true
+        val dataSpec = DataSpec.Builder()
+            .setUri(uri)
+            .setPosition(probeOffsetBytes)
+            .setLength(PROBE_RANGE_BYTES)
+            .build()
+        val dataSource = httpDataSourceFactory.createDataSource()
+        return try {
+            dataSource.open(dataSpec)
+            val headers = dataSource.responseHeaders
+            val contentRange = headers["Content-Range"]?.firstOrNull()
+                ?: headers["content-range"]?.firstOrNull()
+            contentRange != null &&
+                contentRange.trim().startsWith("bytes $probeOffsetBytes-")
+        } catch (_: Exception) {
+            // Sonde ratée (réseau) : pas de conclusion, on reste optimiste (voir doc).
+            true
+        } finally {
+            try {
+                dataSource.close()
+            } catch (_: Exception) {
+                // Best-effort.
+            }
         }
     }
 
@@ -2148,7 +2607,9 @@ class PlayerController(
         lastReconnectAtElapsedRealtimeMs = now
         liveAnchorElapsedRealtimeMs = null
         liveAnchorPositionMs = null
-        startPlayback(uri, forcedMimeType = currentPlaybackMimeType)
+        liveAnchorInitialOffsetMs = null
+        // Soft reconnect : pas un zap — ne rejoue pas le prebuffer initial de 60s.
+        startPlayback(uri, forcedMimeType = currentPlaybackMimeType, skipInitialPrebuffer = true)
     }
 
     /**
@@ -2190,6 +2651,9 @@ class PlayerController(
         cancelWatchdog()
         bufferManagerJob?.cancel()
         prefetcherJob?.cancel()
+        initialPrebufferJob?.cancel()
+        initialPrebufferJob = null
+        livePrefetchSessionOriginMs = null
         controllerScope.cancel()
         exoPlayer.release()
     }
@@ -2255,6 +2719,11 @@ class PlayerController(
         // si un seek arrive en cours de téléchargement (~1 Mo).
         private const val PREFETCH_CHUNK_BYTES = 1L * 1024L * 1024L
 
+        /** Fix (revue 2026-08-11) — taille de la sonde [probeRangeSupport] : juste assez
+         *  pour observer l'en-tête `Content-Range` de la réponse, pas pour télécharger
+         *  un morceau réellement exploitable (c'est [prefetchByteRange] qui s'en charge). */
+        private const val PROBE_RANGE_BYTES = 16L * 1024L
+
         // Fix (2026-08-10) — Étape 3b (2/2) : fraction du heap libre allouable au tampon
         // adaptatif (voir [maxBufferMsAffordableByRam]). Conservatrice volontairement
         // (0.4) : le reste reste disponible pour décodeur, UI Compose, cache disque
@@ -2316,6 +2785,15 @@ class PlayerController(
 
         /** Journal d'erreurs Diagnostic (§5.5, étape 10) — voir [appendRecentError]. */
         const val RECENT_ERRORS_MAX = 10
+
+        /**
+         * Étape 3c — délai max pour atteindre [PlayerSettings.initialPrebufferSeconds]
+         * dans le cache disque avant de démarrer en dégradé (ou d'afficher une erreur
+         * si strictement rien n'a pu être téléchargé). 90s : au-delà d'un réseau trop
+         * lent pour même constituer un coussin minimal, mieux vaut tenter la lecture
+         * avec ce qui est disponible plutôt que de rester bloqué indéfiniment.
+         */
+        private const val INITIAL_PREBUFFER_TIMEOUT_MS = 90_000L
 
         /**
          * Construit un [PlayerController] à partir des [PlayerSettings] réellement

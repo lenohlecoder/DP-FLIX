@@ -18,6 +18,8 @@ internal object SettingsKeys {
     val HYBRID_BUFFER_ENABLED = booleanPreferencesKey("player_hybrid_buffer_enabled")
     val DISK_CACHE_MAX_SIZE_MB = longPreferencesKey("player_disk_cache_max_size_mb")
     val DIRECT_MODE_ENABLED = booleanPreferencesKey("player_direct_mode_enabled")
+    // Préchargement initial LIVE (« épisode ») — voir [PlayerSettings.initialPrebufferSeconds].
+    val INITIAL_PREBUFFER_SECONDS = intPreferencesKey("player_initial_prebuffer_seconds")
 
     // Anciennes clés (avant la fusion du 2026-08-06) — conservées EN LECTURE SEULE pour
     // migrer la valeur déjà enregistrée d'un utilisateur existant vers

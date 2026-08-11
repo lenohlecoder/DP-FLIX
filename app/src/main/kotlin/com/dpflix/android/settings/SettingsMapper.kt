@@ -20,6 +20,8 @@ fun Preferences.toPlayerSettings(): PlayerSettings = PlayerSettings(
     hybridBufferEnabled = this[SettingsKeys.HYBRID_BUFFER_ENABLED] ?: false,
     diskCacheMaxSizeMb = this[SettingsKeys.DISK_CACHE_MAX_SIZE_MB]
         ?: PlayerSettings.DEFAULT_DISK_CACHE_MAX_SIZE_MB,
+    initialPrebufferSeconds = this[SettingsKeys.INITIAL_PREBUFFER_SECONDS]
+        ?: PlayerSettings.DEFAULT_INITIAL_PREBUFFER_SECONDS,
     directModeEnabled = this[SettingsKeys.DIRECT_MODE_ENABLED] ?: false
 )
 
@@ -28,6 +30,7 @@ fun PlayerSettings.writeTo(prefs: MutablePreferences) {
     prefs[SettingsKeys.RAM_CACHE_SIZE_MB] = ramCacheSizeMb
     prefs[SettingsKeys.HYBRID_BUFFER_ENABLED] = hybridBufferEnabled
     prefs[SettingsKeys.DISK_CACHE_MAX_SIZE_MB] = diskCacheMaxSizeMb
+    prefs[SettingsKeys.INITIAL_PREBUFFER_SECONDS] = initialPrebufferSeconds
     prefs[SettingsKeys.DIRECT_MODE_ENABLED] = directModeEnabled
 }
 

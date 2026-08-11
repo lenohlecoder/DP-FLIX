@@ -147,6 +147,7 @@ fun SettingsScreen(
                         onRamCacheChange = viewModel::setRamCacheSizeMb,
                         onHybridBufferToggled = viewModel::setHybridBufferEnabled,
                         onDiskCacheMaxChange = viewModel::setDiskCacheMaxSizeMb,
+                        onInitialPrebufferChange = viewModel::setInitialPrebufferSeconds,
                         onClearDiskCache = viewModel::clearDiskCache,
                         onDirectModeToggled = viewModel::setDirectModeEnabled
                     )
@@ -413,6 +414,7 @@ private fun PlayerSectionBody(
     onRamCacheChange: (Int) -> Unit,
     onHybridBufferToggled: (Boolean) -> Unit,
     onDiskCacheMaxChange: (Long) -> Unit,
+    onInitialPrebufferChange: (Int) -> Unit,
     onClearDiskCache: () -> Unit,
     onDirectModeToggled: (Boolean) -> Unit
 ) {
@@ -460,12 +462,21 @@ private fun PlayerSectionBody(
 
         SettingBlock(
             title = "Tampon hybride",
-            subtitle = "Écrit les segments sur le disque avant lecture, en plus du cache RAM."
+            subtitle = "Écrit les segments sur le disque avant lecture, en plus du cache RAM. Active aussi le préchargement initial en direct ci-dessous."
         ) {
             Switch(checked = settings.hybridBufferEnabled, onCheckedChange = onHybridBufferToggled)
         }
 
         if (settings.hybridBufferEnabled) {
+            StepperSetting(
+                title = "Préchargement initial (direct)",
+                subtitle = "Durée accumulée sur le disque avant de démarrer une chaîne en direct (0 = démarrage immédiat, comme avant). Sans effet sur le replay.",
+                value = settings.initialPrebufferSeconds,
+                step = 10,
+                unit = "s",
+                onValueChange = onInitialPrebufferChange
+            )
+
             StepperSetting(
                 title = "Taille max du cache disque",
                 subtitle = "0 = illimité.",
