@@ -104,6 +104,10 @@ dependencies {
     ksp(libs.room.compiler)
     implementation(libs.datastore.preferences)
 
+    // Module téléchargement Films & Séries — FilmDownloadWorker (reprise après
+    // redémarrage app/process, retries, notifications de progression).
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
+
     // Réseau
     implementation(libs.okhttp)
     implementation(libs.retrofit)

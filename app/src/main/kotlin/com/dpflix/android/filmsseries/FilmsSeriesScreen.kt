@@ -4,22 +4,47 @@ import android.annotation.SuppressLint
 import android.net.Uri
 import android.os.SystemClock
 import android.view.MotionEvent
+import android.view.View
 import android.view.ViewGroup
+import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -27,6 +52,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -44,13 +70,19 @@ import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import com.dpflix.android.filmsseries.download.FilmDownloadManager
+import com.dpflix.android.filmsseries.stream.DetectedStream
+import com.dpflix.android.filmsseries.stream.StreamSniffer
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.settings.GeneralSettings
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 /**
@@ -71,22 +103,34 @@ import kotlin.math.roundToInt
  *   publicitaire, lien tiers) est interceptée par [WebViewClient.shouldOverrideUrlLoading]
  *   et simplement ignorée : la page reste sur son état courant, jamais de nouvel onglet
  *   ni de sortie vers un navigateur externe.
- * - `setSupportMultipleWindows(false)` + pas de [android.webkit.WebChromeClient] custom
- *   pour `onCreateWindow` : la valeur par défaut d'Android (retourner `false`, donc ne pas
- *   créer de nouvelle fenêtre) empêche déjà `window.open()`/`target="_blank"` d'ouvrir quoi
- *   que ce soit. Pas de barre d'adresse, de navigation précédente/suivante ni de menu
- *   long-press (désactivé explicitement) : aucun chrome de navigateur visible.
+ * - `setSupportMultipleWindows(false)` + [WebChromeClient.onCreateWindow] retourne
+ *   toujours `false` : `window.open()`/`target="_blank"` n'ouvrent rien. Pas de barre
+ *   d'adresse, de navigation précédente/suivante ni de menu long-press (désactivé
+ *   explicitement) : aucun chrome de navigateur visible.
+ *
+ * ## Téléchargement Films & Séries (module download, principe 1DM)
+ * - [StreamSniffer] observe les requêtes via [WebViewClient.shouldInterceptRequest]
+ *   (sans jamais bloquer le chargement) et accumule les flux `.mp4` / `.m3u8` / etc.
+ *   réellement chargés par la page — reset à chaque nouvelle page ([onPageStarted]) et à
+ *   chaque nouvelle plateforme ([streamIndex]/[url]).
+ * - Une flèche ↓ apparaît en haut à droite **uniquement hors plein écran** dès qu'au
+ *   moins un flux est détecté (badge = nombre de flux) → ouvre [DetectedStreamsDialog].
+ *   Le choix d'un flux l'envoie à [downloadManager] (`null` = téléchargement non branché
+ *   sur cet écran, ex. avant qu'`AppContainer`/nav ne le fournissent).
+ * - Plein écran HTML5 du lecteur vidéo du site (`WebChromeClient.onShowCustomView`/
+ *   `onHideCustomView`) masque la flèche et referme le dialogue s'il était ouvert —
+ *   règle non négociable du cahier des charges (flèche jamais visible en plein écran).
+ * - [onOpenDownloads] (optionnel) affiche un raccourci "Téléch." vers la bibliothèque
+ *   `DownloadsScreen`, à côté de la flèche.
  *
  * ## Retour (§ demande utilisateur, révisé 08/08)
- * [BackHandler] intercepte le bouton retour (télécommande TV ou geste/bouton tactile
- * mobile — même API des deux côtés, `androidx.activity.compose.BackHandler`, pas de
- * distinction nécessaire). Priorité à la navigation dans l'historique du site
- * ([WebView.canGoBack]/[WebView.goBack]) : tant que la WebView peut reculer d'une page,
- * un appui retour la fait simplement reculer, sans toucher au compteur de double-appui.
- * Ce n'est que lorsqu'il n'y a plus de page précédente sur le site qu'un premier appui
- * affiche un `Toast` d'avertissement et ouvre une fenêtre de 2 secondes
- * ([DOUBLE_BACK_WINDOW_MS]), un second appui dans cette fenêtre déclenche
- * [onNavigateHome].
+ * [BackHandler] : d'abord fermer le dialogue de flux détectés s'il est ouvert, sinon
+ * priorité à la navigation dans l'historique du site ([WebView.canGoBack]/
+ * [WebView.goBack]) — tant que la WebView peut reculer d'une page, un appui retour la
+ * fait simplement reculer, sans toucher au compteur de double-appui. Ce n'est que
+ * lorsqu'il n'y a plus de page précédente sur le site qu'un premier appui affiche un
+ * `Toast` d'avertissement et ouvre une fenêtre de 2 secondes ([DOUBLE_BACK_WINDOW_MS]),
+ * un second appui dans cette fenêtre déclenche [onNavigateHome].
  *
  * ## Curseur virtuel TV (§ demande utilisateur, ajouté 09/08)
  * Un site web ordinaire n'est pas conçu pour une navigation D-pad (haut/bas/gauche/droite)
@@ -104,6 +148,8 @@ fun FilmsSeriesScreen(
     onNavigateHome: () -> Unit,
     streamIndex: Int = 1,
     showVirtualCursor: Boolean = false,
+    downloadManager: FilmDownloadManager? = null,
+    onOpenDownloads: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val generalSettings by appRepository.settings.generalSettings.collectAsState(initial = null)
@@ -114,12 +160,22 @@ fun FilmsSeriesScreen(
     }
 
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var awaitingSecondBackPress by remember { mutableStateOf(false) }
     val onNavigateHomeState = rememberUpdatedState(onNavigateHome)
     // Référence à la WebView active, posée par `LockedWebView` une fois créée, pour que
     // le BackHandler ci-dessous puisse lui demander de reculer dans l'historique du site,
     // et pour que le curseur virtuel (si actif) puisse lui envoyer des taps simulés.
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
+
+    // Module téléchargement — sniffer partagé pour la durée de l'écran (reset à chaque
+    // nouvelle page ou nouvelle plateforme, voir les LaunchedEffect ci-dessous).
+    val sniffer = remember { StreamSniffer() }
+    val detectedStreams by sniffer.detectedStreams.collectAsState()
+    var isPageFullscreen by remember { mutableStateOf(false) }
+    var showStreamsDialog by remember { mutableStateOf(false) }
+    // Titre de la page WebView courante, pour nommer le téléchargement à l'enqueue.
+    var pageTitle by remember { mutableStateOf<String?>(null) }
 
     // État du curseur virtuel — inutilisé (et sans overhead notable) quand
     // `showVirtualCursor` est false.
@@ -147,16 +203,27 @@ fun FilmsSeriesScreen(
         }
     }
 
+    // Nouvelle plateforme (changement de streamIndex/url) → repart d'un sniffer vide et
+    // referme tout état de téléchargement transitoire de l'ancienne page.
+    LaunchedEffect(url) {
+        sniffer.resetForNewPage(url)
+        showStreamsDialog = false
+        isPageFullscreen = false
+    }
+
     BackHandler {
         val webView = webViewRef.value
-        if (webView != null && webView.canGoBack()) {
-            webView.goBack()
-        } else if (awaitingSecondBackPress) {
-            awaitingSecondBackPress = false
-            onNavigateHomeState.value()
-        } else {
-            awaitingSecondBackPress = true
-            Toast.makeText(context, "Appuyez de nouveau sur retour pour revenir à l'accueil", Toast.LENGTH_SHORT).show()
+        when {
+            showStreamsDialog -> showStreamsDialog = false
+            webView != null && webView.canGoBack() -> webView.goBack()
+            awaitingSecondBackPress -> {
+                awaitingSecondBackPress = false
+                onNavigateHomeState.value()
+            }
+            else -> {
+                awaitingSecondBackPress = true
+                Toast.makeText(context, "Appuyez de nouveau sur retour pour revenir à l'accueil", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -210,6 +277,7 @@ fun FilmsSeriesScreen(
             key(url) {
                 LockedWebView(
                     url = url,
+                    sniffer = sniffer,
                     onWebViewCreated = { webView ->
                         webViewRef.value = webView
                         if (showVirtualCursor) {
@@ -220,6 +288,12 @@ fun FilmsSeriesScreen(
                             webView.isFocusableInTouchMode = false
                         }
                     },
+                    onFullscreenChanged = { fullscreen ->
+                        isPageFullscreen = fullscreen
+                        // Règle non négociable : jamais de flèche/dialogue en plein écran.
+                        if (fullscreen) showStreamsDialog = false
+                    },
+                    onPageTitleChanged = { title -> pageTitle = title },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -229,6 +303,205 @@ fun FilmsSeriesScreen(
         if (showVirtualCursor && offset != null) {
             VirtualCursor(offset = offset)
         }
+
+        // Flèche téléchargement + raccourci bibliothèque — hors plein écran uniquement.
+        if (!isPageFullscreen) {
+            Row(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (onOpenDownloads != null) {
+                    Surface(
+                        shape = CircleShape,
+                        color = Color.Black.copy(alpha = 0.65f),
+                        contentColor = Color.White,
+                        shadowElevation = 4.dp
+                    ) {
+                        TextButton(onClick = onOpenDownloads) {
+                            Text("Téléch.", color = Color.White)
+                        }
+                    }
+                }
+                if (detectedStreams.isNotEmpty()) {
+                    DownloadArrowButton(
+                        streamCount = detectedStreams.size,
+                        onClick = { showStreamsDialog = true }
+                    )
+                }
+            }
+        }
+
+        if (showStreamsDialog) {
+            DetectedStreamsDialog(
+                streams = detectedStreams,
+                onDismiss = { showStreamsDialog = false },
+                onSelectStream = { stream ->
+                    val mgr = downloadManager
+                    if (mgr == null) {
+                        Toast.makeText(
+                            context,
+                            "Téléchargement indisponible (manager non branché)",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    } else {
+                        val ua = webViewRef.value?.settings?.userAgentString
+                        val titleSnapshot = pageTitle
+                        scope.launch {
+                            try {
+                                mgr.enqueue(
+                                    stream = stream,
+                                    title = titleSnapshot,
+                                    userAgent = ua
+                                )
+                                Toast.makeText(
+                                    context,
+                                    "Téléchargement ajouté — ${stream.shortLabel}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } catch (e: FilmDownloadManager.InsufficientStorageException) {
+                                Toast.makeText(
+                                    context,
+                                    e.message ?: "Espace disque insuffisant",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    "Erreur: ${e.message ?: "échec"}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                    showStreamsDialog = false
+                }
+            )
+        }
+    }
+}
+
+/** Bouton flèche téléchargement — coin supérieur droit, badge = nombre de flux détectés. */
+@Composable
+private fun DownloadArrowButton(
+    streamCount: Int,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier,
+        shape = CircleShape,
+        color = Color.Black.copy(alpha = 0.65f),
+        contentColor = Color.White,
+        shadowElevation = 4.dp
+    ) {
+        IconButton(onClick = onClick) {
+            BadgedBox(
+                badge = {
+                    if (streamCount > 0) {
+                        Badge { Text(text = streamCount.coerceAtMost(99).toString()) }
+                    }
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Download,
+                    contentDescription = "Flux vidéo détectés"
+                )
+            }
+        }
+    }
+}
+
+/** Dialogue listant les flux capturés par [StreamSniffer] ; sélection → enqueue via [FilmDownloadManager]. */
+@Composable
+private fun DetectedStreamsDialog(
+    streams: List<DetectedStream>,
+    onDismiss: () -> Unit,
+    onSelectStream: (DetectedStream) -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 480.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Flux détectés",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Filled.Close, contentDescription = "Fermer")
+                    }
+                }
+                Text(
+                    text = "Choisissez un flux (MP4 ou HLS) à télécharger dans l'app.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                HorizontalDivider()
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                ) {
+                    items(streams, key = { it.url }) { stream ->
+                        StreamRow(
+                            stream = stream,
+                            onClick = { onSelectStream(stream) }
+                        )
+                        HorizontalDivider()
+                    }
+                }
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End)
+                ) {
+                    Text("Fermer")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamRow(
+    stream: DetectedStream,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp)
+    ) {
+        Text(
+            text = stream.shortLabel,
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Text(
+            text = stream.displayHost,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Text(
+            text = stream.url,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -270,10 +543,16 @@ private fun VirtualCursor(offset: Offset, modifier: Modifier = Modifier) {
 @Composable
 private fun LockedWebView(
     url: String,
+    sniffer: StreamSniffer,
     onWebViewCreated: (WebView) -> Unit,
+    onFullscreenChanged: (Boolean) -> Unit,
+    onPageTitleChanged: (String?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val allowedHost = remember(url) { Uri.parse(url).host }
+    val snifferState = rememberUpdatedState(sniffer)
+    val onFullscreenState = rememberUpdatedState(onFullscreenChanged)
+    val onPageTitleState = rememberUpdatedState(onPageTitleChanged)
 
     AndroidView(
         modifier = modifier,
@@ -287,6 +566,11 @@ private fun LockedWebView(
 
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                // Nécessaire pour que les sites Films & Séries démarrent la lecture sans
+                // exiger un second tap dédié côté page (le tap initial de l'utilisateur
+                // reste requis, ce réglage évite seulement un blocage supplémentaire du
+                // navigateur système sur certains lecteurs embarqués).
+                settings.mediaPlaybackRequiresUserGesture = false
                 settings.setSupportMultipleWindows(false)
                 settings.javaScriptCanOpenWindowsAutomatically = false
 
@@ -307,8 +591,99 @@ private fun LockedWebView(
                         // la charger elle-même.
                         return !isAllowed
                     }
+
+                    override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                        // Nouvelle page dans l'historique du site → les flux capturés pour
+                        // l'ancienne page n'ont plus cours (module téléchargement).
+                        snifferState.value.resetForNewPage(pageUrl)
+                    }
+
+                    /**
+                     * Module téléchargement — observation pure des requêtes réseau de la
+                     * WebView pour y détecter des flux vidéo (.mp4/.m3u8/...), sans jamais
+                     * bloquer ni modifier le chargement réel de la page (retourne toujours
+                     * `null`, la WebView charge la ressource normalement).
+                     */
+                    override fun shouldInterceptRequest(
+                        view: WebView?,
+                        request: WebResourceRequest
+                    ): android.webkit.WebResourceResponse? {
+                        try {
+                            snifferState.value.onRequest(request)
+                        } catch (_: Exception) {
+                            // Best-effort : un sniffer qui plante ne doit jamais casser la page.
+                        }
+                        return null
+                    }
                 }
 
+                // Plein écran HTML5 (lecteur vidéo des sites films) → notifier l'UI pour
+                // masquer la flèche de téléchargement (règle non négociable du cahier des
+                // charges : jamais de flèche visible en plein écran).
+                webChromeClient = object : WebChromeClient() {
+                    private var customView: View? = null
+                    private var customViewCallback: CustomViewCallback? = null
+                    private var originalSystemUiVisibility: Int = 0
+
+                    override fun onReceivedTitle(view: WebView?, title: String?) {
+                        // Propage le titre de la page vers l'UI Compose — utilisé pour
+                        // nommer le téléchargement à l'enqueue.
+                        onPageTitleState.value(title?.takeIf { it.isNotBlank() })
+                    }
+
+                    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                        if (customView != null) {
+                            callback?.onCustomViewHidden()
+                            return
+                        }
+                        val activity = context as? android.app.Activity
+                        val decor = activity?.window?.decorView as? FrameLayout
+                        if (view == null || decor == null) {
+                            callback?.onCustomViewHidden()
+                            return
+                        }
+                        originalSystemUiVisibility = decor.systemUiVisibility
+                        customView = view
+                        customViewCallback = callback
+                        decor.addView(
+                            view,
+                            FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT
+                            )
+                        )
+                        decor.systemUiVisibility = (
+                            View.SYSTEM_UI_FLAG_FULLSCREEN
+                                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            )
+                        onFullscreenState.value(true)
+                    }
+
+                    override fun onHideCustomView() {
+                        val activity = context as? android.app.Activity
+                        val decor = activity?.window?.decorView as? FrameLayout
+                        customView?.let { decor?.removeView(it) }
+                        decor?.systemUiVisibility = originalSystemUiVisibility
+                        customViewCallback?.onCustomViewHidden()
+                        customView = null
+                        customViewCallback = null
+                        onFullscreenState.value(false)
+                    }
+
+                    override fun onCreateWindow(
+                        view: WebView?,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: android.os.Message?
+                    ): Boolean {
+                        // Interdit toute popup / nouvel onglet — cohérent avec le
+                        // verrouillage du navigateur (voir doc de classe).
+                        return false
+                    }
+                }
+
+                snifferState.value.resetForNewPage(url)
                 loadUrl(url)
             }.also(onWebViewCreated)
         },

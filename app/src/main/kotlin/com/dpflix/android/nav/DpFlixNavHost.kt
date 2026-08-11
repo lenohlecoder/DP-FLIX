@@ -27,7 +27,9 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.dpflix.android.filmsseries.DownloadsScreen
 import com.dpflix.android.filmsseries.FilmsSeriesScreen
+import com.dpflix.android.player.LocalFilmPlayerScreen
 import com.dpflix.android.home.HomeScreen
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ReplayProgram
@@ -170,7 +172,42 @@ fun DpFlixNavHost(
             FilmsSeriesScreen(
                 appRepository = appRepository,
                 onNavigateHome = { navController.popBackStack() },
-                streamIndex = streamIndex
+                streamIndex = streamIndex,
+                downloadManager = appRepository.filmDownloads,
+                onOpenDownloads = {
+                    navController.navigate(DpFlixDestination.FilmDownloads.route)
+                }
+            )
+        }
+
+        composable(DpFlixDestination.FilmDownloads.route) {
+            DownloadsScreen(
+                downloadManager = appRepository.filmDownloads,
+                onBack = { navController.popBackStack() },
+                onPlayLocal = { path, title ->
+                    navController.navigate(
+                        DpFlixDestination.LocalFilmPlayer.createRoute(path, title)
+                    )
+                }
+            )
+        }
+
+        composable(
+            route = DpFlixDestination.LocalFilmPlayer.route,
+            arguments = listOf(
+                navArgument(DpFlixDestination.LocalFilmPlayer.ARG_PATH) { type = NavType.StringType },
+                navArgument(DpFlixDestination.LocalFilmPlayer.ARG_TITLE) {
+                    type = NavType.StringType
+                    defaultValue = ""
+                }
+            )
+        ) { backStackEntry ->
+            val path = backStackEntry.arguments?.getString(DpFlixDestination.LocalFilmPlayer.ARG_PATH).orEmpty()
+            val title = backStackEntry.arguments?.getString(DpFlixDestination.LocalFilmPlayer.ARG_TITLE).orEmpty()
+            LocalFilmPlayerScreen(
+                localPath = path,
+                title = title.ifBlank { "Film" },
+                onBack = { navController.popBackStack() }
             )
         }
 

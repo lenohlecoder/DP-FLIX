@@ -2,6 +2,7 @@ package com.dpflix.android.filmsseries
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import com.dpflix.android.filmsseries.download.FilmDownloadManager
 import com.dpflix.android.repository.AppRepository
 
 /**
@@ -16,12 +17,18 @@ import com.dpflix.android.repository.AppRepository
  * ordinaire n'étant pas conçu pour une navigation D-pad, un curseur superposé, déplacé par
  * les flèches de la télécommande, remplace le clic tactile absent sur TV — voir la doc de
  * [FilmsSeriesScreen] pour le détail de l'implémentation.
+ *
+ * Module téléchargement : [downloadManager]/[onOpenDownloads] sont simplement transmis
+ * tels quels à [FilmsSeriesScreen] (flèche ↓ + raccourci "Mes téléchargements"), `null`
+ * par défaut pour ne rien changer tant que l'appelant ne les fournit pas encore.
  */
 @Composable
 fun FilmsSeriesScreenTv(
     appRepository: AppRepository,
     onNavigateHome: () -> Unit,
     streamIndex: Int = 1,
+    downloadManager: FilmDownloadManager? = null,
+    onOpenDownloads: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     FilmsSeriesScreen(
@@ -29,6 +36,8 @@ fun FilmsSeriesScreenTv(
         onNavigateHome = onNavigateHome,
         streamIndex = streamIndex,
         showVirtualCursor = true,
+        downloadManager = downloadManager,
+        onOpenDownloads = onOpenDownloads,
         modifier = modifier
     )
 }

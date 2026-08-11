@@ -74,6 +74,25 @@ sealed class DpFlixDestination(val route: String) {
     }
 
     /**
+     * Bibliothèque « Mes téléchargements » Films & Séries (offline in-app).
+     */
+    object FilmDownloads : DpFlixDestination("film_downloads")
+
+    /**
+     * Lecteur offline d'un fichier téléchargé (stockage privé uniquement).
+     * [LocalFilmPlayer.ARG_PATH] et [LocalFilmPlayer.ARG_TITLE] encodés dans la route.
+     */
+    object LocalFilmPlayer : DpFlixDestination(
+        "local_film_player?path={path}&title={title}"
+    ) {
+        const val ARG_PATH = "path"
+        const val ARG_TITLE = "title"
+
+        fun createRoute(localPath: String, title: String): String =
+            "local_film_player?path=${Uri.encode(localPath)}&title=${Uri.encode(title)}"
+    }
+
+    /**
      * Écran "Programmes passés" (Étape R4, replay/catch-up) : même raisonnement que
      * [PlayerFullscreen] ci-dessous pour le choix de ne transporter que l'ID de chaîne —
      * l'écran va chercher la [com.dpflix.android.model.Channel] complète lui-même (voir

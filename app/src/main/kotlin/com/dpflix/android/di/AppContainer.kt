@@ -1,8 +1,8 @@
 package com.dpflix.android.di
 
 import android.content.Context
-import androidx.room.Room
 import com.dpflix.android.db.AppDatabase
+import com.dpflix.android.filmsseries.download.FilmDownloadManager
 import com.dpflix.android.network.XtreamClient
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.repository.ChannelRepository
@@ -25,21 +25,19 @@ import com.dpflix.android.settings.SettingsDataStore
  * et non par écran : les `Flow` exposés par les repositories (ex. `observeActive()`)
  * doivent survivre à la navigation entre écrans (ex. Accueil → Réglages → Accueil) sans
  * se réabonner à une nouvelle instance de base de données à chaque fois.
+ *
+ * Module téléchargement (2026-08) : [database] est désormais [AppDatabase.getInstance]
+ * plutôt qu'une instance `Room.databaseBuilder(...)` construite ici séparément — voir la
+ * doc de [AppDatabase.getInstance] pour la raison (WorkManager instancie
+ * `FilmDownloadWorker` lui-même, qui doit pouvoir retrouver la MÊME base que l'UI, sans
+ * quoi deux connexions Room indépendantes coexisteraient sur le même fichier SQLite).
+ * Le [FilmDownloadManager] construit à partir de ce même singleton est exposé via
+ * [AppRepository.filmDownloads] (voir sa doc) plutôt qu'ici séparément, pour que les
+ * écrans de navigation n'aient qu'un seul point d'entrée à consommer, comme le reste.
  */
 class AppContainer(context: Context) {
 
-    private val database: AppDatabase = Room.databaseBuilder(
-        context.applicationContext,
-        AppDatabase::class.java,
-        AppDatabase.DATABASE_NAME
-    )
-        // App non publiée à ce stade (voir la doc d'AppDatabase) : un bump de version
-        // Room sans Migration écrite (ex. 1 → 2 en 6g-1) recrée la base plutôt que de
-        // planter au démarrage. À retirer et remplacer par de vraies `Migration` dès la
-        // première release publique, où une réinstallation ne doit plus effacer les
-        // playlists de l'utilisateur.
-        .fallbackToDestructiveMigration()
-        .build()
+    private val database: AppDatabase = AppDatabase.getInstance(context.applicationContext)
 
     private val settingsDataStore = SettingsDataStore(context.applicationContext)
 
@@ -53,6 +51,7 @@ class AppContainer(context: Context) {
         playlists = playlistRepository,
         channels = ChannelRepository(database.channelDao()),
         settings = SettingsRepository(settingsDataStore),
-        replay = ReplayRepository(xtreamClient, playlistRepository)
+        replay = ReplayRepository(xtreamClient, playlistRepository),
+        filmDownloads = FilmDownloadManager(context.applicationContext, database.filmDownloadDao())
     )
 }
