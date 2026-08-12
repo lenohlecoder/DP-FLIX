@@ -77,6 +77,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import com.dpflix.android.filmsseries.download.FilmDownloadManager
+import com.dpflix.android.filmsseries.download.WebViewHttpFetcher
+import com.dpflix.android.filmsseries.stream.StreamType
 import com.dpflix.android.filmsseries.stream.DetectedStream
 import com.dpflix.android.filmsseries.stream.StreamSniffer
 import com.dpflix.android.repository.AppRepository
@@ -209,6 +211,7 @@ fun FilmsSeriesScreen(
         sniffer.resetForNewPage(url)
         showStreamsDialog = false
         isPageFullscreen = false
+        pageTitle = null
     }
 
     BackHandler {
@@ -348,13 +351,42 @@ fun FilmsSeriesScreen(
                     } else {
                         val ua = webViewRef.value?.settings?.userAgentString
                         val titleSnapshot = pageTitle
+                        val webView = webViewRef.value
                         scope.launch {
                             try {
-                                mgr.enqueue(
-                                    stream = stream,
+                                var streamToEnqueue = stream
+                                var prefetched: String? = null
+                                // HLS / DASH via WebView (anti-403 Vidzy, principe 1DM)
+                                val viaWebView = webView != null &&
+                                    (stream.type == StreamType.HLS || stream.type == StreamType.DASH)
+                                if (viaWebView) {
+                                    Toast.makeText(
+                                        context,
+                                        "Préparation du téléchargement…",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    val resolved =
+                                        resolvePlaylistInWebView(webView!!, stream.url)
+                                    prefetched = resolved.second
+                                    if (resolved.first != stream.url) {
+                                        streamToEnqueue = stream.copy(url = resolved.first)
+                                    }
+                                }
+                                val downloadId = mgr.enqueue(
+                                    stream = streamToEnqueue,
                                     title = titleSnapshot,
-                                    userAgent = ua
+                                    userAgent = ua,
+                                    prefetchedPlaylistBody = prefetched
                                 )
+                                if (viaWebView) {
+                                    when (stream.type) {
+                                        StreamType.HLS ->
+                                            mgr.startHlsViaWebView(downloadId, webView!!)
+                                        StreamType.DASH ->
+                                            mgr.startDashViaWebView(downloadId, webView!!)
+                                        else -> Unit
+                                    }
+                                }
                                 Toast.makeText(
                                     context,
                                     "Téléchargement ajouté — ${stream.shortLabel}",
@@ -370,7 +402,7 @@ fun FilmsSeriesScreen(
                                 Toast.makeText(
                                     context,
                                     "Erreur: ${e.message ?: "échec"}",
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_LONG
                                 ).show()
                             }
                         }
@@ -689,4 +721,32 @@ private fun LockedWebView(
         },
         onRelease = { webView -> webView.destroy() }
     )
+}
+
+
+/**
+ * Récupère le corps texte brut (master OU media HLS, ou manifeste DASH) via fetch() dans
+ * la WebView — contourne le 403 OkHttp des CDN anti-hotlink (Vidzy).
+ *
+ * Fix (12 août 2026) : cette fonction faisait auparavant elle-même la résolution
+ * master → variante (via `HlsPlaylistParser.parseMaster` + `isMasterPlaylist`) et ne
+ * transmettait que le media body déjà résolu comme `prefetchedPlaylistBody`. Or seul
+ * [HlsDownloader] (via `parseMasterFull`) sait détecter une piste audio séparée
+ * (`#EXT-X-MEDIA:TYPE=AUDIO`) dans le master — une fois le media body substitué ici, le
+ * master d'origine était perdu et `HlsDownloader` ne voyait plus qu'une media playlist
+ * (`isMasterPlaylist` → false), donc plus aucune piste audio séparée téléchargée pour les
+ * flux HLS passant par la WebView. On renvoie donc désormais le body tel quel (master ou
+ * media, HLS ou DASH) sans y toucher : toute la résolution (variante, groupe audio,
+ * playlist audio) reste faite une seule fois, par [HlsDownloader] lui-même, qui utilise
+ * ensuite le `textFetcher`/`segmentFetcher` (WebView) fournis par
+ * `FilmDownloadManager.startHlsViaWebView` pour les fetches suivants.
+ *
+ * @return Pair([playlistUrl] inchangée, corps texte brut)
+ */
+private suspend fun resolvePlaylistInWebView(
+    webView: android.webkit.WebView,
+    playlistUrl: String
+): Pair<String, String> {
+    val body = WebViewHttpFetcher.fetchText(webView, playlistUrl)
+    return playlistUrl to body
 }
