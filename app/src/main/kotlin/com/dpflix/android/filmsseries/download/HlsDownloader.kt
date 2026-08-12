@@ -42,14 +42,18 @@ class HlsDownloader(
         headers: Map<String, String>,
         onProgress: suspend (Progress) -> Unit,
         destAudioFile: File? = null,
-        prefetchedPlaylistBody: String? = null
+        prefetchedPlaylistBody: String? = null,
+        /** null = OkHttp ; sinon fetch binaire (WebView) — même principe que DashDownloader. */
+        segmentFetcher: (suspend (url: String) -> ByteArray)? = null,
+        /** null = OkHttp ; sinon fetch texte playlist (WebView). */
+        textFetcher: (suspend (url: String) -> String)? = null
     ): Result {
         workDir.mkdirs()
         if (destFile.exists()) destFile.delete()
         destAudioFile?.takeIf { it.exists() }?.delete()
 
         val masterBody = prefetchedPlaylistBody?.takeIf { it.isNotBlank() }
-            ?: fetchText(playlistUrl, headers)
+            ?: loadText(playlistUrl, headers, textFetcher)
         val mediaUrl: String
         val mediaBody: String
         var audioPlaylistUrl: String? = null
@@ -61,7 +65,7 @@ class HlsDownloader(
             }
             val best = master.variants.first()
             mediaUrl = best.uri
-            mediaBody = fetchText(mediaUrl, headers)
+            mediaBody = loadText(mediaUrl, headers, textFetcher)
             if (best.audioGroupId != null) {
                 val candidates = master.audioRenditions.filter { it.groupId == best.audioGroupId }
                 val chosen = candidates.firstOrNull { it.isDefault }
@@ -79,7 +83,7 @@ class HlsDownloader(
         }
 
         val audioSegments = if (audioPlaylistUrl != null) {
-            val audioBody = fetchText(audioPlaylistUrl, headers)
+            val audioBody = loadText(audioPlaylistUrl, headers, textFetcher)
             HlsPlaylistParser.parseMedia(audioBody, audioPlaylistUrl).segments
         } else {
             emptyList()
@@ -89,12 +93,11 @@ class HlsDownloader(
         var done = 0
         var bytes = 0L
         val videoParts = mutableListOf<File>()
-
         try {
             for ((index, segment) in media.segments.withIndex()) {
                 currentCoroutineContext().ensureActive()
                 val part = File(workDir, "v_${index.toString().padStart(5, '0')}.part")
-                val n = fetchToFile(segment.uri, headers, part)
+                val n = fetchSegment(segment.uri, headers, part, segmentFetcher)
                 bytes += n
                 videoParts += part
                 done = index + 1
@@ -111,7 +114,7 @@ class HlsDownloader(
                     for ((index, segment) in audioSegments.withIndex()) {
                         currentCoroutineContext().ensureActive()
                         val part = File(workDir, "a_${index.toString().padStart(5, '0')}.part")
-                        val n = fetchToFile(segment.uri, headers, part)
+                        val n = fetchSegment(segment.uri, headers, part, segmentFetcher)
                         bytes += n
                         audioParts += part
                         done++
@@ -149,6 +152,28 @@ class HlsDownloader(
             onProgress = onProgress,
             destAudioFile = null
         ).videoFile
+    }
+
+    private suspend fun loadText(
+        url: String,
+        headers: Map<String, String>,
+        textFetcher: (suspend (String) -> String)?
+    ): String {
+        return if (textFetcher != null) textFetcher(url) else fetchText(url, headers)
+    }
+
+    private suspend fun fetchSegment(
+        url: String,
+        headers: Map<String, String>,
+        dest: File,
+        segmentFetcher: (suspend (String) -> ByteArray)?
+    ): Long {
+        if (segmentFetcher != null) {
+            val data = segmentFetcher(url)
+            FileOutputStream(dest).use { it.write(data) }
+            return data.size.toLong()
+        }
+        return fetchToFile(url, headers, dest)
     }
 
     private fun concatParts(parts: List<File>, dest: File) {
