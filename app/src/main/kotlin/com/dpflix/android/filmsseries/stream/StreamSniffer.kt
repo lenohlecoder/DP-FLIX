@@ -47,12 +47,27 @@ class StreamSniffer {
         // Évite le bruit : déjà vu, ou URL non http(s).
         if (!url.startsWith("http://") && !url.startsWith("https://")) return
 
+        // Fix (12 août 2026) : le Referer réel envoyé par la WebView pour CETTE requête
+        // précise — capturé directement dans `request.requestHeaders` plutôt que déduit
+        // de `currentPageUrl` (l'URL de la page top-level). Un flux vidéo (vidzy.cc et
+        // similaires) est presque toujours chargé depuis un iframe d'embed dont l'URL
+        // diffère de la page top-level (ex. site d'agrégation) : le CDN valide le Referer
+        // contre SA PROPRE URL d'iframe, pas contre le site qui l'embarque. Envoyer le
+        // Referer top-level au lieu du vrai Referer explique un 403 "nginx" systématique
+        // malgré un Origin dérivé du même (mauvais) Referer. On garde `currentPageUrl` en
+        // repli si jamais la requête n'a pas de Referer (ex. requête émise en JS sans
+        // en-tête forwardé).
+        val actualReferer = request.requestHeaders?.entries
+            ?.firstOrNull { it.key.equals("Referer", ignoreCase = true) }
+            ?.value
+
         val stream = DetectedStream(
             url = url,
             type = type,
             mimeType = mimeGuess,
             contentLength = null,
-            pageUrl = currentPageUrl
+            pageUrl = currentPageUrl,
+            referer = actualReferer ?: currentPageUrl
         )
         byUrl[url] = stream
         publish()
@@ -88,7 +103,8 @@ class StreamSniffer {
             type = type,
             mimeType = mimeType,
             contentLength = contentLength,
-            pageUrl = currentPageUrl
+            pageUrl = currentPageUrl,
+            referer = currentPageUrl
         )
         publish()
     }

@@ -69,6 +69,7 @@ class FilmDownloadManager(
         val now = System.currentTimeMillis()
         val cookie = try {
             CookieManager.getInstance().getCookie(stream.url)
+                ?: stream.referer?.let { CookieManager.getInstance().getCookie(it) }
                 ?: stream.pageUrl?.let { CookieManager.getInstance().getCookie(it) }
         } catch (_: Exception) {
             null
@@ -90,7 +91,11 @@ class FilmDownloadManager(
             errorMessage = null,
             cookie = cookie,
             userAgent = userAgent,
-            referer = stream.pageUrl,
+            // Fix (12 août 2026) : `stream.referer` (Referer réel de la requête, capturé
+            // par le sniffer) au lieu de `stream.pageUrl` (URL top-level) — voir la doc de
+            // StreamSniffer.onRequest pour la raison (probable cause du 403 nginx
+            // systématique sur les flux embarqués en iframe, ex. stream 2/vidzy.cc).
+            referer = stream.referer ?: stream.pageUrl,
             createdAtMillis = now,
             updatedAtMillis = now
         )
