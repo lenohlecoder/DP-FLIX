@@ -4,6 +4,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 
 internal object SettingsKeys {
     // --- §5.1 Lecteur ---
@@ -32,4 +33,7 @@ internal object SettingsKeys {
     val DEFAULT_PLAYLIST_ID = stringPreferencesKey("general_default_playlist_id")
     val FILMS_SERIES_URL = stringPreferencesKey("general_films_series_url")
     val FILMS_SERIES_URL_2 = stringPreferencesKey("general_films_series_url_2")
+    // Domaines d'exception (en plus du domaine principal) autorisés dans la navigation de
+    // l'écran Films et Séries — voir [GeneralSettings.extraAllowedDomains].
+    val EXTRA_ALLOWED_DOMAINS = stringSetPreferencesKey("general_extra_allowed_domains")
 }

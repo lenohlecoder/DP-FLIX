@@ -33,8 +33,11 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.CircularProgressIndicator
@@ -42,6 +45,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -174,6 +178,7 @@ fun FilmsSeriesScreen(
     val detectedStreams by sniffer.detectedStreams.collectAsState()
     var isPageFullscreen by remember { mutableStateOf(false) }
     var showStreamsDialog by remember { mutableStateOf(false) }
+    var showExceptionDomainsDialog by remember { mutableStateOf(false) }
     // Titre de la page WebView courante, pour nommer le téléchargement à l'enqueue.
     var pageTitle by remember { mutableStateOf<String?>(null) }
 
@@ -278,6 +283,8 @@ fun FilmsSeriesScreen(
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
+                    extraAllowedHosts = generalSettings?.extraAllowedDomains
+                        ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
                     onWebViewCreated = { webView ->
                         webViewRef.value = webView
                         if (showVirtualCursor) {
@@ -317,7 +324,8 @@ fun FilmsSeriesScreen(
             VirtualCursor(offset = offset)
         }
 
-        // Flèche téléchargement + raccourci bibliothèque — hors plein écran uniquement.
+        // Réglages (domaines d'exception) + flèche téléchargement + raccourci bibliothèque
+        // — hors plein écran uniquement.
         if (!isPageFullscreen) {
             Row(
                 modifier = Modifier
@@ -325,6 +333,20 @@ fun FilmsSeriesScreen(
                     .padding(12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color.Black.copy(alpha = 0.65f),
+                    contentColor = Color.White,
+                    shadowElevation = 4.dp
+                ) {
+                    IconButton(onClick = { showExceptionDomainsDialog = true }) {
+                        Icon(
+                            imageVector = Icons.Filled.Settings,
+                            contentDescription = "Domaines d'exception",
+                            tint = Color.White
+                        )
+                    }
+                }
                 if (onOpenDownloads != null) {
                     Surface(
                         shape = CircleShape,
@@ -344,6 +366,28 @@ fun FilmsSeriesScreen(
                     )
                 }
             }
+        }
+
+        if (showExceptionDomainsDialog) {
+            ExceptionDomainsDialog(
+                domains = generalSettings?.extraAllowedDomains
+                    ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
+                onDismiss = { showExceptionDomainsDialog = false },
+                onAddDomain = { newDomain ->
+                    scope.launch {
+                        appRepository.settings.updateGeneralSettings { current ->
+                            current.copy(extraAllowedDomains = current.extraAllowedDomains + newDomain)
+                        }
+                    }
+                },
+                onRemoveDomain = { domain ->
+                    scope.launch {
+                        appRepository.settings.updateGeneralSettings { current ->
+                            current.copy(extraAllowedDomains = current.extraAllowedDomains - domain)
+                        }
+                    }
+                }
+            )
         }
 
         if (showStreamsDialog) {
@@ -503,6 +547,123 @@ private fun DetectedStreamsDialog(
     }
 }
 
+/**
+ * Gestion des domaines "exception" (§Réglages Films et Séries, 12 août 2026) : liste des
+ * domaines, en plus du site principal, autorisés dans la navigation de la WebView verrouillée
+ * — typiquement le CDN de téléchargement vers lequel le site redirige lui-même via son propre
+ * lien "Télécharger" (ex. vidzy.cc). Ajout/suppression persistés immédiatement via
+ * [onAddDomain]/[onRemoveDomain] (voir `GeneralSettings.extraAllowedDomains`).
+ */
+@Composable
+private fun ExceptionDomainsDialog(
+    domains: Set<String>,
+    onDismiss: () -> Unit,
+    onAddDomain: (String) -> Unit,
+    onRemoveDomain: (String) -> Unit
+) {
+    var newDomainText by remember { mutableStateOf("") }
+    val sortedDomains = remember(domains) { domains.sorted() }
+
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            tonalElevation = 6.dp,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 480.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Domaines d'exception",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(Icons.Filled.Close, contentDescription = "Fermer")
+                    }
+                }
+                Text(
+                    text = "Domaines autorisés en plus du site principal (ex. un CDN de " +
+                        "téléchargement vers lequel le site redirige lui-même). Un domaine " +
+                        "autorise aussi ses sous-domaines.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                HorizontalDivider()
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = false)
+                ) {
+                    items(sortedDomains, key = { it }) { domain ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp)
+                        ) {
+                            Text(
+                                text = domain,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = { onRemoveDomain(domain) }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "Supprimer $domain"
+                                )
+                            }
+                        }
+                        HorizontalDivider()
+                    }
+                    if (sortedDomains.isEmpty()) {
+                        item {
+                            Text(
+                                text = "Aucun domaine d'exception.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = newDomainText,
+                        onValueChange = { newDomainText = it },
+                        label = { Text("ex. vidzy.cc") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = {
+                            // Normalisation minimale ici aussi (le check définitif se fait
+                            // dans `LockedWebView`) : évite juste des entrées manifestement
+                            // inutilisables (vides, avec espaces) dans la liste affichée.
+                            val cleaned = newDomainText.trim().lowercase().removePrefix("www.")
+                            if (cleaned.isNotEmpty()) {
+                                onAddDomain(cleaned)
+                                newDomainText = ""
+                            }
+                        },
+                        enabled = newDomainText.isNotBlank()
+                    ) {
+                        Icon(Icons.Filled.Add, contentDescription = "Ajouter")
+                    }
+                }
+            }
+        }
+    }
+}
+
 @Composable
 private fun StreamRow(
     stream: DetectedStream,
@@ -574,6 +735,7 @@ private fun VirtualCursor(offset: Offset, modifier: Modifier = Modifier) {
 private fun LockedWebView(
     url: String,
     sniffer: StreamSniffer,
+    extraAllowedHosts: Set<String> = emptySet(),
     onWebViewCreated: (WebView) -> Unit,
     onFullscreenChanged: (Boolean) -> Unit,
     onPageTitleChanged: (String?) -> Unit = {},
@@ -581,6 +743,17 @@ private fun LockedWebView(
     modifier: Modifier = Modifier
 ) {
     val allowedHost = remember(url) { Uri.parse(url).host }
+    // Domaines "exception" (§Réglages Films et Séries) — ex. CDN de téléchargement
+    // (vidzy.cc) vers lequel le site principal redirige lui-même via son propre lien
+    // "Télécharger". Normalisés une fois ici (retirer un éventuel "www.", mettre en
+    // minuscule) pour que la comparaison ci-dessous soit fiable quelle que soit la forme
+    // saisie par l'utilisateur dans le dialogue de gestion.
+    val normalizedExtraHosts = remember(extraAllowedHosts) {
+        extraAllowedHosts
+            .map { it.trim().lowercase().removePrefix("www.") }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
     val snifferState = rememberUpdatedState(sniffer)
     val onFullscreenState = rememberUpdatedState(onFullscreenChanged)
     val onPageTitleState = rememberUpdatedState(onPageTitleChanged)
@@ -615,9 +788,18 @@ private fun LockedWebView(
                         view: WebView,
                         request: WebResourceRequest
                     ): Boolean {
-                        val host = request.url.host ?: return true
-                        val isAllowed = allowedHost != null &&
+                        val host = request.url.host?.lowercase() ?: return true
+                        val isMainDomain = allowedHost != null &&
                             (host == allowedHost || host.endsWith(".$allowedHost"))
+                        // Domaine d'exception (§Réglages Films et Séries) : même règle
+                        // hôte exact + sous-domaines que le domaine principal ci-dessus —
+                        // permet au lien "Télécharger" propre au site de rediriger vers son
+                        // CDN (ex. vidzy.cc) sans que ce soit traité comme une redirection
+                        // publicitaire/tierce à bloquer.
+                        val isExtraAllowed = normalizedExtraHosts.any { extra ->
+                            host == extra || host.endsWith(".$extra")
+                        }
+                        val isAllowed = isMainDomain || isExtraAllowed
                         // true = on bloque la navigation (Android n'appelle pas loadUrl,
                         // la page affichée reste inchangée) ; false = on laisse la WebView
                         // la charger elle-même.

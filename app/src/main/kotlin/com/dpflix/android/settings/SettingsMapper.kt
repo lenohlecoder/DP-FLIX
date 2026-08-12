@@ -40,7 +40,12 @@ fun Preferences.toGeneralSettings(): GeneralSettings = GeneralSettings(
     defaultVideoQualityCap = this[SettingsKeys.DEFAULT_VIDEO_QUALITY_CAP],
     defaultPlaylistId = this[SettingsKeys.DEFAULT_PLAYLIST_ID],
     filmsSeriesUrl = this[SettingsKeys.FILMS_SERIES_URL],
-    filmsSeriesUrl2 = this[SettingsKeys.FILMS_SERIES_URL_2]
+    filmsSeriesUrl2 = this[SettingsKeys.FILMS_SERIES_URL_2],
+    // Pas encore de clé écrite (première ouverture, ou utilisateur n'ayant jamais touché à
+    // la liste) → repli sur la valeur par défaut, pas sur un set vide (sinon vidzy.cc
+    // disparaîtrait silencieusement pour tout le monde tant que personne n'a rien ajouté).
+    extraAllowedDomains = this[SettingsKeys.EXTRA_ALLOWED_DOMAINS]
+        ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS
 )
 
 fun GeneralSettings.writeTo(prefs: MutablePreferences) {
@@ -64,4 +69,8 @@ fun GeneralSettings.writeTo(prefs: MutablePreferences) {
     } else {
         prefs.remove(SettingsKeys.FILMS_SERIES_URL_2)
     }
+    // Toujours écrit tel quel (y compris vide si l'utilisateur a tout supprimé) : contrairement
+    // aux champs ci-dessus, un set vide est une valeur légitime et distincte de "jamais touché"
+    // (ce dernier cas, lui, n'écrit jamais cette clé — voir [toGeneralSettings]).
+    prefs[SettingsKeys.EXTRA_ALLOWED_DOMAINS] = extraAllowedDomains
 }

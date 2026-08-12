@@ -33,7 +33,19 @@ data class GeneralSettings(
      * indépendante de la première. `null`/vide = pas encore personnalisé, repli sur
      * [DEFAULT_FILMS_SERIES_URL_2].
      */
-    val filmsSeriesUrl2: String? = null
+    val filmsSeriesUrl2: String? = null,
+
+    /**
+     * Domaines "exception" autorisés dans la navigation de l'écran Films et Séries, en plus
+     * du domaine principal ([filmsSeriesUrl]/[filmsSeriesUrl2]) — voir
+     * `com.dpflix.android.filmsseries.FilmsSeriesScreen` (verrouillage de domaine). Chaque
+     * entrée autorise le domaine exact ainsi que ses sous-domaines (`*.domaine`), même règle
+     * que le domaine principal — utile pour les CDN de téléchargement vers lesquels le site
+     * redirige lui-même (ex. `vidzy.cc`) et qui vivent sur un domaine différent.
+     * Modifiable depuis l'icône réglages de l'écran Films et Séries (ajout/suppression),
+     * pré-rempli avec [DEFAULT_EXTRA_ALLOWED_DOMAINS] tant que l'utilisateur n'y a pas touché.
+     */
+    val extraAllowedDomains: Set<String> = DEFAULT_EXTRA_ALLOWED_DOMAINS
 ) {
     companion object {
         /** Valeur par défaut codée en dur pour "Stream 1", restaurée si le champ Réglages est vidé. */
@@ -42,5 +54,10 @@ data class GeneralSettings(
         /** Valeur par défaut codée en dur pour "Stream 2" (French-Stream), même rôle que
          *  [DEFAULT_FILMS_SERIES_URL] pour "Stream 1". */
         const val DEFAULT_FILMS_SERIES_URL_2 = "https://french-stream.one/"
+
+        /** CDN de téléchargement vers lequel purstream.store redirige lui-même (lien
+         *  "Télécharger" propre au site) — sans cette exception, ce lien serait bloqué par
+         *  le verrouillage de domaine avant même d'atteindre le vrai flux vidéo. */
+        val DEFAULT_EXTRA_ALLOWED_DOMAINS = setOf("vidzy.cc")
     }
 }
