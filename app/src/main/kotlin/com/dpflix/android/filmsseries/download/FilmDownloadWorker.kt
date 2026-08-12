@@ -91,9 +91,7 @@ class FilmDownloadWorker(
             val existing = if (destPartial.exists()) destPartial.length() else 0L
             val requestBuilder = Request.Builder()
                 .url(entity.streamUrl)
-                .header("User-Agent", entity.userAgent ?: DEFAULT_UA)
-            entity.referer?.let { requestBuilder.header("Referer", it) }
-            entity.cookie?.let { requestBuilder.header("Cookie", it) }
+                .apply { buildHeaders(entity).forEach { (k, v) -> header(k, v) } }
             if (existing > 0L) {
                 requestBuilder.header("Range", "bytes=$existing-")
             }
@@ -273,9 +271,33 @@ class FilmDownloadWorker(
         setProgress(workDataOf(KEY_PROGRESS to percent, KEY_TITLE to title))
     }
 
+    /**
+     * Fix (12 août 2026) : les liens détectés par [com.dpflix.android.filmsseries.stream.StreamSniffer]
+     * sont servis par des CDN anti-hotlink (vidzy.cc et similaires) qui, en plus du Referer déjà
+     * envoyé, vérifient souvent l'en-tête `Origin` — présent automatiquement dans une requête émise
+     * par une vraie page web (WebView/lecteur intégré), mais absent d'une requête OkHttp brute.
+     * Son absence explique un rejet HTTP 403 systématique sur des liens pourtant valides et
+     * fraîchement détectés. On le dérive du Referer (scheme + host), seule donnée fiable dont on
+     * dispose ici.
+     *
+     * Rappel : un lien détecté par le sniffer reste par nature temporaire (jeton `t=...` dans
+     * l'URL, court délai de validité côté CDN). Si le 403 persiste malgré l'Origin, la cause la
+     * plus probable est que le téléchargement a démarré trop longtemps après la détection —
+     * relancer une détection fraîche juste avant de télécharger règle ce cas.
+     */
     private fun buildHeaders(entity: FilmDownloadEntity): Map<String, String> = buildMap {
         put("User-Agent", entity.userAgent ?: DEFAULT_UA)
-        entity.referer?.let { put("Referer", it) }
+        entity.referer?.let { referer ->
+            put("Referer", referer)
+            runCatching { android.net.Uri.parse(referer) }.getOrNull()?.let { uri ->
+                val scheme = uri.scheme
+                val host = uri.host
+                if (scheme != null && host != null) {
+                    val originPort = if (uri.port !in listOf(-1, 80, 443)) ":${uri.port}" else ""
+                    put("Origin", "$scheme://$host$originPort")
+                }
+            }
+        }
         entity.cookie?.let { put("Cookie", it) }
     }
 

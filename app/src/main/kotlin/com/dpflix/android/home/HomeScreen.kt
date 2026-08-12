@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -90,6 +91,7 @@ fun HomeScreen(
     appRepository: AppRepository,
     onNavigateToSettings: () -> Unit,
     onNavigateToFilmsSeries: (streamIndex: Int) -> Unit,
+    onNavigateToFilmDownloads: () -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -161,6 +163,17 @@ fun HomeScreen(
                             Icon(
                                 imageVector = Icons.Filled.Movie,
                                 contentDescription = "Films et Séries",
+                                tint = DpFlixColors.OnBackground
+                            )
+                        }
+                        // Accès direct "Mes téléchargements" (08/08, suite) : juste à côté
+                        // du bouton Films et Séries, sans passer par la WebView (qui a
+                        // besoin d'internet pour se charger) — la bibliothèque locale, elle,
+                        // n'en a jamais eu besoin, seul le chemin d'accès l'exigeait jusqu'ici.
+                        IconButton(onClick = onNavigateToFilmDownloads) {
+                            Icon(
+                                imageVector = Icons.Filled.Download,
+                                contentDescription = "Mes téléchargements",
                                 tint = DpFlixColors.OnBackground
                             )
                         }

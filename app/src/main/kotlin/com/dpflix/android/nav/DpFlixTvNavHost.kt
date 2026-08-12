@@ -127,6 +127,9 @@ fun DpFlixTvNavHost(
                 onNavigateToFilmsSeries = { streamIndex ->
                     navController.navigate(DpFlixDestination.FilmsSeries.createRoute(streamIndex))
                 },
+                onNavigateToFilmDownloads = {
+                    navController.navigate(DpFlixDestination.FilmDownloads.route)
+                },
                 onNavigateToPlayerFullscreen = { channelId ->
                     navController.navigate(DpFlixDestination.PlayerFullscreen.createRoute(channelId))
                 }

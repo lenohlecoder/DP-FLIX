@@ -140,6 +140,7 @@ fun HomeScreenTv(
     appRepository: AppRepository,
     onNavigateToSettings: () -> Unit,
     onNavigateToFilmsSeries: (streamIndex: Int) -> Unit,
+    onNavigateToFilmDownloads: () -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -153,6 +154,7 @@ fun HomeScreenTv(
     var showFilmsSeriesPicker by remember { mutableStateOf(false) }
 
     val filmsSeriesFocusRequester = remember { FocusRequester() }
+    val filmDownloadsFocusRequester = remember { FocusRequester() }
     val settingsFocusRequester = remember { FocusRequester() }
     val firstChannelFocusRequester = remember { FocusRequester() }
     var hasRequestedInitialFocus by remember { mutableStateOf(false) }
@@ -236,6 +238,18 @@ fun HomeScreenTv(
                                 .padding(start = 12.dp)
                         ) {
                             Text("Films et Séries")
+                        }
+                        // Accès direct "Mes téléchargements" (08/08, suite) : juste à côté
+                        // du bouton Films et Séries, sans passer par la WebView (qui a
+                        // besoin d'internet pour se charger) — la bibliothèque locale, elle,
+                        // n'en a jamais eu besoin, seul le chemin d'accès l'exigeait jusqu'ici.
+                        Button(
+                            onClick = onNavigateToFilmDownloads,
+                            modifier = Modifier
+                                .focusRequester(filmDownloadsFocusRequester)
+                                .padding(start = 12.dp)
+                        ) {
+                            Text("Téléchargements")
                         }
                         Button(
                             onClick = onNavigateToSettings,
