@@ -294,19 +294,6 @@ fun FilmsSeriesScreen(
                         if (fullscreen) showStreamsDialog = false
                     },
                     onPageTitleChanged = { title -> pageTitle = title },
-                    onRendererGone = {
-                        // Fix (12 août 2026) : voir doc de `onRenderProcessGone` plus bas —
-                        // sans ce callback, Android tue tout le processus de l'app dès que
-                        // le processus de rendu WebView meurt (mémoire sous pression, ex.
-                        // un téléchargement actif en tâche de fond). On revient proprement
-                        // à l'accueil au lieu de laisser l'app entière s'arrêter net.
-                        Toast.makeText(
-                            context,
-                            "La page s'est fermée (mémoire insuffisante) — retour à l'accueil.",
-                            Toast.LENGTH_LONG
-                        ).show()
-                        onNavigateHomeState.value()
-                    },
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -350,14 +337,6 @@ fun FilmsSeriesScreen(
             DetectedStreamsDialog(
                 streams = detectedStreams,
                 onDismiss = { showStreamsDialog = false },
-                onClear = {
-                    // Fix (12 août 2026) : option manuelle pour vider la liste — le sniffer
-                    // ne se réinitialise automatiquement que sur un vrai changement de page
-                    // WebView (`onPageStarted`) ; beaucoup de sites lecteur naviguent en
-                    // JS/SPA sans déclencher ça, d'où l'accumulation observée en passant
-                    // d'une vidéo à l'autre sans recharger la page.
-                    sniffer.clear()
-                },
                 onSelectStream = { stream ->
                     val mgr = downloadManager
                     if (mgr == null) {
@@ -369,31 +348,12 @@ fun FilmsSeriesScreen(
                     } else {
                         val ua = webViewRef.value?.settings?.userAgentString
                         val titleSnapshot = pageTitle
-                        val webView = webViewRef.value
                         scope.launch {
                             try {
-                                var streamToEnqueue = stream
-                                var prefetched: String? = null
-                                if (webView != null &&
-                                    (stream.type == StreamType.HLS || stream.type == StreamType.DASH)
-                                ) {
-                                    Toast.makeText(
-                                        context,
-                                        "Préparation du téléchargement…",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                    val resolved =
-                                        resolvePlaylistInWebView(webView, stream.url, stream.type)
-                                    prefetched = resolved.second
-                                    if (resolved.first != stream.url) {
-                                        streamToEnqueue = stream.copy(url = resolved.first)
-                                    }
-                                }
                                 mgr.enqueue(
-                                    stream = streamToEnqueue,
+                                    stream = stream,
                                     title = titleSnapshot,
-                                    userAgent = ua,
-                                    prefetchedPlaylistBody = prefetched
+                                    userAgent = ua
                                 )
                                 Toast.makeText(
                                     context,
@@ -410,7 +370,7 @@ fun FilmsSeriesScreen(
                                 Toast.makeText(
                                     context,
                                     "Erreur: ${e.message ?: "échec"}",
-                                    Toast.LENGTH_LONG
+                                    Toast.LENGTH_SHORT
                                 ).show()
                             }
                         }
@@ -458,7 +418,6 @@ private fun DownloadArrowButton(
 private fun DetectedStreamsDialog(
     streams: List<DetectedStream>,
     onDismiss: () -> Unit,
-    onClear: () -> Unit,
     onSelectStream: (DetectedStream) -> Unit
 ) {
     Dialog(onDismissRequest = onDismiss) {
@@ -503,19 +462,11 @@ private fun DetectedStreamsDialog(
                         HorizontalDivider()
                     }
                 }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.align(Alignment.End)
                 ) {
-                    TextButton(
-                        onClick = onClear,
-                        enabled = streams.isNotEmpty()
-                    ) {
-                        Text("Effacer")
-                    }
-                    TextButton(onClick = onDismiss) {
-                        Text("Fermer")
-                    }
+                    Text("Fermer")
                 }
             }
         }
@@ -596,14 +547,12 @@ private fun LockedWebView(
     onWebViewCreated: (WebView) -> Unit,
     onFullscreenChanged: (Boolean) -> Unit,
     onPageTitleChanged: (String?) -> Unit = {},
-    onRendererGone: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val allowedHost = remember(url) { Uri.parse(url).host }
     val snifferState = rememberUpdatedState(sniffer)
     val onFullscreenState = rememberUpdatedState(onFullscreenChanged)
     val onPageTitleState = rememberUpdatedState(onPageTitleChanged)
-    val onRendererGoneState = rememberUpdatedState(onRendererGone)
 
     AndroidView(
         modifier = modifier,
@@ -647,28 +596,6 @@ private fun LockedWebView(
                         // Nouvelle page dans l'historique du site → les flux capturés pour
                         // l'ancienne page n'ont plus cours (module téléchargement).
                         snifferState.value.resetForNewPage(pageUrl)
-                    }
-
-                    /**
-                     * Fix (12 août 2026) : sans cette surcharge, Android considère un crash
-                     * du processus de rendu WebView (renderer tué par le système sous
-                     * pression mémoire — plus probable avec un téléchargement actif en
-                     * tâche de fond en parallèle) comme fatal pour TOUT le processus de
-                     * l'app, qui s'arrête net (comportement par défaut d'Android depuis
-                     * l'API 26 quand `onRenderProcessGone` n'est pas implémenté). En la
-                     * fournissant et en retournant `true` ("géré"), seul cet écran est
-                     * abandonné — l'app elle-même survit et peut revenir proprement à
-                     * l'accueil (voir [onRendererGoneState] côté appelant).
-                     */
-                    override fun onRenderProcessGone(
-                        view: WebView?,
-                        detail: android.webkit.RenderProcessGoneDetail?
-                    ): Boolean {
-                        // Ne pas appeler view.destroy() ici : `onRelease` de l'AndroidView
-                        // (plus bas) s'en charge déjà une fois la navigation vers l'accueil
-                        // effective — appeler destroy() deux fois plante.
-                        onRendererGoneState.value()
-                        return true
                     }
 
                     /**
@@ -762,26 +689,4 @@ private fun LockedWebView(
         },
         onRelease = { webView -> webView.destroy() }
     )
-}
-
-
-/**
- * Master → media playlist via fetch() dans la WebView (contexte 1DM / anti-403 Vidzy).
- * @return Pair(urlMédia, corps m3u8)
- */
-private suspend fun resolvePlaylistInWebView(
-    webView: android.webkit.WebView,
-    playlistUrl: String,
-    type: StreamType
-): Pair<String, String> {
-    val body = WebViewHttpFetcher.fetchText(webView, playlistUrl)
-    if (type != StreamType.HLS) return playlistUrl to body
-    if (!HlsPlaylistParser.isMasterPlaylist(body)) return playlistUrl to body
-    val variants = HlsPlaylistParser.parseMaster(body, playlistUrl)
-    if (variants.isEmpty()) {
-        throw IllegalStateException("Master HLS sans variante")
-    }
-    val best = variants.first()
-    val mediaBody = WebViewHttpFetcher.fetchText(webView, best.uri)
-    return best.uri to mediaBody
 }

@@ -3,6 +3,7 @@ package com.dpflix.android.filmsseries.download
 import android.content.Context
 import android.os.StatFs
 import android.webkit.CookieManager
+import android.webkit.WebView
 import com.dpflix.android.db.dao.FilmDownloadDao
 import com.dpflix.android.db.entity.FilmDownloadEntity
 import com.dpflix.android.filmsseries.stream.DetectedStream
@@ -109,6 +110,139 @@ class FilmDownloadManager(
         }
         FilmDownloadWorker.enqueue(appContext, id)
         return id
+    }
+
+
+    /**
+     * Télécharge un HLS **entièrement** via la WebView (playlist déjà en .src.m3u8 +
+     * segments en [WebViewHttpFetcher.fetchBytes]). À appeler depuis l'UI tant que
+     * la WebView Films & Séries est vivante — contourne le 403 OkHttp sur les segments.
+     */
+    fun startHlsViaWebView(id: String, webView: WebView) {
+        scope.launch {
+            val entity = dao.getById(id) ?: return@launch
+            // DASH → chemin dédié [startDashViaWebView] (DashDownloader a maintenant son
+            // propre segmentFetcher WebView, séparé de celui-ci qui parse du .m3u8).
+            if (entity.streamType != StreamType.HLS.name) {
+                FilmDownloadWorker.enqueue(appContext, id)
+                return@launch
+            }
+            // Annule un éventuel Worker OkHttp concurrent
+            FilmDownloadWorker.cancel(appContext, id)
+            val workDir = File(downloadsDir, "hls_work_$id")
+            val destVideo = File(downloadsDir, "$id.ts")
+            val destAudio = File(downloadsDir, "$id.audio.ts")
+            val prefetched = File(downloadsDir, "$id.src.m3u8").takeIf { it.exists() }?.readText()
+            val headers = buildMap {
+                put("User-Agent", entity.userAgent ?: "Mozilla/5.0")
+                entity.referer?.let { put("Referer", it) }
+                entity.cookie?.let { put("Cookie", it) }
+            }
+            try {
+                dao.updateProgress(
+                    id, STATUS_RUNNING, entity.progressPercent, entity.bytesDownloaded,
+                    entity.bytesTotal, null, null, System.currentTimeMillis()
+                )
+                val hls = HlsDownloader(okhttp3.OkHttpClient.Builder().followRedirects(true).build())
+                val result = hls.download(
+                    playlistUrl = entity.streamUrl,
+                    destFile = destVideo,
+                    workDir = workDir,
+                    headers = headers,
+                    onProgress = { p ->
+                        val percent = if (p.segmentsTotal > 0) {
+                            ((p.segmentsDone * 100) / p.segmentsTotal).coerceIn(0, 99)
+                        } else 0
+                        dao.updateProgress(
+                            id, STATUS_RUNNING, percent, p.bytesDownloaded,
+                            null, null, null, System.currentTimeMillis()
+                        )
+                    },
+                    destAudioFile = destAudio,
+                    prefetchedPlaylistBody = prefetched,
+                    segmentFetcher = { url -> WebViewHttpFetcher.fetchBytes(webView, url) },
+                    textFetcher = { url -> WebViewHttpFetcher.fetchText(webView, url) }
+                )
+                val finalFile = result.videoFile
+                dao.updateProgress(
+                    id, STATUS_COMPLETED, 100, finalFile.length(), finalFile.length(),
+                    null, finalFile.absolutePath, System.currentTimeMillis()
+                )
+                FilmDownloadNotifier(appContext).notifyCompleted(id, entity.title)
+            } catch (e: Exception) {
+                dao.updateProgress(
+                    id, STATUS_FAILED, entity.progressPercent, entity.bytesDownloaded,
+                    entity.bytesTotal, e.message?.take(200) ?: "Échec HLS WebView",
+                    entity.localPath, System.currentTimeMillis()
+                )
+                FilmDownloadNotifier(appContext).notifyFailed(id, entity.title, e.message)
+            }
+        }
+    }
+
+    /**
+     * Équivalent DASH de [startHlsViaWebView] : manifeste .mpd (+ segments) entièrement
+     * via WebView (contexte navigateur Chromium), contourne le 403 OkHttp sur les CDN
+     * qui filtrent la stack app (Vidzy). Même principe que [WebViewHttpFetcher], appliqué
+     * à [DashDownloader] au lieu de [HlsDownloader].
+     */
+    fun startDashViaWebView(id: String, webView: WebView) {
+        scope.launch {
+            val entity = dao.getById(id) ?: return@launch
+            if (entity.streamType != StreamType.DASH.name) {
+                FilmDownloadWorker.enqueue(appContext, id)
+                return@launch
+            }
+            FilmDownloadWorker.cancel(appContext, id)
+            val workDir = File(downloadsDir, "dash_work_$id")
+            val destVideo = File(downloadsDir, "$id.mux.mp4")
+            val destAudio = File(downloadsDir, "$id.audio.bin")
+            val prefetched = File(downloadsDir, "$id.src.m3u8").takeIf { it.exists() }?.readText()
+            val headers = buildMap {
+                put("User-Agent", entity.userAgent ?: "Mozilla/5.0")
+                entity.referer?.let { put("Referer", it) }
+                entity.cookie?.let { put("Cookie", it) }
+            }
+            try {
+                dao.updateProgress(
+                    id, STATUS_RUNNING, entity.progressPercent, entity.bytesDownloaded,
+                    entity.bytesTotal, null, null, System.currentTimeMillis()
+                )
+                val dash = DashDownloader(okhttp3.OkHttpClient.Builder().followRedirects(true).build())
+                val result = dash.download(
+                    mpdUrl = entity.streamUrl,
+                    destVideo = destVideo,
+                    destAudio = destAudio,
+                    workDir = workDir,
+                    headers = headers,
+                    onProgress = { p ->
+                        val percent = if (p.segmentsTotal > 0) {
+                            ((p.segmentsDone * 100) / p.segmentsTotal).coerceIn(0, 99)
+                        } else 0
+                        dao.updateProgress(
+                            id, STATUS_RUNNING, percent, p.bytesDownloaded,
+                            null, null, null, System.currentTimeMillis()
+                        )
+                    },
+                    prefetchedManifestBody = prefetched,
+                    segmentFetcher = { url -> WebViewHttpFetcher.fetchBytes(webView, url) },
+                    textFetcher = { url -> WebViewHttpFetcher.fetchText(webView, url) }
+                )
+                val finalFile = result.videoFile
+                dao.updateProgress(
+                    id, STATUS_COMPLETED, 100, finalFile.length(), finalFile.length(),
+                    null, finalFile.absolutePath, System.currentTimeMillis()
+                )
+                FilmDownloadNotifier(appContext).notifyCompleted(id, entity.title)
+            } catch (e: Exception) {
+                dao.updateProgress(
+                    id, STATUS_FAILED, entity.progressPercent, entity.bytesDownloaded,
+                    entity.bytesTotal, e.message?.take(200) ?: "Échec DASH WebView",
+                    entity.localPath, System.currentTimeMillis()
+                )
+                FilmDownloadNotifier(appContext).notifyFailed(id, entity.title, e.message)
+            }
+        }
     }
 
     fun pause(id: String) {

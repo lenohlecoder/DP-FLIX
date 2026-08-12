@@ -40,13 +40,19 @@ class DashDownloader(
         destAudio: File?,
         workDir: File,
         headers: Map<String, String>,
-        onProgress: suspend (Progress) -> Unit
+        onProgress: suspend (Progress) -> Unit,
+        prefetchedManifestBody: String? = null,
+        /** null = OkHttp ; sinon fetch binaire (WebView) — même principe que HlsDownloader. */
+        segmentFetcher: (suspend (url: String) -> ByteArray)? = null,
+        /** null = OkHttp ; sinon fetch texte manifeste (WebView). */
+        textFetcher: (suspend (url: String) -> String)? = null
     ): Result {
         workDir.mkdirs()
         if (destVideo.exists()) destVideo.delete()
         destAudio?.takeIf { it.exists() }?.delete()
 
-        val body = fetchText(mpdUrl, headers)
+        val body = prefetchedManifestBody?.takeIf { it.isNotBlank() }
+            ?: loadText(mpdUrl, headers, textFetcher)
         val manifest = DashPlaylistParser.parse(body, mpdUrl)
         if (manifest.hasDrm) {
             throw IllegalStateException("Flux DASH protégé DRM — non téléchargeable")
@@ -68,7 +74,7 @@ class DashDownloader(
                 currentCoroutineContext().ensureActive()
                 val part = File(workDir, "v_${index.toString().padStart(5, '0')}.part")
                 val n = try {
-                    fetchToFile(url, headers, part)
+                    fetchSegment(url, headers, part, segmentFetcher)
                 } catch (e: HttpStatusException) {
                     if (e.code == 404 && index > 0) {
                         // fin de liste estimée
@@ -95,7 +101,7 @@ class DashDownloader(
                         currentCoroutineContext().ensureActive()
                         val part = File(workDir, "a_${index.toString().padStart(5, '0')}.part")
                         val n = try {
-                            fetchToFile(url, headers, part)
+                            fetchSegment(url, headers, part, segmentFetcher)
                         } catch (e: HttpStatusException) {
                             if (e.code == 404 && index > 0) break
                             throw e
@@ -122,6 +128,41 @@ class DashDownloader(
             workDir.listFiles()?.forEach { runCatching { it.delete() } }
             runCatching { workDir.delete() }
         }
+    }
+
+    private suspend fun loadText(
+        url: String,
+        headers: Map<String, String>,
+        textFetcher: (suspend (String) -> String)?
+    ): String {
+        return if (textFetcher != null) textFetcher(url) else fetchText(url, headers)
+    }
+
+    /**
+     * 404 → traité par [HttpStatusException] côté OkHttp pour la détection "fin de
+     * liste estimée" (voir appelants). En WebView, un 404 remonte comme un message
+     * d'erreur JS générique ; on le reconvertit ici en [HttpStatusException] pour que
+     * la même logique de fin de liste s'applique quel que soit le fetcher utilisé.
+     */
+    private suspend fun fetchSegment(
+        url: String,
+        headers: Map<String, String>,
+        dest: File,
+        segmentFetcher: (suspend (String) -> ByteArray)?
+    ): Long {
+        if (segmentFetcher != null) {
+            val data = try {
+                segmentFetcher(url)
+            } catch (e: Exception) {
+                val msg = e.message.orEmpty()
+                val code = Regex("HTTP (\\d{3})").find(msg)?.groupValues?.get(1)?.toIntOrNull()
+                if (code != null) throw HttpStatusException(code, msg)
+                throw e
+            }
+            FileOutputStream(dest).use { it.write(data) }
+            return data.size.toLong()
+        }
+        return fetchToFile(url, headers, dest)
     }
 
     private fun concatFiles(parts: List<File>, dest: File) {
