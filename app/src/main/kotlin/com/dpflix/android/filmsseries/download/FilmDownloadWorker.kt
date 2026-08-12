@@ -92,11 +92,9 @@ class FilmDownloadWorker(
                 fail(
                     id,
                     entity,
-                    // Fix (12 août 2026, diagnostic v2) : 200 caractères suffisaient pour
-                    // un simple "HTTP 403", mais coupaient désormais le message avant même
-                    // d'atteindre l'extrait d'en-têtes ajouté juste pour diagnostiquer le
-                    // 403 stream 2 — voir la doc de HlsDownloader.headersSnippet.
-                    e.message?.take(500) ?: "Échec du téléchargement"
+                    // Fix (12 août 2026, diagnostic v3) : encore un peu de marge pour
+                    // l'extrait des en-têtes de réponse ajouté juste au-dessus.
+                    e.message?.take(700) ?: "Échec du téléchargement"
                 )
                 Result.failure()
             }
@@ -131,7 +129,8 @@ class FilmDownloadWorker(
             httpClient.newCall(requestBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful && response.code != 206) {
                     throw IllegalStateException(
-                        "HTTP ${response.code}${bodySnippet(response)}${headersSnippet(mp4Headers)}"
+                        "HTTP ${response.code}${bodySnippet(response)}" +
+                            "${headersSnippet(mp4Headers)}${responseHeadersSnippet(response)}"
                     )
                 }
                 val body = response.body ?: throw IllegalStateException("Réponse vide")
@@ -409,6 +408,17 @@ class FilmDownloadWorker(
         val hasCookie = headers.keys.any { it.equals("Cookie", ignoreCase = true) }
         return " [envoyé — Referer: ${referer ?: "(aucun)"} | Origin: ${origin ?: "(aucun)"} | " +
             "UA: ${ua ?: "(aucun)"} | Cookie: ${if (hasCookie) "présent" else "absent"}]"
+    }
+
+    /** Voir la doc du même helper dans [HlsDownloader] (diagnostic v3, 12 août 2026). */
+    private fun responseHeadersSnippet(response: okhttp3.Response): String {
+        val interesting = response.headers.names().filterNot {
+            it.equals("Content-Length", true) || it.equals("Content-Type", true) ||
+                it.equals("Connection", true) || it.equals("Date", true)
+        }
+        if (interesting.isEmpty()) return ""
+        val pairs = interesting.joinToString(", ") { name -> "$name: ${response.header(name)}" }
+        return " [reçu — $pairs]"
     }
 
     companion object {

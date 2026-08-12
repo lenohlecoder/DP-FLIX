@@ -172,7 +172,8 @@ class HlsDownloader(
         httpClient.newCall(req).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IllegalStateException(
-                    "HTTP ${response.code} sur playlist${bodySnippet(response)}${headersSnippet(headers)}"
+                    "HTTP ${response.code} sur playlist${bodySnippet(response)}" +
+                        "${headersSnippet(headers)}${responseHeadersSnippet(response)}"
                 )
             }
             return response.body?.string()
@@ -187,7 +188,8 @@ class HlsDownloader(
         httpClient.newCall(req).execute().use { response ->
             if (!response.isSuccessful) {
                 throw IllegalStateException(
-                    "HTTP ${response.code} segment${bodySnippet(response)}${headersSnippet(headers)}"
+                    "HTTP ${response.code} segment${bodySnippet(response)}" +
+                        "${headersSnippet(headers)}${responseHeadersSnippet(response)}"
                 )
             }
             val body = response.body ?: throw IllegalStateException("Segment vide")
@@ -205,6 +207,26 @@ class HlsDownloader(
             }
             return written
         }
+    }
+
+    /**
+     * Fix (12 août 2026, diagnostic v3, suite à la question sur les rapports de bug
+     * Android) : un rapport de bug système n'aurait rien apporté ici — les échanges HTTP
+     * ne sont pas journalisés dans Logcat par cette app. Ce qui peut réellement aider,
+     * c'est ce que le SERVEUR renvoie comme en-têtes de réponse (pas seulement le corps
+     * HTML "403 Forbidden" déjà affiché) : certains services glissent un indice dedans
+     * (ex. `CF-RAY` pour Cloudflare, `WWW-Authenticate`, un en-tête maison). On liste ici
+     * les en-têtes de réponse dont le nom est utile au diagnostic (on exclut les en-têtes
+     * de contenu sans intérêt comme Content-Type/Content-Length, déjà implicites).
+     */
+    private fun responseHeadersSnippet(response: okhttp3.Response): String {
+        val interesting = response.headers.names().filterNot {
+            it.equals("Content-Length", true) || it.equals("Content-Type", true) ||
+                it.equals("Connection", true) || it.equals("Date", true)
+        }
+        if (interesting.isEmpty()) return ""
+        val pairs = interesting.joinToString(", ") { name -> "$name: ${response.header(name)}" }
+        return " [reçu — $pairs]"
     }
 
     /**
