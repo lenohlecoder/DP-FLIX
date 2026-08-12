@@ -92,7 +92,11 @@ class FilmDownloadWorker(
                 fail(
                     id,
                     entity,
-                    e.message?.take(200) ?: "Échec du téléchargement"
+                    // Fix (12 août 2026, diagnostic v2) : 200 caractères suffisaient pour
+                    // un simple "HTTP 403", mais coupaient désormais le message avant même
+                    // d'atteindre l'extrait d'en-têtes ajouté juste pour diagnostiquer le
+                    // 403 stream 2 — voir la doc de HlsDownloader.headersSnippet.
+                    e.message?.take(500) ?: "Échec du téléchargement"
                 )
                 Result.failure()
             }
@@ -116,16 +120,19 @@ class FilmDownloadWorker(
 
         withContext(Dispatchers.IO) {
             val existing = if (destPartial.exists()) destPartial.length() else 0L
+            val mp4Headers = buildHeaders(entity)
             val requestBuilder = Request.Builder()
                 .url(entity.streamUrl)
-                .apply { buildHeaders(entity).forEach { (k, v) -> header(k, v) } }
+                .apply { mp4Headers.forEach { (k, v) -> header(k, v) } }
             if (existing > 0L) {
                 requestBuilder.header("Range", "bytes=$existing-")
             }
 
             httpClient.newCall(requestBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful && response.code != 206) {
-                    throw IllegalStateException("HTTP ${response.code}${bodySnippet(response)}")
+                    throw IllegalStateException(
+                        "HTTP ${response.code}${bodySnippet(response)}${headersSnippet(mp4Headers)}"
+                    )
                 }
                 val body = response.body ?: throw IllegalStateException("Réponse vide")
                 val totalFromHeader = response.header("Content-Length")?.toLongOrNull()
@@ -392,6 +399,16 @@ class FilmDownloadWorker(
             response.peekBody(200).string().replace(Regex("\\s+"), " ").trim()
         }.getOrNull()
         return if (snippet.isNullOrBlank()) "" else " — $snippet"
+    }
+
+    /** Voir la doc du même helper dans [HlsDownloader] (diagnostic v2, 12 août 2026). */
+    private fun headersSnippet(headers: Map<String, String>): String {
+        val referer = headers.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
+        val origin = headers.entries.firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
+        val ua = headers.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.value
+        val hasCookie = headers.keys.any { it.equals("Cookie", ignoreCase = true) }
+        return " [envoyé — Referer: ${referer ?: "(aucun)"} | Origin: ${origin ?: "(aucun)"} | " +
+            "UA: ${ua ?: "(aucun)"} | Cookie: ${if (hasCookie) "présent" else "absent"}]"
     }
 
     companion object {

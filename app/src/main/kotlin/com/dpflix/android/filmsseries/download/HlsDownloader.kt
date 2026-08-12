@@ -171,7 +171,9 @@ class HlsDownloader(
         }.build()
         httpClient.newCall(req).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code} sur playlist${bodySnippet(response)}")
+                throw IllegalStateException(
+                    "HTTP ${response.code} sur playlist${bodySnippet(response)}${headersSnippet(headers)}"
+                )
             }
             return response.body?.string()
                 ?: throw IllegalStateException("Playlist vide")
@@ -184,7 +186,9 @@ class HlsDownloader(
         }.build()
         httpClient.newCall(req).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code} segment${bodySnippet(response)}")
+                throw IllegalStateException(
+                    "HTTP ${response.code} segment${bodySnippet(response)}${headersSnippet(headers)}"
+                )
             }
             val body = response.body ?: throw IllegalStateException("Segment vide")
             var written = 0L
@@ -201,6 +205,28 @@ class HlsDownloader(
             }
             return written
         }
+    }
+
+    /**
+     * Fix (12 août 2026, diagnostic v2) : après deux hypothèses testées sans succès
+     * (Origin, puis Referer réel via l'iframe) qui aboutissent toutes deux au même 403
+     * nginx brut, deviner une troisième fois gaspillerait un cycle de build de plus. On
+     * expose donc ICI, dans le message d'erreur affiché dans l'app, les en-têtes
+     * effectivement envoyés (Referer/Origin/User-Agent affichés en entier — Cookie
+     * seulement "présent"/"absent", pour ne pas exposer une valeur de session dans une
+     * notification/liste à l'écran). Ça permet de vérifier d'un coup d'œil, sans build
+     * supplémentaire : le Referer capturé est-il vide, tronqué à la racine du domaine
+     * (Referrer-Policy stricte du navigateur qui ne transmet que l'origine, pas l'URL
+     * complète), ou correct malgré tout — auquel cas le blocage nginx n'a probablement
+     * rien à voir avec Referer/Origin et vient d'autre chose (IP, User-Agent, jeton...).
+     */
+    private fun headersSnippet(headers: Map<String, String>): String {
+        val referer = headers.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
+        val origin = headers.entries.firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
+        val ua = headers.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.value
+        val hasCookie = headers.keys.any { it.equals("Cookie", ignoreCase = true) }
+        return " [envoyé — Referer: ${referer ?: "(aucun)"} | Origin: ${origin ?: "(aucun)"} | " +
+            "UA: ${ua ?: "(aucun)"} | Cookie: ${if (hasCookie) "présent" else "absent"}]"
     }
 
     /**
