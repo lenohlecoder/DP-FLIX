@@ -41,13 +41,15 @@ class HlsDownloader(
         workDir: File,
         headers: Map<String, String>,
         onProgress: suspend (Progress) -> Unit,
-        destAudioFile: File? = null
+        destAudioFile: File? = null,
+        prefetchedPlaylistBody: String? = null
     ): Result {
         workDir.mkdirs()
         if (destFile.exists()) destFile.delete()
         destAudioFile?.takeIf { it.exists() }?.delete()
 
-        val masterBody = fetchText(playlistUrl, headers)
+        val masterBody = prefetchedPlaylistBody?.takeIf { it.isNotBlank() }
+            ?: fetchText(playlistUrl, headers)
         val mediaUrl: String
         val mediaBody: String
         var audioPlaylistUrl: String? = null

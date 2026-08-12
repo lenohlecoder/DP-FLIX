@@ -58,7 +58,9 @@ class FilmDownloadManager(
     suspend fun enqueue(
         stream: DetectedStream,
         title: String? = null,
-        userAgent: String? = null
+        userAgent: String? = null,
+        /** Corps playlist déjà lu dans la WebView (HLS/DASH) — contourne le 403 OkHttp. */
+        prefetchedPlaylistBody: String? = null
     ): String {
         // Estimation espace : contentLength si connu, sinon seuil minimum
         val estimatedBytes = stream.contentLength
@@ -100,6 +102,11 @@ class FilmDownloadManager(
             updatedAtMillis = now
         )
         dao.upsert(entity)
+        if (!prefetchedPlaylistBody.isNullOrBlank()) {
+            runCatching {
+                File(downloadsDir, "$id.src.m3u8").writeText(prefetchedPlaylistBody)
+            }
+        }
         FilmDownloadWorker.enqueue(appContext, id)
         return id
     }
@@ -193,6 +200,7 @@ class FilmDownloadManager(
         }
         partialFile(id).delete()
         runCatching { File(downloadsDir, "hls_work_$id").deleteRecursively() }
+        runCatching { File(downloadsDir, "$id.src.m3u8").delete() }
         runCatching { File(downloadsDir, "dash_work_$id").deleteRecursively() }
         listOf(
             "$id.ts", "$id.mp4", "$id.mux.mp4",

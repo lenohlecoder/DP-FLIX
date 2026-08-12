@@ -216,6 +216,9 @@ class FilmDownloadWorker(
         val destVideo = File(downloadsDir, "$id.ts")
         val destAudio = File(downloadsDir, "$id.audio.ts")
         val headers = buildHeaders(entity)
+        val prefetched = File(downloadsDir, "$id.src.m3u8").takeIf { it.exists() }
+            ?.readText()
+            ?.takeIf { it.isNotBlank() }
         withContext(Dispatchers.IO) {
             val result = hlsDownloader.download(
                 playlistUrl = entity.streamUrl,
@@ -226,7 +229,8 @@ class FilmDownloadWorker(
                     if (isStopped) return@download
                     reportSegmentProgress(id, entity.title, p.segmentsDone, p.segmentsTotal, p.bytesDownloaded)
                 },
-                destAudioFile = destAudio
+                destAudioFile = destAudio,
+                prefetchedPlaylistBody = prefetched
             )
             if (isStopped) return@withContext
             finalizeAv(id, entity.title, result.videoFile, result.audioFile, preferExt = "ts")

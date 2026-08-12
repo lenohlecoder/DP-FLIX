@@ -369,12 +369,31 @@ fun FilmsSeriesScreen(
                     } else {
                         val ua = webViewRef.value?.settings?.userAgentString
                         val titleSnapshot = pageTitle
+                        val webView = webViewRef.value
                         scope.launch {
                             try {
+                                var streamToEnqueue = stream
+                                var prefetched: String? = null
+                                if (webView != null &&
+                                    (stream.type == StreamType.HLS || stream.type == StreamType.DASH)
+                                ) {
+                                    Toast.makeText(
+                                        context,
+                                        "Préparation du téléchargement…",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    val resolved =
+                                        resolvePlaylistInWebView(webView, stream.url, stream.type)
+                                    prefetched = resolved.second
+                                    if (resolved.first != stream.url) {
+                                        streamToEnqueue = stream.copy(url = resolved.first)
+                                    }
+                                }
                                 mgr.enqueue(
-                                    stream = stream,
+                                    stream = streamToEnqueue,
                                     title = titleSnapshot,
-                                    userAgent = ua
+                                    userAgent = ua,
+                                    prefetchedPlaylistBody = prefetched
                                 )
                                 Toast.makeText(
                                     context,
@@ -391,7 +410,7 @@ fun FilmsSeriesScreen(
                                 Toast.makeText(
                                     context,
                                     "Erreur: ${e.message ?: "échec"}",
-                                    Toast.LENGTH_SHORT
+                                    Toast.LENGTH_LONG
                                 ).show()
                             }
                         }
@@ -743,4 +762,26 @@ private fun LockedWebView(
         },
         onRelease = { webView -> webView.destroy() }
     )
+}
+
+
+/**
+ * Master → media playlist via fetch() dans la WebView (contexte 1DM / anti-403 Vidzy).
+ * @return Pair(urlMédia, corps m3u8)
+ */
+private suspend fun resolvePlaylistInWebView(
+    webView: android.webkit.WebView,
+    playlistUrl: String,
+    type: StreamType
+): Pair<String, String> {
+    val body = WebViewHttpFetcher.fetchText(webView, playlistUrl)
+    if (type != StreamType.HLS) return playlistUrl to body
+    if (!HlsPlaylistParser.isMasterPlaylist(body)) return playlistUrl to body
+    val variants = HlsPlaylistParser.parseMaster(body, playlistUrl)
+    if (variants.isEmpty()) {
+        throw IllegalStateException("Master HLS sans variante")
+    }
+    val best = variants.first()
+    val mediaBody = WebViewHttpFetcher.fetchText(webView, best.uri)
+    return best.uri to mediaBody
 }
