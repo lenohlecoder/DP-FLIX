@@ -100,7 +100,7 @@ class FilmDownloadNotifier(context: Context) {
     }
 
     private fun notifId(downloadId: String): Int =
-        (NOTIF_BASE xor downloadId.hashCode()) and 0x7FFFFFFF
+        ((NOTIF_BASE xor downloadId.hashCode().toLong()) and 0x7FFFFFFFL).toInt()
 
     companion object {
         const val CHANNEL_ID = "film_downloads"
