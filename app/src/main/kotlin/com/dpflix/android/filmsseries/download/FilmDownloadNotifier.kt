@@ -116,6 +116,10 @@ class FilmDownloadNotifier(context: Context) {
         const val CHANNEL_ID = "film_downloads"
         const val EXTRA_OPEN_DOWNLOADS = "com.dpflix.android.OPEN_FILM_DOWNLOADS"
         private const val REQUEST_OPEN_DOWNLOADS = 41001
-        private const val NOTIF_BASE = 0xF11D_0000
+        // Fix (12 août 2026, build CI) : 0xF11D_0000 dépasse Int.MAX_VALUE, donc Kotlin
+        // l'inférait comme Long — `xor` avec le Int de hashCode() ne compile pas
+        // (Return/Argument type mismatch). Même motif binaire (0xF11D0000), exprimé comme
+        // Int signé natif via son complément à deux : compile et donne des ID identiques.
+        private const val NOTIF_BASE: Int = -0x0EE30000
     }
 }
