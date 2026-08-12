@@ -1,8 +1,10 @@
 package com.dpflix.android.filmsseries.download
 
 import android.content.Context
+import android.os.Build
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
@@ -51,6 +53,21 @@ class FilmDownloadWorker(
             return Result.success()
         }
 
+        // Fix (12 août 2026) : sans promotion en vrai foreground service, WorkManager ne
+        // garantit l'exécution que tant que l'app est activement au premier plan (Android
+        // 12+ : le "quota" de travail expédié se vide vite dès que l'app n'est plus l'app
+        // "top" — ex. on quitte l'écran/le programme en cours). D'où le symptôme signalé :
+        // le téléchargement s'arrête dès qu'on change de programme au lieu de continuer en
+        // tâche de fond. `setForeground` avec la même notification déjà utilisée par
+        // `notifier.notifyProgress` (même ID) fait apparaître une notification persistante
+        // "vrai" foreground service, immunisée contre ces restrictions — les appels
+        // `notifier.notifyProgress` suivants continuent de mettre à jour CETTE même
+        // notification (même ID), aucun autre changement nécessaire côté notifier.
+        // Best-effort : si le système refuse la promotion (ex. rare cas où le worker
+        // redémarre alors que l'app est déjà totalement fermée), on continue quand même —
+        // mieux vaut un téléchargement non protégé qu'un échec immédiat.
+        runCatching { setForeground(buildForegroundInfo(entity)) }
+
         return try {
             when (entity.streamType) {
                 StreamType.DASH.name -> {
@@ -82,6 +99,16 @@ class FilmDownloadWorker(
         }
     }
 
+    private fun buildForegroundInfo(entity: FilmDownloadEntity): ForegroundInfo {
+        val notifId = notifier.notifId(entity.id)
+        val notification = notifier.buildProgressNotification(entity.title, entity.progressPercent)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(notifId, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            ForegroundInfo(notifId, notification)
+        }
+    }
+
     private suspend fun runMp4(id: String, entity: FilmDownloadEntity) {
         markRunning(id, entity)
         val destPartial = File(downloadsDir, "$id.partial")
@@ -98,7 +125,7 @@ class FilmDownloadWorker(
 
             httpClient.newCall(requestBuilder.build()).execute().use { response ->
                 if (!response.isSuccessful && response.code != 206) {
-                    throw IllegalStateException("HTTP ${response.code}")
+                    throw IllegalStateException("HTTP ${response.code}${bodySnippet(response)}")
                 }
                 val body = response.body ?: throw IllegalStateException("Réponse vide")
                 val totalFromHeader = response.header("Content-Length")?.toLongOrNull()
@@ -110,9 +137,9 @@ class FilmDownloadWorker(
                 }
 
                 val append = response.code == 206 && existing > 0L
+                var downloaded = if (append) existing else 0L
                 FileOutputStream(destPartial, append).use { out ->
                     val buffer = ByteArray(64 * 1024)
-                    var downloaded = if (append) existing else 0L
                     var lastNotified = -1
                     body.byteStream().use { input ->
                         while (true) {
@@ -150,6 +177,21 @@ class FilmDownloadWorker(
                 }
 
                 if (isStopped) return@withContext
+
+                // Fix (12 août 2026) : jusqu'ici, une connexion coupée en cours de route par
+                // le serveur (ex. CDN qui ferme brutalement après un certain volume) sans
+                // lever d'exception réseau était traitée comme un téléchargement terminé —
+                // `input.read()` retourne juste -1 comme en fin de fichier normale. D'où le
+                // symptôme signalé : le MP4 se télécharge « de façon incomplète » sans
+                // aucune erreur affichée. On vérifie maintenant le nombre d'octets reçus par
+                // rapport au Content-Length annoncé avant de marquer terminé ; en cas
+                // d'écart, on échoue explicitement — "Reprendre" (déjà supporté via Range)
+                // permet de terminer le fichier au lieu de garder un .mp4 tronqué invisible.
+                if (total != null && total > 0 && downloaded < total) {
+                    throw IllegalStateException(
+                        "Téléchargement interrompu (${downloaded}/${total} octets reçus)"
+                    )
+                }
 
                 if (destFinal.exists()) destFinal.delete()
                 if (!destPartial.renameTo(destFinal)) {
@@ -342,6 +384,14 @@ class FilmDownloadWorker(
             updatedAt = System.currentTimeMillis()
         )
         notifier.notifyFailed(id, entity.title, message)
+    }
+
+    /** Voir la doc du même helper dans [HlsDownloader] — même besoin de diagnostic ici. */
+    private fun bodySnippet(response: okhttp3.Response): String {
+        val snippet = runCatching {
+            response.peekBody(200).string().replace(Regex("\\s+"), " ").trim()
+        }.getOrNull()
+        return if (snippet.isNullOrBlank()) "" else " — $snippet"
     }
 
     companion object {

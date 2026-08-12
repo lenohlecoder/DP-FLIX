@@ -39,13 +39,23 @@ class FilmDownloadNotifier(context: Context) {
     }
 
     fun notifyProgress(id: String, title: String, progressPercent: Int) {
-        val notification = baseBuilder(title)
+        safeNotify(notifId(id), buildProgressNotification(title, progressPercent))
+    }
+
+    /**
+     * Fix (12 août 2026) : notification de progression construite mais NON postée,
+     * réutilisée par [com.dpflix.android.filmsseries.download.FilmDownloadWorker] pour
+     * promouvoir le worker en vrai foreground service (`setForeground`). Les appels
+     * suivants à [notifyProgress] (même [id], donc même ID de notification via [notifId])
+     * continuent de mettre à jour cette même notification persistante.
+     */
+    fun buildProgressNotification(title: String, progressPercent: Int): android.app.Notification {
+        return baseBuilder(title)
             .setContentText("Téléchargement… $progressPercent %")
             .setProgress(100, progressPercent.coerceIn(0, 100), progressPercent <= 0)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
-        safeNotify(notifId(id), notification)
     }
 
     fun notifyCompleted(id: String, title: String) {
@@ -99,20 +109,13 @@ class FilmDownloadNotifier(context: Context) {
         }
     }
 
-    private fun notifId(downloadId: String): Int =
-        (NOTIF_BASE.toInt() xor downloadId.hashCode()) and 0x7FFFFFFF
+    fun notifId(downloadId: String): Int =
+        (NOTIF_BASE xor downloadId.hashCode()) and 0x7FFFFFFF
 
     companion object {
         const val CHANNEL_ID = "film_downloads"
         const val EXTRA_OPEN_DOWNLOADS = "com.dpflix.android.OPEN_FILM_DOWNLOADS"
         private const val REQUEST_OPEN_DOWNLOADS = 41001
-        // Fix build Codemagic : 0xF11D_0000 dépasse Int.MAX_VALUE (2 147 483 647), donc
-        // Kotlin l'infère en Long — incompatible avec le retour Int de notifId() ci-dessus
-        // et avec `xor` sur un Int (downloadId.hashCode()). `L` explicite lève l'ambiguïté
-        // à la déclaration ; `.toInt()` (appelé dans le corps de fonction, pas dans ce
-        // const val — une conversion n'est pas autorisée dans un initialiseur const)
-        // réinterprète les mêmes bits en Int (négatif, sans importance : seul le mélange
-        // bit à bit puis `and 0x7FFFFFFF` compte pour obtenir un ID positif).
-        private const val NOTIF_BASE = 0xF11D_0000L
+        private const val NOTIF_BASE = 0xF11D_0000
     }
 }

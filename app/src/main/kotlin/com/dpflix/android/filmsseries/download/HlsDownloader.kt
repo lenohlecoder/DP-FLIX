@@ -171,7 +171,7 @@ class HlsDownloader(
         }.build()
         httpClient.newCall(req).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code} sur playlist")
+                throw IllegalStateException("HTTP ${response.code} sur playlist${bodySnippet(response)}")
             }
             return response.body?.string()
                 ?: throw IllegalStateException("Playlist vide")
@@ -184,7 +184,7 @@ class HlsDownloader(
         }.build()
         httpClient.newCall(req).execute().use { response ->
             if (!response.isSuccessful) {
-                throw IllegalStateException("HTTP ${response.code} segment")
+                throw IllegalStateException("HTTP ${response.code} segment${bodySnippet(response)}")
             }
             val body = response.body ?: throw IllegalStateException("Segment vide")
             var written = 0L
@@ -201,5 +201,21 @@ class HlsDownloader(
             }
             return written
         }
+    }
+
+    /**
+     * Fix (12 août 2026) : jusqu'ici un 403/erreur ne remontait QUE le code HTTP, sans le
+     * corps de la réponse — alors que la plupart des CDN (Cloudflare, anti-hotlink maison,
+     * etc.) renvoient une page/JSON qui explique la vraie cause (jeton expiré, blocage
+     * géographique, rate-limit, lien à usage unique déjà consommé...). Sans ça, on ne peut
+     * que deviner. On ajoute un extrait court (200 caractères, texte only) du corps au
+     * message d'erreur affiché, pour que le prochain test dise enfin ce qui se passe
+     * réellement côté stream 2.
+     */
+    private fun bodySnippet(response: okhttp3.Response): String {
+        val snippet = runCatching {
+            response.peekBody(200).string().replace(Regex("\\s+"), " ").trim()
+        }.getOrNull()
+        return if (snippet.isNullOrBlank()) "" else " — $snippet"
     }
 }
