@@ -376,7 +376,9 @@ fun FilmsSeriesScreen(
                                     stream = streamToEnqueue,
                                     title = titleSnapshot,
                                     userAgent = ua,
-                                    prefetchedPlaylistBody = prefetched
+                                    prefetchedPlaylistBody = prefetched,
+                                    // Évite la course Worker OkHttp vs WebView (fichier vide)
+                                    startWorker = !viaWebView
                                 )
                                 if (viaWebView) {
                                     when (stream.type) {

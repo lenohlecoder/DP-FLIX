@@ -83,6 +83,9 @@ class DashDownloader(
                     throw e
                 }
                 if (n <= 0 && index > 0) break
+                if (n <= 0) {
+                    throw IllegalStateException("Segment vidéo DASH #$index vide : ${url.take(120)}")
+                }
                 bytes += n
                 videoParts += part
                 done++

@@ -59,6 +59,7 @@ object DashPlaylistParser {
         var segmentListUrls = mutableListOf<String>()
         var segmentBaseUrl: String? = null
         var initializationUrl: String? = null
+        var segmentTimeline: MutableList<TimelineS>? = null
         var timescale = 1L
         var duration = 0L
         var startNumber = 1L
@@ -102,6 +103,7 @@ object DashPlaylistParser {
                             segmentListUrls = mutableListOf()
                             segmentBaseUrl = null
                             initializationUrl = null
+                            segmentTimeline = null
                         }
                         "Representation" -> {
                             val id = parser.getAttributeValue(null, "id")
@@ -150,6 +152,15 @@ object DashPlaylistParser {
                             )
                             if (init != null) initializationUrl = init
                         }
+                        "SegmentTimeline" -> {
+                            segmentTimeline = mutableListOf()
+                        }
+                        "S" -> {
+                            val t = parser.getAttributeValue(null, "t")?.toLongOrNull()
+                            val d = parser.getAttributeValue(null, "d")?.toLongOrNull() ?: 0L
+                            val r = parser.getAttributeValue(null, "r")?.toLongOrNull() ?: 0L
+                            segmentTimeline?.add(TimelineS(t = t, d = d, r = r))
+                        }
                         "SegmentList" -> {
                             timescale = parser.getAttributeValue(null, "timescale")?.toLongOrNull() ?: timescale
                             duration = parser.getAttributeValue(null, "duration")?.toLongOrNull() ?: duration
@@ -179,7 +190,8 @@ object DashPlaylistParser {
                                     template = segmentTemplate,
                                     listUrls = segmentListUrls.toList(),
                                     initUrl = initializationUrl,
-                                    segmentBase = segmentBaseUrl != null
+                                    segmentBase = segmentBaseUrl != null,
+                                    timeline = segmentTimeline?.toList()
                                 )
                                 rep.segmentUrls = segs
                                 representations += rep
@@ -191,6 +203,7 @@ object DashPlaylistParser {
                             segmentListUrls = mutableListOf()
                             initializationUrl = null
                             segmentBaseUrl = null
+                            segmentTimeline = null
                             currentAdaptationType = ContentType.UNKNOWN
                         }
                     }
@@ -246,6 +259,9 @@ object DashPlaylistParser {
         val presentationTimeOffset: Long
     )
 
+    /** Une entrée `<S t= d= r=>` de `<SegmentTimeline>` — [r] = répétitions EN PLUS de la première occurrence. */
+    private data class TimelineS(val t: Long?, val d: Long, val r: Long)
+
     private class RepBuilder(
         val id: String?,
         val bandwidth: Int,
@@ -263,7 +279,8 @@ object DashPlaylistParser {
         template: SegmentTemplate?,
         listUrls: List<String>,
         initUrl: String?,
-        segmentBase: Boolean
+        segmentBase: Boolean,
+        timeline: List<TimelineS>? = null
     ): List<String> {
         val out = mutableListOf<String>()
         if (initUrl != null) {
@@ -272,6 +289,29 @@ object DashPlaylistParser {
         when {
             listUrls.isNotEmpty() -> {
                 listUrls.forEach { out += resolveUrl(baseUrl, it) }
+            }
+            // Fix (12 août 2026) : cas DASH le plus courant pour du VOD (Shaka, Bento4,
+            // GPAC...) — SegmentTemplate avec un <SegmentTimeline> enfant listant les
+            // segments exacts (`<S t= d= r=>`), SANS attribut `duration` fixe sur
+            // SegmentTemplate lui-même. Avant ce fix, ce cas tombait dans la branche
+            // "sans duration : un seul segment média" ci-dessous → un unique segment
+            // (+ init) généré, téléchargement quasi instantané, fichier ne contenant
+            // presque aucune frame exploitable. On priorise donc la timeline exacte
+            // quand elle est présente, quel que soit l'attribut `duration`.
+            template?.media != null && !timeline.isNullOrEmpty() -> {
+                val times = expandTimelineTimes(timeline)
+                var n = template.startNumber
+                for (time in times) {
+                    val media = expandTemplate(
+                        template.media,
+                        number = n,
+                        time = time,
+                        repId = null,
+                        bandwidth = null
+                    )
+                    out += resolveUrl(baseUrl, media)
+                    n++
+                }
             }
             template?.media != null && template.duration > 0 -> {
                 // Estimation : ~ mediaDuration inconnue → on génère un nombre raisonnable
@@ -293,7 +333,7 @@ object DashPlaylistParser {
                 }
             }
             template?.media != null -> {
-                // Sans duration : un seul segment média
+                // Sans duration ni timeline : un seul segment média
                 out += resolveUrl(
                     baseUrl,
                     expandTemplate(template.media, template.startNumber, 0, null, null)
@@ -312,6 +352,27 @@ object DashPlaylistParser {
             }
         }
         return out.distinct()
+    }
+
+    /**
+     * Développe une liste d'entrées `<S t= d= r=>` en la liste plate des `time` de chaque
+     * segment. `t` absent → on continue depuis le temps courant (cumul des `d`
+     * précédents) ; `r` = répétitions EN PLUS de la première occurrence (donc `r=2` = 3
+     * segments identiques de durée `d`).
+     */
+    private fun expandTimelineTimes(entries: List<TimelineS>): List<Long> {
+        val result = mutableListOf<Long>()
+        var time = 0L
+        for (entry in entries) {
+            var t = entry.t ?: time
+            val occurrences = 1L + entry.r.coerceAtLeast(0L)
+            repeat(occurrences.toInt()) {
+                result += t
+                t += entry.d
+            }
+            time = t
+        }
+        return result
     }
 
     /**
@@ -351,11 +412,15 @@ object DashPlaylistParser {
     }
 
     /**
-     * Affinage post-parse : si SegmentTemplate sans durée fixe, on ne garde que
-     * l'init + on laisse le downloader découvrir via Timeline si besoin.
-     * Ici on borne les listes trop longues générées par estimation.
+     * Garde-fou final contre un manifeste aberrant (boucle, corruption...). Ne doit
+     * normalement jamais réduire une liste exacte (SegmentList / SegmentTimeline /
+     * segment unique) : celles-ci reflètent le contenu réel, potentiellement plusieurs
+     * milliers de segments pour un film long à segments courts. La branche d'estimation
+     * approximative (SegmentTemplate à durée fixe sans timeline) est déjà bornée à 5000
+     * à la génération (voir [buildSegments]) ; ce plafond n'est qu'une seconde limite de
+     * sécurité, fixée volontairement bien au-dessus pour ne jamais tronquer un cas réel.
      */
-    fun trimEstimatedSegments(segments: List<String>, maxSegments: Int = 2000): List<String> {
+    fun trimEstimatedSegments(segments: List<String>, maxSegments: Int = 20_000): List<String> {
         if (segments.size <= maxSegments) return segments
         return segments.take(maxSegments)
     }

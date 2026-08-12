@@ -61,7 +61,12 @@ class FilmDownloadManager(
         title: String? = null,
         userAgent: String? = null,
         /** Corps playlist déjà lu dans la WebView (HLS/DASH) — contourne le 403 OkHttp. */
-        prefetchedPlaylistBody: String? = null
+        prefetchedPlaylistBody: String? = null,
+        /**
+         * false = ne pas lancer le Worker OkHttp (chemin WebView HLS/DASH).
+         * Évite la course Worker vs WebView qui peut finaliser un fichier vide.
+         */
+        startWorker: Boolean = true
     ): String {
         // Estimation espace : contentLength si connu, sinon seuil minimum
         val estimatedBytes = stream.contentLength
@@ -108,7 +113,9 @@ class FilmDownloadManager(
                 File(downloadsDir, "$id.src.m3u8").writeText(prefetchedPlaylistBody)
             }
         }
-        FilmDownloadWorker.enqueue(appContext, id)
+        if (startWorker) {
+            FilmDownloadWorker.enqueue(appContext, id)
+        }
         return id
     }
 
@@ -164,6 +171,9 @@ class FilmDownloadManager(
                     textFetcher = { url -> WebViewHttpFetcher.fetchText(webView, url) }
                 )
                 val finalFile = result.videoFile
+                if (finalFile.length() <= 0L) {
+                    throw IllegalStateException("Téléchargement HLS terminé mais fichier vide (0 octet)")
+                }
                 dao.updateProgress(
                     id, STATUS_COMPLETED, 100, finalFile.length(), finalFile.length(),
                     null, finalFile.absolutePath, System.currentTimeMillis()
@@ -229,6 +239,9 @@ class FilmDownloadManager(
                     textFetcher = { url -> WebViewHttpFetcher.fetchText(webView, url) }
                 )
                 val finalFile = result.videoFile
+                if (finalFile.length() <= 0L) {
+                    throw IllegalStateException("Téléchargement DASH terminé mais fichier vide (0 octet)")
+                }
                 dao.updateProgress(
                     id, STATUS_COMPLETED, 100, finalFile.length(), finalFile.length(),
                     null, finalFile.absolutePath, System.currentTimeMillis()

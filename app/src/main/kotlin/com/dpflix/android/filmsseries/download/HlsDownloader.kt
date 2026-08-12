@@ -98,6 +98,11 @@ class HlsDownloader(
                 currentCoroutineContext().ensureActive()
                 val part = File(workDir, "v_${index.toString().padStart(5, '0')}.part")
                 val n = fetchSegment(segment.uri, headers, part, segmentFetcher)
+                if (n <= 0L) {
+                    throw IllegalStateException(
+                        "Segment vidéo #$index vide (0 octet) : ${segment.uri.take(120)}"
+                    )
+                }
                 bytes += n
                 videoParts += part
                 done = index + 1
@@ -127,6 +132,9 @@ class HlsDownloader(
                 }
             }
 
+            if (destFile.length() <= 0L) {
+                throw IllegalStateException("Fichier vidéo final vide après concat HLS")
+            }
             onProgress(Progress(total, total, destFile.length() + (audioOut?.length() ?: 0L), "done"))
             return Result(videoFile = destFile, audioFile = audioOut)
         } finally {

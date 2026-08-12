@@ -74,7 +74,7 @@ object WebViewHttpFetcher {
     suspend fun fetchBytes(
         webView: WebView,
         url: String,
-        timeoutMs: Long = 25_000L
+        timeoutMs: Long = 90_000L
     ): ByteArray = withTimeout(timeoutMs) {
         suspendCancellableCoroutine { cont ->
             val settled = AtomicBoolean(false)
@@ -93,6 +93,11 @@ object WebViewHttpFetcher {
                                     throw IllegalStateException(payload.removePrefix("ERROR:").trim())
                                 }
                                 val bytes = Base64.decode(payload, Base64.NO_WRAP)
+                                if (bytes.isEmpty()) {
+                                    throw IllegalStateException(
+                                        "Segment vide (0 octet) — fetch WebView a renvoyé une réponse vide"
+                                    )
+                                }
                                 cont.resume(bytes)
                             } catch (e: Exception) {
                                 cont.resumeWithException(e)
