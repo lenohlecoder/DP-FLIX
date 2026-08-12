@@ -31,32 +31,54 @@ class StreamSniffer {
     var currentPageUrl: String? = null
 
     /**
+     * Fix (12 août 2026, v2) : dernière URL de type "document" vue passer, main frame
+     * OU iframe — voir la doc juste en dessous.
+     */
+    @Volatile
+    private var lastFrameUrl: String? = null
+
+    /**
      * Analyse une requête WebView. À appeler depuis `shouldInterceptRequest`.
      * Ne modifie jamais la réponse réseau (retourne toujours null côté appelant).
      */
     fun onRequest(request: WebResourceRequest) {
         val url = request.url?.toString() ?: return
-        if (byUrl.containsKey(url)) return
 
-        val mimeGuess = request.requestHeaders?.entries
+        // Fix (12 août 2026, v2) : `onPageStarted` (→ currentPageUrl) ne se déclenche QUE
+        // sur une navigation main frame. Or le lecteur vidéo est quasi systématiquement
+        // chargé dans un iframe d'embed dont l'hôte diffère du site top-level (ex. site
+        // d'agrégation vidzy.org qui embarque un lecteur vidzy.cc, lequel sert ensuite les
+        // segments depuis un sous-domaine CDN comme u14.vidzy.cc). Sans suivi des iframes,
+        // `currentPageUrl` reste bloqué sur la toute première page (racine du site
+        // d'agrégation) même après avoir navigué jusqu'à l'épisode — ce qui explique un
+        // Referer de repli du type "https://vidzy.org/" au lieu de l'URL réelle de l'iframe
+        // lecteur, que le CDN valide contre SA PROPRE famille de domaine (vidzy.cc), pas
+        // contre le site qui l'embarque. On repère une requête "document" (main frame, ou
+        // sous-requête dont l'Accept contient text/html — heuristique la plus fiable
+        // disponible côté shouldInterceptRequest pour un chargement d'iframe) et on la
+        // retient comme meilleur candidat Referer, mis à jour en continu.
+        val accept = request.requestHeaders?.entries
             ?.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
             ?.value
+        val looksLikeDocument = request.isForMainFrame ||
+            (accept?.contains("text/html", ignoreCase = true) == true)
+        if (looksLikeDocument && (url.startsWith("http://") || url.startsWith("https://"))) {
+            lastFrameUrl = url
+        }
+
+        if (byUrl.containsKey(url)) return
+
+        val mimeGuess = accept
 
         val type = classify(url, mimeHint = null) ?: return
 
         // Évite le bruit : déjà vu, ou URL non http(s).
         if (!url.startsWith("http://") && !url.startsWith("https://")) return
 
-        // Fix (12 août 2026) : le Referer réel envoyé par la WebView pour CETTE requête
-        // précise — capturé directement dans `request.requestHeaders` plutôt que déduit
-        // de `currentPageUrl` (l'URL de la page top-level). Un flux vidéo (vidzy.cc et
-        // similaires) est presque toujours chargé depuis un iframe d'embed dont l'URL
-        // diffère de la page top-level (ex. site d'agrégation) : le CDN valide le Referer
-        // contre SA PROPRE URL d'iframe, pas contre le site qui l'embarque. Envoyer le
-        // Referer top-level au lieu du vrai Referer explique un 403 "nginx" systématique
-        // malgré un Origin dérivé du même (mauvais) Referer. On garde `currentPageUrl` en
-        // repli si jamais la requête n'a pas de Referer (ex. requête émise en JS sans
-        // en-tête forwardé).
+        // Referer réel envoyé par la WebView pour CETTE requête précise, capturé
+        // directement dans `request.requestHeaders`. À défaut (JS qui n'a pas transmis
+        // l'en-tête, cas fréquent sur ces sites), on retombe sur la dernière URL de type
+        // document vue (iframe lecteur si on en a croisé une, sinon page top-level).
         val actualReferer = request.requestHeaders?.entries
             ?.firstOrNull { it.key.equals("Referer", ignoreCase = true) }
             ?.value
@@ -67,7 +89,7 @@ class StreamSniffer {
             mimeType = mimeGuess,
             contentLength = null,
             pageUrl = currentPageUrl,
-            referer = actualReferer ?: currentPageUrl
+            referer = actualReferer ?: lastFrameUrl ?: currentPageUrl
         )
         byUrl[url] = stream
         publish()
@@ -112,6 +134,7 @@ class StreamSniffer {
     /** Nouvelle page / changement d'URL majeure → on repart d'une liste vide. */
     fun resetForNewPage(pageUrl: String?) {
         currentPageUrl = pageUrl
+        lastFrameUrl = pageUrl
         byUrl.clear()
         publish()
     }
