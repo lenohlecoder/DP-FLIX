@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- §2.1 du cahier des charges : permissions déclarées dès le squelette -->
     <uses-permission android:name="android.permission.INTERNET" />
@@ -76,6 +77,21 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+            Fix (13 août 2026, build lintVitalRelease). WorkManager déclare son propre
+            SystemForegroundService (androidx.work.impl.foreground.SystemForegroundService)
+            dans son manifeste sans foregroundServiceType. FilmDownloadWorker appelle
+            setForeground() avec FOREGROUND_SERVICE_TYPE_DATA_SYNC (voir createForegroundInfo
+            dans FilmDownloadWorker.kt), mais lint (SpecifyForegroundServiceType) exige que ce
+            type soit aussi déclaré ici, sur l'entrée <service> elle-même — sans quoi le build
+            release échoue. tools:node="merge" fusionne avec l'entrée fournie par la librairie
+            au lieu de la dupliquer.
+        -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
 
     </application>
 
