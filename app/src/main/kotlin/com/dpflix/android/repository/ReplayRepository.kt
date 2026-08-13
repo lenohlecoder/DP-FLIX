@@ -69,9 +69,14 @@ class ReplayRepository(
 
     /**
      * Étape R3 (replay) : URL de lecture en différé pour un [program] déjà obtenu via
-     * [fetchPastPrograms] sur cette même [channel] — délègue la construction elle-même à
-     * [XtreamClient.buildTimeshiftUrl] (fonction pure, voir sa doc), ce repository
-     * n'apportant que la résolution des identifiants Xtream de la playlist parente.
+     * [fetchPastPrograms] sur cette même [channel].
+     *
+     * Compatibilité multi-panels (2026-08-13) : délègue à
+     * [XtreamClient.resolveTimeshiftUrl], pas à `buildTimeshiftUrl` (qui fige un seul
+     * format) — ce repository n'apporte toujours que la résolution des identifiants
+     * Xtream de la playlist parente, mais l'URL elle-même est désormais choisie parmi
+     * plusieurs formats sondés pour ce panel précis (voir sa doc pour le détail), avec
+     * mémorisation du format trouvé pour ne pas re-sonder à chaque lecture.
      *
      * `null` dans les mêmes cas que [fetchPastPrograms] renverrait `Unavailable` (chaîne ou
      * playlist non Xtream/incomplète) — ne revérifie pas que [program] provient bien de
@@ -81,7 +86,7 @@ class ReplayRepository(
     suspend fun buildTimeshiftUrl(channel: Channel, program: ReplayProgram): String? {
         val streamId = channel.xtreamStreamId ?: return null
         val credentials = credentialsFor(channel) ?: return null
-        return xtreamClient.buildTimeshiftUrl(credentials, streamId, program)
+        return xtreamClient.resolveTimeshiftUrl(credentials, streamId, program)
     }
 
     private suspend fun credentialsFor(channel: Channel): XtreamCredentials? {

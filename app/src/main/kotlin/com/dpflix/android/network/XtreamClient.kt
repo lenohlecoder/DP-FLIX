@@ -84,6 +84,32 @@ class XtreamClient(
 ) {
 
     /**
+     * Client dédié au SONDAGE des candidats timeshift ([probeTimeshiftCandidate]),
+     * distinct de [httpClient] : ce dernier a des délais volontairement généreux
+     * (jusqu'à 150-240s, voir sa doc) pour ne pas rejeter un panel valide mais lent à
+     * connecter sur `player_api.php`. Un sondage n'a pas besoin de cette patience — il
+     * doit juste détecter vite qu'un chemin candidat répond ou non — et surtout NE DOIT
+     * PAS hériter de ces délais : avec jusqu'à 6 candidats × plusieurs User-Agent, un
+     * panel qui ignore silencieusement une requête (au lieu de répondre 404) bloquerait
+     * sinon [resolveTimeshiftUrl] plusieurs minutes, recréant exactement le symptôme
+     * "chargement indéfini" que ce fix est censé résoudre.
+     */
+    private val probeHttpClient: OkHttpClient = httpClient.newBuilder()
+        .connectTimeout(6, TimeUnit.SECONDS)
+        .readTimeout(6, TimeUnit.SECONDS)
+        .writeTimeout(6, TimeUnit.SECONDS)
+        .callTimeout(8, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * Mémorise, par panel (clé = hôte + utilisateur), le format timeshift déjà confirmé
+     * par [resolveTimeshiftUrl] — pour ne sonder qu'UNE fois par panel, jamais à chaque
+     * programme lu. Vidé si l'app recrée cette instance (redémarrage) : un re-sondage
+     * occasionnel est sans conséquence, largement préférable à une convention figée.
+     */
+    private val timeshiftFormatCache = java.util.concurrent.ConcurrentHashMap<String, TimeshiftFormat>()
+
+    /**
      * Authentifie les [credentials] auprès du serveur (appel de base de `player_api.php`,
      * sans paramètre `action`). Utilisé par le formulaire d'onboarding (§4.2 Étape 2a)
      * pour valider la saisie avant d'enregistrer la playlist.
@@ -357,19 +383,23 @@ class XtreamClient(
 
     /**
      * Étape R3 (replay) : URL de lecture en différé pour un point précis dans le temps,
-     * au format `timeshift.php/{user}/{pass}/{durée}/{date:heure}/{stream_id}.{ext}` — même
+     * au format `timeshift/{user}/{pass}/{durée}/{date:heure}/{stream_id}.{ext}` — même
      * convention de chemin que [buildStreamUrl] pour `{user}`/`{pass}` (voir sa doc pour le
      * choix d'`encodePathSegment` plutôt que `encode`).
      *
+     * Fix (2026-08-13, panel 4kpro2.com / Xtream classique) :
+     * - chemin `/timeshift/` (sans `.php`) : `/timeshift.php/...` renvoie 404/512 sur la
+     *   majorité des panels modernes alors que `/timeshift/...` répond 302→200 + `video/mp2t` ;
+     * - `{date:heure}` formaté en **UTC** (plus le fuseau appareil) : le panel lit ce champ
+     *   en heure serveur/UTC ; l'ancien format local provoquait un décalage d'heures et un
+     *   404 ou un mauvais créneau ;
+     * - extension par défaut **`.ts`** pour le catch-up (voir [DEFAULT_TIMESHIFT_EXTENSION]) :
+     *   même si le live de la chaîne est en `.m3u8`, le timeshift Xtream est quasi toujours
+     *   servi en MPEG-TS progressif.
+     *
      * - `{durée}` : minutes ENTIÈRES (convention Xtream), [durationMinutes] arrondi au moins
      *   à 1 — jamais 0, qui ne jouerait rien.
-     * - `{date:heure}` : format `yyyy-MM-dd:HH-mm`, [startMillis] formaté dans le fuseau
-     *   horaire PAR DÉFAUT DE L'APPAREIL — même convention assumée que le repli de parsing
-     *   `start`/`end` de l'Étape R2 (voir `epgMillis`). C'est le point le plus susceptible de
-     *   nécessiter un ajustement une fois testé sur un panel réel (voir le test VLC de cette
-     *   étape) : si l'heure jouée est décalée d'un nombre rond d'heures par rapport au
-     *   programme demandé, c'est probablement que le panel attend l'heure serveur (pas
-     *   forcément celle de l'appareil) dans ce champ.
+     * - `{date:heure}` : format `yyyy-MM-dd:HH-mm` en UTC.
      *
      * Fonction pure (pas de suspend, pas d'IO) : peut être appelée directement depuis la
      * couche UI pour composer l'URL, puis testée telle quelle (copier/coller dans VLC) sans
@@ -380,13 +410,16 @@ class XtreamClient(
         streamId: String,
         startMillis: Long,
         durationMinutes: Int,
-        containerExtension: String = DEFAULT_STREAM_EXTENSION
+        containerExtension: String = DEFAULT_TIMESHIFT_EXTENSION
     ): String {
-        val ext = containerExtension.trim().trimStart('.').ifBlank { DEFAULT_STREAM_EXTENSION }
+        val ext = containerExtension.trim().trimStart('.').ifBlank { DEFAULT_TIMESHIFT_EXTENSION }
         val safeDurationMinutes = durationMinutes.coerceAtLeast(1)
-        val dateTime = java.text.SimpleDateFormat("yyyy-MM-dd:HH-mm", java.util.Locale.US)
-            .format(java.util.Date(startMillis))
-        return "${baseUrl(credentials.serverUrl)}/timeshift.php/${encodePathSegment(credentials.username)}/" +
+        val dateTime = java.text.SimpleDateFormat("yyyy-MM-dd:HH-mm", java.util.Locale.US).apply {
+            timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }.format(java.util.Date(startMillis))
+        // /timeshift/ (sans .php) : format path Xtream Codes standard. L'ancien
+        // /timeshift.php/... provoquait un 404 permanent sur les panels type 4kpro2.com.
+        return "${baseUrl(credentials.serverUrl)}/timeshift/${encodePathSegment(credentials.username)}/" +
             "${encodePathSegment(credentials.password)}/$safeDurationMinutes/$dateTime/$streamId.$ext"
     }
 
@@ -396,18 +429,167 @@ class XtreamClient(
      * la durée en minutes depuis `startMillis`/`endMillis` (arrondie au SUPÉRIEUR, pour ne
      * jamais couper la fin réelle du programme par un arrondi trop court) plutôt que de la
      * faire recalculer par chaque appelant.
+     *
+     * Extension par défaut [DEFAULT_TIMESHIFT_EXTENSION] (`.ts`), pas celle du live.
      */
     fun buildTimeshiftUrl(
         credentials: XtreamCredentials,
         streamId: String,
         program: ReplayProgram,
-        containerExtension: String = DEFAULT_STREAM_EXTENSION
+        containerExtension: String = DEFAULT_TIMESHIFT_EXTENSION
     ): String {
         val durationMinutes = kotlin.math.ceil(
             (program.endMillis - program.startMillis) / 60_000.0
         ).toInt()
         return buildTimeshiftUrl(credentials, streamId, program.startMillis, durationMinutes, containerExtension)
     }
+
+    /**
+     * Compatibilité multi-panels (2026-08-13) : [buildTimeshiftUrl] ci-dessus fige UNE
+     * convention (chemin `/timeshift/`, `.ts`, UTC — celle qui corrige 4kpro2.com). Des
+     * lecteurs plus établis (Televizo, IPTV Smarters) ne devinent pas non plus LA bonne URL
+     * à l'avance pour n'importe quel panel : ils essaient plusieurs formats connus et
+     * retiennent celui qui répond réellement. C'est ce que fait cette fonction, à la place
+     * de [buildTimeshiftUrl] pour toute lecture réelle (voir `ReplayRepository`).
+     *
+     * Sonde [TIMESHIFT_FORMAT_CANDIDATES] dans l'ordre (du format le plus répandu au plus
+     * rare) via [probeTimeshiftCandidate], et retient le premier qui répond. Le résultat
+     * est mémorisé dans [timeshiftFormatCache] : le sondage (jusqu'à 6 requêtes légères)
+     * n'a lieu qu'UNE fois par panel — les lectures suivantes construisent l'URL
+     * directement, aussi vite qu'avant ce fix.
+     *
+     * Ne renvoie jamais `null` : si aucun candidat ne répond positivement (panel qui
+     * bloque les requêtes `Range`, aléa réseau ponctuel...), retombe sur le premier
+     * candidat (le format qui a corrigé 4kpro2.com) pour ne jamais régresser par rapport
+     * au comportement précédent — mieux vaut tenter une lecture qui échouera proprement
+     * côté lecteur qu'abandonner avant même d'essayer.
+     */
+    suspend fun resolveTimeshiftUrl(
+        credentials: XtreamCredentials,
+        streamId: String,
+        program: ReplayProgram
+    ): String = withContext(Dispatchers.IO) {
+        val durationMinutes = kotlin.math.ceil(
+            (program.endMillis - program.startMillis) / 60_000.0
+        ).toInt().coerceAtLeast(1)
+        val cacheKey = timeshiftCacheKey(credentials)
+
+        timeshiftFormatCache[cacheKey]?.let { knownFormat ->
+            return@withContext buildTimeshiftCandidateUrl(
+                credentials, streamId, program.startMillis, durationMinutes, knownFormat
+            )
+        }
+
+        for (format in TIMESHIFT_FORMAT_CANDIDATES) {
+            val candidateUrl = buildTimeshiftCandidateUrl(
+                credentials, streamId, program.startMillis, durationMinutes, format
+            )
+            if (probeTimeshiftCandidate(candidateUrl)) {
+                timeshiftFormatCache[cacheKey] = format
+                return@withContext candidateUrl
+            }
+        }
+
+        buildTimeshiftCandidateUrl(
+            credentials, streamId, program.startMillis, durationMinutes, TIMESHIFT_FORMAT_CANDIDATES.first()
+        )
+    }
+
+    private fun timeshiftCacheKey(credentials: XtreamCredentials): String =
+        "${baseUrl(credentials.serverUrl)}|${credentials.username}"
+
+    /**
+     * Construit l'URL pour un [format] candidat donné — variante paramétrable de la
+     * logique déjà présente dans [buildTimeshiftUrl], réutilisée par [resolveTimeshiftUrl]
+     * pour couvrir les trois axes où les panels divergent :
+     * - chemin : `/timeshift/` (Xtream Codes récent), `/timeshift.php/` (panels plus
+     *   anciens qui gardent le style chemin MAIS exigent `.php`), ou `/streaming/
+     *   timeshift.php?...` en query string (convention XUI.one et dérivés) ;
+     * - extension : `.ts` (MPEG-TS, quasi toujours) ou `.m3u8` (certains panels servent le
+     *   catch-up en HLS) ;
+     * - fuseau horaire de `{date:heure}` : UTC (cas 4kpro2.com) ou heure locale de
+     *   l'appareil (certains panels attendent en réalité l'heure du SERVEUR, qui coïncide
+     *   avec l'heure locale de l'appareil bien plus souvent qu'avec UTC selon la région du
+     *   revendeur).
+     */
+    private fun buildTimeshiftCandidateUrl(
+        credentials: XtreamCredentials,
+        streamId: String,
+        startMillis: Long,
+        durationMinutes: Int,
+        format: TimeshiftFormat
+    ): String {
+        val dateTime = java.text.SimpleDateFormat("yyyy-MM-dd:HH-mm", java.util.Locale.US).apply {
+            timeZone = if (format.useUtc) {
+                java.util.TimeZone.getTimeZone("UTC")
+            } else {
+                java.util.TimeZone.getDefault()
+            }
+        }.format(java.util.Date(startMillis))
+        val base = baseUrl(credentials.serverUrl)
+        val user = encodePathSegment(credentials.username)
+        val pass = encodePathSegment(credentials.password)
+
+        return when (format.pathStyle) {
+            TimeshiftPathStyle.SLASH ->
+                "$base/timeshift/$user/$pass/$durationMinutes/$dateTime/$streamId.${format.extension}"
+            TimeshiftPathStyle.SLASH_PHP ->
+                "$base/timeshift.php/$user/$pass/$durationMinutes/$dateTime/$streamId.${format.extension}"
+            TimeshiftPathStyle.QUERY_PHP ->
+                "$base/streaming/timeshift.php" +
+                    "?username=${encode(credentials.username)}" +
+                    "&password=${encode(credentials.password)}" +
+                    "&stream=$streamId" +
+                    "&start=${encode(dateTime)}" +
+                    "&duration=$durationMinutes"
+        }
+    }
+
+    /**
+     * Sonde une URL candidate avec une requête `GET` minimaliste (`Range: bytes=0-1`) :
+     * inutile de télécharger un flux entier pour savoir si le chemin existe, mais un
+     * simple `HEAD` n'est pas fiable sur ces endpoints — beaucoup de panels/reverse-proxies
+     * PHP ne l'implémentent pas correctement pour du streaming (405, voire 200 vide qui
+     * masquerait un vrai 404 en `GET`). Une requête `Range` emprunte EXACTEMENT le même
+     * chemin de code serveur qu'une vraie lecture, pour deux octets seulement.
+     *
+     * Reprend la cascade de User-Agent ([NetworkConstants.USER_AGENT_FALLBACKS], mêmes
+     * raisons que [executeGetWithUserAgentCascade]) : un panel qui bloque un User-Agent
+     * inconnu sur `player_api.php` le bloque en général aussi sur ses endpoints de stream.
+     *
+     * @return `true` si un des User-Agent obtient un `200`/`206` (`206 Partial Content` =
+     * le serveur a honoré le `Range` ; `200` = flux présent mais serveur qui ignore
+     * `Range` — fréquent chez certains panels, on ne lit alors surtout pas le corps).
+     */
+    private fun probeTimeshiftCandidate(url: String): Boolean {
+        for (userAgent in NetworkConstants.USER_AGENT_FALLBACKS) {
+            try {
+                val requestBuilder = Request.Builder().url(url).header("Range", "bytes=0-1").get()
+                if (userAgent != null) requestBuilder.header("User-Agent", userAgent)
+                probeHttpClient.newCall(requestBuilder.build()).execute().use { response ->
+                    if (response.code == 200 || response.code == 206) return true
+                }
+            } catch (e: IOException) {
+                // Cette combinaison UA/URL ne joint pas le serveur (timeout court du
+                // probeHttpClient compris) : on tente le User-Agent suivant.
+            } catch (e: IllegalArgumentException) {
+                // URL candidate malformée pour ces credentials (cas limite) : jamais
+                // valide avec aucun User-Agent, inutile d'insister.
+                return false
+            }
+        }
+        return false
+    }
+
+    /** Les trois axes de divergence entre panels pour l'URL de catch-up (voir
+     *  [buildTimeshiftCandidateUrl]) — une combinaison = un candidat sondé. */
+    private data class TimeshiftFormat(
+        val pathStyle: TimeshiftPathStyle,
+        val extension: String,
+        val useUtc: Boolean
+    )
+
+    private enum class TimeshiftPathStyle { SLASH, SLASH_PHP, QUERY_PHP }
 
     // --- Requête HTTP ---------------------------------------------------------------
 
@@ -787,6 +969,38 @@ class XtreamClient(
 
     private companion object {
         const val DEFAULT_STREAM_EXTENSION = "m3u8"
+
+        /**
+         * Extension par défaut des URL timeshift (catch-up Xtream).
+         * Le live peut être en `.m3u8` (HLS) selon `container_extension` du panel, mais le
+         * endpoint `/timeshift/...` sert quasi systématiquement du MPEG-TS progressif
+         * (`.ts`). Utiliser `.m3u8` ici provoquait un 404 sur les panels type 4kpro2.com.
+         */
+        const val DEFAULT_TIMESHIFT_EXTENSION = "ts"
+
+        /**
+         * Candidats sondés par [resolveTimeshiftUrl], du plus répandu au plus rare
+         * (ordre = moins de sondages ratés en pratique, donc résolution plus rapide pour
+         * la majorité des panels) :
+         * 1. Le format qui a corrigé 4kpro2.com (chemin `/timeshift/`, `.ts`, UTC) — reste
+         *    en premier pour ne jamais changer le comportement déjà vérifié sur ce panel.
+         * 2. Même chemin/extension mais heure LOCALE de l'appareil : certains panels
+         *    interprètent `{date:heure}` comme l'heure de LEUR serveur, qui correspond à
+         *    l'heure locale de l'utilisateur bien plus souvent qu'à UTC.
+         * 3. Même chemin, extension `.m3u8` : panels qui servent le catch-up en HLS.
+         * 4. Chemin `/timeshift.php/` (style ancien Xtream Codes UI, avec `.php` mais sans
+         *    query string).
+         * 5-6. Convention "query string" `/streaming/timeshift.php?...` (XUI.one et
+         *    dérivés), `.ts` puis `.m3u8`.
+         */
+        val TIMESHIFT_FORMAT_CANDIDATES = listOf(
+            TimeshiftFormat(TimeshiftPathStyle.SLASH, "ts", useUtc = true),
+            TimeshiftFormat(TimeshiftPathStyle.SLASH, "ts", useUtc = false),
+            TimeshiftFormat(TimeshiftPathStyle.SLASH, "m3u8", useUtc = true),
+            TimeshiftFormat(TimeshiftPathStyle.SLASH_PHP, "ts", useUtc = true),
+            TimeshiftFormat(TimeshiftPathStyle.QUERY_PHP, "ts", useUtc = true),
+            TimeshiftFormat(TimeshiftPathStyle.QUERY_PHP, "m3u8", useUtc = true)
+        )
 
         /** Nombre d'entrées demandées à `get_short_epg` (Étape R2) — généreux : la plupart
          *  des panels annoncent quelques jours d'historique (voir `Channel.tvArchiveDurationDays`,

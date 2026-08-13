@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
@@ -78,8 +79,9 @@ import kotlinx.coroutines.delay
  * `Settings` du `NavHost` mobile — voir `DpFlixNavHost`).
  *
  * Les sections [SettingsSection.General] (6d), [SettingsSection.Player] (6e),
- * [SettingsSection.Playlists], [SettingsSection.ChannelNumbering] (6f) et
- * [SettingsSection.Diagnostic] (6g-3, voir [DiagnosticSectionBody]) ont un contenu réel
+ * [SettingsSection.Playlists], [SettingsSection.ChannelNumbering] (6f),
+ * [SettingsSection.Diagnostic] (6g-3, voir [DiagnosticSectionBody]) et
+ * [SettingsSection.UserGuide] (guide d'utilisation, sous Diagnostic) ont un contenu réel
  * ici. [ComingSoonSection] ne sert donc plus
  * qu'en filet de sécurité pour une section future non encore branchée.
  *
@@ -171,6 +173,7 @@ fun SettingsScreen(
                         uiState = uiState,
                         onRefresh = viewModel::refreshDiagnostics
                     )
+                    SettingsSection.UserGuide -> UserGuideSectionBody()
                     else -> ComingSoonSection(pendingStepLabel = current.pendingStepLabel())
                 }
             }
@@ -197,7 +200,8 @@ private fun SectionListBody(onSelect: (SettingsSection) -> Unit) {
         SettingsSection.Player,
         SettingsSection.Playlists,
         SettingsSection.ChannelNumbering,
-        SettingsSection.Diagnostic
+        SettingsSection.Diagnostic,
+        SettingsSection.UserGuide
     )
     LazyColumn(modifier = Modifier.fillMaxSize()) {
         items(sections, key = { it.title }) { item ->
@@ -849,6 +853,14 @@ private fun ChannelNumberingSectionBody(
 private fun ChannelNumberingRow(channel: Channel, onSetCustomNumber: (Int?) -> Unit) {
     var isEditingNumber by remember(channel.id) { mutableStateOf(false) }
     var editedNumberText by remember(channel.id) { mutableStateOf("") }
+    // Fix (13 août 2026, mobile) : distingue "le champ vient d'apparaître, jamais eu le
+    // focus" de "le champ a eu le focus puis l'a perdu". `onFocusChanged` émet un premier
+    // événement isFocused=false dès que l'OutlinedTextField entre en composition, AVANT que
+    // requestFocus() (ci-dessous) n'ait eu le temps de s'exécuter. Sans ce garde-fou, ce
+    // premier événement déclenchait commitEditedNumber() immédiatement -> isEditingNumber
+    // repassait à false et le champ se refermait dans la foulée, avant que le clavier ait
+    // la moindre chance de s'afficher (symptôme signalé : rien ne se passe visuellement au tap).
+    var hasFieldGainedFocus by remember(channel.id) { mutableStateOf(false) }
     val numberFieldFocusRequester = remember(channel.id) { FocusRequester() }
     val focusManager = LocalFocusManager.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -860,6 +872,7 @@ private fun ChannelNumberingRow(channel: Channel, onSetCustomNumber: (Int?) -> U
 
     LaunchedEffect(isEditingNumber) {
         if (isEditingNumber) {
+            hasFieldGainedFocus = false
             numberFieldFocusRequester.requestFocus()
             keyboardController?.show()
         }
@@ -896,7 +909,13 @@ private fun ChannelNumberingRow(channel: Channel, onSetCustomNumber: (Int?) -> U
                     modifier = Modifier
                         .width(72.dp)
                         .focusRequester(numberFieldFocusRequester)
-                        .onFocusChanged { state -> if (!state.isFocused) commitEditedNumber() },
+                        .onFocusChanged { state ->
+                            if (state.isFocused) {
+                                hasFieldGainedFocus = true
+                            } else if (hasFieldGainedFocus) {
+                                commitEditedNumber()
+                            }
+                        },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() })
@@ -1198,6 +1217,181 @@ private fun StepperChip(label: String, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 6.dp)
     ) {
         Text(text = label, color = DpFlixColors.OnBackground, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+    }
+}
+
+/**
+ * Guide d'utilisation : liste de catégories avec icônes, puis détail d'une catégorie.
+ * Contenu partagé dans [UserGuideTopic] / [userGuideContentFor].
+ * Navigation interne (état local) : liste ↔ détail ; le retour système de Réglages
+ * reste géré par [SettingsScreen] (section List) quand on est sur la liste du guide.
+ */
+@Composable
+private fun UserGuideSectionBody() {
+    var selectedTopic by remember { mutableStateOf<UserGuideTopic?>(null) }
+
+    BackHandler(enabled = selectedTopic != null) {
+        selectedTopic = null
+    }
+
+    val topic = selectedTopic
+    if (topic == null) {
+        UserGuideTopicList(onSelect = { selectedTopic = it })
+    } else {
+        UserGuideTopicDetail(
+            topic = topic,
+            onBack = { selectedTopic = null }
+        )
+    }
+}
+
+@Composable
+private fun UserGuideTopicList(onSelect: (UserGuideTopic) -> Unit) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        item {
+            Column(
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.HelpOutline,
+                        contentDescription = null,
+                        tint = DpFlixColors.OnBackground,
+                        modifier = Modifier.padding(end = 10.dp)
+                    )
+                    Text(
+                        text = "Guide d'utilisation",
+                        color = DpFlixColors.OnBackground,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Text(
+                    text = "Choisissez une section pour afficher uniquement les consignes qui la concernent.",
+                    color = DpFlixColors.OnBackgroundMuted,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+        }
+        items(UserGuideTopic.entries.toList(), key = { it.name }) { topic ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .clickable { onSelect(topic) }
+                    .padding(horizontal = 12.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(DpFlixColors.Surface)
+                        .padding(10.dp)
+                ) {
+                    Icon(
+                        imageVector = topic.icon,
+                        contentDescription = null,
+                        tint = DpFlixColors.OnBackground
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(horizontal = 14.dp)
+                ) {
+                    Text(
+                        text = topic.title,
+                        color = DpFlixColors.OnBackground,
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        text = topic.subtitle,
+                        color = DpFlixColors.OnBackgroundMuted,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = null,
+                    tint = DpFlixColors.OnBackgroundMuted
+                )
+            }
+        }
+        item { Spacer(modifier = Modifier.height(16.dp)) }
+    }
+}
+
+@Composable
+private fun UserGuideTopicDetail(topic: UserGuideTopic, onBack: () -> Unit) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onBack)
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "Retour",
+                tint = DpFlixColors.OnBackground
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(DpFlixColors.Surface)
+                    .padding(8.dp)
+            ) {
+                Icon(
+                    imageVector = topic.icon,
+                    contentDescription = null,
+                    tint = DpFlixColors.OnBackground
+                )
+            }
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = topic.title,
+                color = DpFlixColors.OnBackground,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            userGuideContentFor(topic).forEach { (heading, body) ->
+                UserGuideBlock(title = heading, body = body)
+            }
+            Spacer(modifier = Modifier.height(24.dp))
+        }
+    }
+}
+
+@Composable
+private fun UserGuideBlock(title: String, body: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = title,
+            color = DpFlixColors.OnBackground,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = body,
+            color = DpFlixColors.OnBackgroundMuted,
+            style = MaterialTheme.typography.bodyMedium
+        )
     }
 }
 
