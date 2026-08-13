@@ -107,6 +107,13 @@ class FilmDownloadManager(
         dao.setFolderId(id, folderId)
     }
 
+    /** Renomme une vidéo (titre affiché uniquement — ne touche pas au fichier local). */
+    suspend fun renameVideo(id: String, newTitle: String) {
+        val trimmed = newTitle.trim()
+        require(trimmed.isNotEmpty()) { "Le nom de la vidéo ne peut pas être vide." }
+        dao.renameTitle(id, trimmed)
+    }
+
     /**
      * Duplique une vidéo terminée (fichier local + entrée bibliothèque) dans le même
      * dossier. Utile pour garder une copie avant de déplacer/modifier l'originale.

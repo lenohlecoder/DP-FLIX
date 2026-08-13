@@ -1,6 +1,8 @@
 package com.dpflix.android.filmsseries
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -19,7 +21,6 @@ import androidx.compose.material.icons.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -54,6 +55,7 @@ import android.widget.Toast
 import com.dpflix.android.db.entity.FilmDownloadEntity
 import com.dpflix.android.db.entity.FilmDownloadFolderEntity
 import com.dpflix.android.filmsseries.download.FilmDownloadManager
+import com.dpflix.android.ui.theme.DpFlixColors
 import kotlinx.coroutines.launch
 
 /**
@@ -83,6 +85,7 @@ fun DownloadsScreen(
     var folderToRename by remember { mutableStateOf<FilmDownloadFolderEntity?>(null) }
     var folderToDelete by remember { mutableStateOf<FilmDownloadFolderEntity?>(null) }
     var videoToMove by remember { mutableStateOf<FilmDownloadEntity?>(null) }
+    var videoToRename by remember { mutableStateOf<FilmDownloadEntity?>(null) }
 
     fun showError(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
@@ -155,7 +158,7 @@ fun DownloadsScreen(
                         Text(
                             "Dossiers",
                             style = MaterialTheme.typography.titleSmall,
-                            color = Color(0xFFA9AEB6)
+                            color = DpFlixColors.Red
                         )
                     }
                     items(folders, key = { "folder_${it.id}" }) { folder ->
@@ -172,7 +175,7 @@ fun DownloadsScreen(
                             Text(
                                 "Non classés",
                                 style = MaterialTheme.typography.titleSmall,
-                                color = Color(0xFFA9AEB6),
+                                color = DpFlixColors.Red,
                                 modifier = Modifier.padding(top = 8.dp)
                             )
                         }
@@ -192,6 +195,7 @@ fun DownloadsScreen(
                             scope.launch { downloadManager.delete(item.id) }
                         },
                         onMove = { videoToMove = item },
+                        onRename = { videoToRename = item },
                         onCopy = {
                             scope.launch {
                                 val copied = downloadManager.copyVideo(item.id)
@@ -272,6 +276,26 @@ fun DownloadsScreen(
             }
         )
     }
+
+    videoToRename?.let { video ->
+        FolderNameDialog(
+            title = "Renommer la vidéo",
+            fieldLabel = "Nom de la vidéo",
+            initialName = video.title,
+            confirmLabel = "Renommer",
+            onDismiss = { videoToRename = null },
+            onConfirm = { name ->
+                scope.launch {
+                    try {
+                        downloadManager.renameVideo(video.id, name)
+                        videoToRename = null
+                    } catch (e: IllegalArgumentException) {
+                        showError(e.message ?: "Nom de vidéo invalide.")
+                    }
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -323,6 +347,7 @@ private fun FolderRow(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DownloadRow(
     item: FilmDownloadEntity,
@@ -332,12 +357,18 @@ private fun DownloadRow(
     onCancel: () -> Unit,
     onDelete: () -> Unit,
     onMove: () -> Unit,
+    onRename: () -> Unit,
     onCopy: () -> Unit
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
+    val isCompleted = item.status == FilmDownloadManager.STATUS_COMPLETED
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .combinedClickable(
+                onClick = { if (isCompleted) onPlay() },
+                onLongClick = { menuExpanded = true }
+            )
             .padding(vertical = 4.dp)
     ) {
         Row(verticalAlignment = Alignment.Top) {
@@ -360,6 +391,11 @@ private fun DownloadRow(
                     Icon(Icons.Filled.MoreVert, contentDescription = "Options de la vidéo", tint = Color.White)
                 }
                 DropdownMenu(expanded = menuExpanded, onDismissRequest = { menuExpanded = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Renommer") },
+                        leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                        onClick = { menuExpanded = false; onRename() }
+                    )
                     DropdownMenuItem(
                         text = { Text("Déplacer vers…") },
                         leadingIcon = { Icon(Icons.Filled.DriveFileMove, contentDescription = null) },
@@ -390,23 +426,23 @@ private fun DownloadRow(
                     .padding(top = 8.dp)
             )
         }
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(top = 4.dp)
-        ) {
-            when (item.status) {
-                FilmDownloadManager.STATUS_COMPLETED -> {
-                    TextButton(onClick = onPlay) {
-                        Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                        Text("Lire", modifier = Modifier.padding(start = 4.dp))
-                    }
-                }
-                FilmDownloadManager.STATUS_RUNNING, FilmDownloadManager.STATUS_QUEUED -> {
+        when (item.status) {
+            FilmDownloadManager.STATUS_RUNNING, FilmDownloadManager.STATUS_QUEUED -> {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 4.dp)
+                ) {
                     TextButton(onClick = onPause) { Text("Pause") }
                     TextButton(onClick = onCancel) { Text("Annuler") }
                 }
-                FilmDownloadManager.STATUS_PAUSED, FilmDownloadManager.STATUS_FAILED -> {
+            }
+            FilmDownloadManager.STATUS_PAUSED, FilmDownloadManager.STATUS_FAILED -> {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 4.dp)
+                ) {
                     TextButton(onClick = onResume) { Text("Reprendre") }
                     TextButton(onClick = onCancel) { Text("Annuler") }
                 }
@@ -421,6 +457,7 @@ private fun FolderNameDialog(
     title: String,
     initialName: String,
     confirmLabel: String,
+    fieldLabel: String = "Nom du dossier",
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
@@ -433,7 +470,7 @@ private fun FolderNameDialog(
                 value = name,
                 onValueChange = { name = it },
                 singleLine = true,
-                label = { Text("Nom du dossier") },
+                label = { Text(fieldLabel) },
                 modifier = Modifier.fillMaxWidth()
             )
         },

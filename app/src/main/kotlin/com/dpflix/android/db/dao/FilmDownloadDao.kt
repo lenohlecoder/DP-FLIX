@@ -32,6 +32,10 @@ interface FilmDownloadDao {
     @Query("UPDATE film_downloads SET folderId = :folderId WHERE id = :id")
     suspend fun setFolderId(id: String, folderId: String?)
 
+    /** Renomme une vidéo (titre affiché dans « Mes téléchargements »). */
+    @Query("UPDATE film_downloads SET title = :title WHERE id = :id")
+    suspend fun renameTitle(id: String, title: String)
+
     /** Détache toutes les vidéos d'un dossier (utilisé quand on supprime un dossier sans supprimer son contenu). */
     @Query("UPDATE film_downloads SET folderId = NULL WHERE folderId = :folderId")
     suspend fun clearFolderId(folderId: String)
