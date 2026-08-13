@@ -2,6 +2,7 @@ package com.dpflix.android.filmsseries
 
 import android.annotation.SuppressLint
 import android.net.Uri
+import android.os.Bundle
 import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
@@ -58,6 +59,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -172,6 +174,23 @@ fun FilmsSeriesScreen(
     // et pour que le curseur virtuel (si actif) puisse lui envoyer des taps simulés.
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
 
+    // Fix (13 août 2026) : navigation persistante de la WebView à travers les allers-
+    // retours vers « Mes téléchargements ». Auparavant, ouvrir cet écran (bouton
+    // téléchargements) faisait quitter la composition de `FilmsSeriesScreen` — l'ancienne
+    // WebView était détruite (`onRelease` de `LockedWebView`) et, au retour (popBackStack),
+    // une toute nouvelle WebView était recréée par `factory` avec un simple `loadUrl(url)`,
+    // ramenant l'utilisateur à l'accueil du site au lieu de la page (série/épisode) qu'il
+    // était en train de regarder. `rememberSaveable` conserve ce Bundle (WebView.saveState)
+    // à travers cette sortie/entrée de composition — voir `LockedWebView` plus bas, qui
+    // restaure l'historique de navigation avec `restoreState()` au lieu de recharger [url]
+    // quand ce Bundle est déjà présent.
+    var webViewStateBundle by rememberSaveable { mutableStateOf<Bundle?>(null) }
+    // Le Bundle ci-dessus ne doit être restauré que sur la MÊME plateforme (`url`) que
+    // celle sur laquelle il a été capturé — sinon un changement de plateforme (Stream 1 ↔
+    // Stream 2, ou lien modifié dans Réglages) restaurerait par erreur l'historique de
+    // navigation de l'ancien site sur le nouveau.
+    var webViewStateUrl by rememberSaveable { mutableStateOf<String?>(null) }
+
     // Module téléchargement — sniffer partagé pour la durée de l'écran (reset à chaque
     // nouvelle page ou nouvelle plateforme, voir les LaunchedEffect ci-dessous).
     val sniffer = remember { StreamSniffer() }
@@ -283,6 +302,11 @@ fun FilmsSeriesScreen(
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
+                    savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
+                    onSaveState = { bundle ->
+                        webViewStateBundle = bundle
+                        webViewStateUrl = url
+                    },
                     extraAllowedHosts = generalSettings?.extraAllowedDomains
                         ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
                     onWebViewCreated = { webView ->
@@ -736,6 +760,8 @@ private fun LockedWebView(
     url: String,
     sniffer: StreamSniffer,
     extraAllowedHosts: Set<String> = emptySet(),
+    savedState: Bundle? = null,
+    onSaveState: (Bundle) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit,
     onFullscreenChanged: (Boolean) -> Unit,
     onPageTitleChanged: (String?) -> Unit = {},
@@ -919,10 +945,25 @@ private fun LockedWebView(
                     }
                 }
 
-                snifferState.value.resetForNewPage(url)
-                loadUrl(url)
+                if (savedState != null) {
+                    // Restaure l'historique de navigation (page + pile retour) au lieu de
+                    // repartir de l'accueil du site — voir le commentaire sur
+                    // `webViewStateBundle` dans `FilmsSeriesScreen`. `onPageStarted`
+                    // (ci-dessus) se charge de resynchroniser le sniffer avec la VRAIE page
+                    // restaurée dès que la navigation démarre ; inutile de le faire ici
+                    // avec [url], qui ne correspond qu'à la racine du site.
+                    restoreState(savedState)
+                } else {
+                    snifferState.value.resetForNewPage(url)
+                    loadUrl(url)
+                }
             }.also(onWebViewCreated)
         },
-        onRelease = { webView -> webView.destroy() }
+        onRelease = { webView ->
+            val bundle = Bundle()
+            webView.saveState(bundle)
+            onSaveState(bundle)
+            webView.destroy()
+        }
     )
 }
