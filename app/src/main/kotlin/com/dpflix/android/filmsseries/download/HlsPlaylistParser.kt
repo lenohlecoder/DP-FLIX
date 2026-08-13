@@ -4,7 +4,7 @@ import java.net.URI
 
 /**
  * Parseur m3u8 (master + media playlist) avec support des pistes audio séparées
- * (`#EXT-X-MEDIA:TYPE=AUDIO`).
+ * (`#EXT-X-MEDIA:TYPE=AUDIO`) et des playlists fMP4 (`#EXT-X-MAP`).
  */
 object HlsPlaylistParser {
 
@@ -26,7 +26,12 @@ object HlsPlaylistParser {
 
     data class MediaPlaylist(
         val segments: List<Segment>,
-        val isEndList: Boolean
+        val isEndList: Boolean,
+        /**
+         * URI du segment d'initialisation fMP4 (`#EXT-X-MAP:URI="..."`), ou null
+         * pour du MPEG-TS classique. Doit être préfixé à la concaténation.
+         */
+        val initUri: String? = null
     )
 
     data class Segment(
@@ -68,7 +73,7 @@ object HlsPlaylistParser {
                 line.startsWith("#EXT-X-STREAM-INF") -> {
                     val bandwidth = Regex("BANDWIDTH=(\\d+)", RegexOption.IGNORE_CASE)
                         .find(line)?.groupValues?.get(1)?.toIntOrNull()
-                    val resolution = Regex("RESOLUTION=([^,\\s]+)", RegexOption.IGNORE_CASE)
+                    val resolution = Regex("RESOLUTION=([\\dx]+)", RegexOption.IGNORE_CASE)
                         .find(line)?.groupValues?.get(1)
                     val audioGroup = attr(line, "AUDIO")
                     val next = lines.getOrNull(i + 1)
@@ -101,8 +106,19 @@ object HlsPlaylistParser {
         val segments = mutableListOf<Segment>()
         var pendingDuration: Double? = null
         var endList = false
+        var initUri: String? = null
         for (line in lines) {
             when {
+                line.startsWith("#EXT-X-MAP:") -> {
+                    // fMP4 init segment — peut apparaître plusieurs fois (par discontinuité) ;
+                    // on conserve le premier, suffisant pour la majorité des VOD.
+                    if (initUri == null) {
+                        val uri = attr(line, "URI")
+                        if (uri != null) {
+                            initUri = resolveUrl(baseUrl, uri.removeSurrounding("\""))
+                        }
+                    }
+                }
                 line.startsWith("#EXTINF:") -> {
                     val raw = line.removePrefix("#EXTINF:").substringBefore(',')
                     pendingDuration = raw.toDoubleOrNull()
@@ -118,7 +134,7 @@ object HlsPlaylistParser {
                 }
             }
         }
-        return MediaPlaylist(segments = segments, isEndList = endList)
+        return MediaPlaylist(segments = segments, isEndList = endList, initUri = initUri)
     }
 
     private fun attr(line: String, key: String): String? {

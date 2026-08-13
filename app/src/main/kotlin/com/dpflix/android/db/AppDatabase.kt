@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.room.TypeConverters
 import com.dpflix.android.db.dao.ChannelDao
 import com.dpflix.android.db.dao.FilmDownloadDao
@@ -69,7 +71,7 @@ import com.dpflix.android.db.entity.PlaylistEntity
         FilmDownloadEntity::class,
         FilmDownloadFolderEntity::class
     ],
-    version = 8,
+    version = 9,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -97,6 +99,18 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var instance: AppDatabase? = null
 
+
+        /**
+         * Version 9 (13 août 2026) : passage aux migrations explicites.
+         * Aucun changement de schéma — no-op. Les versions futures devront
+         * ajouter MIGRATION_9_10, etc. et les chaîner via addMigrations(...).
+         */
+        private val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // no-op : schéma identique, seul le numéro de version change
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(
@@ -104,11 +118,13 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     DATABASE_NAME
                 )
-                    // App non publiée à ce stade (voir doc de classe) : un bump de
-                    // version Room sans Migration écrite recrée la base plutôt que de
-                    // planter au démarrage. À retirer et remplacer par de vraies
-                    // `Migration` dès la première release publique.
-                    .fallbackToDestructiveMigration()
+                    // À partir de la version 9 : migrations explicites obligatoires.
+                    // MIGRATION_8_9 est un no-op (aucun changement de schéma) — elle
+                    // sert de point de départ pour la chaîne de migrations production.
+                    // Les appareils encore en v≤7 devront réinstaller (beta) ; dès la
+                    // première release publique, ne plus jamais utiliser
+                    // fallbackToDestructiveMigration().
+                    .addMigrations(MIGRATION_8_9)
                     .build()
                     .also { instance = it }
             }

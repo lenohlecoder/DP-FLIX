@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <!-- Fix (13 août 2026) : requis à partir d'Android 14 (API 34) pour que
+         FilmDownloadWorker puisse passer en foreground service via setForeground()
+         avec ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC (téléchargement de fichiers,
+         pas de lecture média). Sans cette permission, setForeground() lève une
+         ForegroundServiceStartNotAllowedException sur API 34+. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--

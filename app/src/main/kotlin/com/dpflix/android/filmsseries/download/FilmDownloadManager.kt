@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Étape 4 — gestionnaire de téléchargements films (MP4 + HLS).
@@ -107,11 +108,18 @@ class FilmDownloadManager(
      * dossier. Utile pour garder une copie avant de déplacer/modifier l'originale.
      * @return l'id de la copie, ou `null` si la vidéo source n'est pas disponible localement.
      */
-    suspend fun copyVideo(id: String): String? {
-        val source = dao.getById(id) ?: return null
-        val sourcePath = source.localPath?.takeIf { source.status == STATUS_COMPLETED } ?: return null
+    // Fix (13 août 2026, bug #2) : DownloadsScreen appelle copyVideo() depuis un
+    // rememberCoroutineScope() (dispatcher Main). Sans ce withContext(Dispatchers.IO), le
+    // sourceFile.copyTo(...) — potentiellement plusieurs centaines de Mo à quelques Go —
+    // s'exécutait de façon synchrone sur le thread principal : ANR garanti au clic sur
+    // « Copier » pour toute vidéo un tant soit peu volumineuse. En centralisant le
+    // withContext ici plutôt que dans l'appelant, tous les appelants actuels et futurs de
+    // copyVideo() sont protégés, pas seulement DownloadsScreen.
+    suspend fun copyVideo(id: String): String? = withContext(Dispatchers.IO) {
+        val source = dao.getById(id) ?: return@withContext null
+        val sourcePath = source.localPath?.takeIf { source.status == STATUS_COMPLETED } ?: return@withContext null
         val sourceFile = File(sourcePath)
-        if (!sourceFile.exists()) return null
+        if (!sourceFile.exists()) return@withContext null
 
         ensureFreeSpace(sourceFile.length())
 
@@ -135,7 +143,7 @@ class FilmDownloadManager(
             updatedAtMillis = now
         )
         dao.upsert(copy)
-        return newId
+        newId
     }
 
     /**
@@ -189,7 +197,9 @@ class FilmDownloadManager(
     }
 
     fun pause(id: String) {
-        FilmDownloadWorker.cancel(appContext, id)
+        // Fix course (13 août 2026) : écrire PAUSED en Room *avant* d'annuler le
+        // Worker, pour qu'un éventuel reportSegmentProgress concurrent voie déjà
+        // le statut arrêté et n'écrase pas avec RUNNING.
         scope.launch {
             val e = dao.getById(id) ?: return@launch
             if (e.status == STATUS_RUNNING || e.status == STATUS_QUEUED) {
@@ -205,6 +215,8 @@ class FilmDownloadManager(
                 )
                 notifier.cancel(id)
             }
+            // Annulation WorkManager après le commit Room
+            FilmDownloadWorker.cancel(appContext, id)
         }
     }
 
@@ -250,7 +262,7 @@ class FilmDownloadManager(
     }
 
     fun cancel(id: String) {
-        FilmDownloadWorker.cancel(appContext, id)
+        // Même logique que pause : statut Room d'abord, puis cancel WorkManager.
         scope.launch {
             val e = dao.getById(id)
             dao.updateProgress(
@@ -264,10 +276,17 @@ class FilmDownloadManager(
                 updatedAt = System.currentTimeMillis()
             )
             notifier.cancel(id)
+            FilmDownloadWorker.cancel(appContext, id)
         }
     }
 
-    suspend fun delete(id: String) {
+    // Fix (13 août 2026) : même pattern que copyVideo() — appelée depuis DownloadsScreen via
+    // scope.launch { } sur le dispatcher Main (rememberCoroutineScope()). deleteRecursively()
+    // sur hls_work_$id peut représenter des milliers de segments .ts orphelins (mux échoué,
+    // suppression avant fin de téléchargement) : autant de syscalls synchrones sur le thread
+    // principal, donc même risque d'ANR que copyVideo(). Centralisé ici plutôt que côté
+    // appelant pour protéger tout futur appelant.
+    suspend fun delete(id: String) = withContext(Dispatchers.IO) {
         FilmDownloadWorker.cancel(appContext, id)
         val e = dao.getById(id)
         e?.localPath?.let { path ->

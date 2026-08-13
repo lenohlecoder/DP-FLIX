@@ -39,14 +39,27 @@ class FilmDownloadNotifier(context: Context) {
     }
 
     fun notifyProgress(id: String, title: String, progressPercent: Int) {
-        val notification = baseBuilder(title)
+        safeNotify(notifId(id), buildProgressNotification(title, progressPercent))
+    }
+
+    /**
+     * Fix (13 août 2026) : exposée publiquement pour servir de notification initiale au
+     * foreground service de [FilmDownloadWorker] (voir `setForeground`). Même id que
+     * [notifyProgress] (calculé depuis [notifId]) afin que les mises à jour de progression
+     * ultérieures, postées via `NotificationManager.notify`, mettent bien à jour *cette même*
+     * notification de foreground service plutôt que d'en créer une nouvelle.
+     */
+    fun buildProgressNotification(title: String, progressPercent: Int): android.app.Notification {
+        return baseBuilder(title)
             .setContentText("Téléchargement… $progressPercent %")
             .setProgress(100, progressPercent.coerceIn(0, 100), progressPercent <= 0)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .build()
-        safeNotify(notifId(id), notification)
     }
+
+    fun notifId(downloadId: String): Int =
+        ((NOTIF_BASE xor downloadId.hashCode().toLong()) and 0x7FFFFFFFL).toInt()
 
     fun notifyCompleted(id: String, title: String) {
         val notification = baseBuilder(title)
@@ -98,9 +111,6 @@ class FilmDownloadNotifier(context: Context) {
             // POST_NOTIFICATIONS non accordé (Android 13+) — silencieux
         }
     }
-
-    private fun notifId(downloadId: String): Int =
-        ((NOTIF_BASE xor downloadId.hashCode().toLong()) and 0x7FFFFFFFL).toInt()
 
     companion object {
         const val CHANNEL_ID = "film_downloads"

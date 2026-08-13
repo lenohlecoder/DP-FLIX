@@ -1,8 +1,11 @@
 package com.dpflix.android.filmsseries.download
 
 import android.content.Context
+import android.content.pm.ServiceInfo
+import android.os.Build
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
@@ -13,6 +16,7 @@ import com.dpflix.android.db.entity.FilmDownloadEntity
 import com.dpflix.android.filmsseries.stream.StreamType
 import java.io.File
 import java.io.FileOutputStream
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -28,9 +32,17 @@ class FilmDownloadWorker(
 
     private val dao = AppDatabase.getInstance(applicationContext).filmDownloadDao()
     private val notifier = FilmDownloadNotifier(applicationContext)
+    // Fix (13 août 2026) : aucun timeout ni retry explicite n'étaient configurés ici, contrairement
+    // aux autres clients HTTP du projet (XtreamClient, IptvHttpDataSourceFactory). Sur les CDN
+    // "anti-hotlink" de Stream 1 (Purstream et similaires), qui coupent parfois la connexion en
+    // plein transfert, cela contribuait aux échecs "Connection reset" en cours de téléchargement.
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
+        .retryOnConnectionFailure(true)
+        .connectTimeout(30, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .writeTimeout(30, TimeUnit.SECONDS)
         .build()
     private val hlsDownloader = HlsDownloader(httpClient)
     private val dashDownloader = DashDownloader(httpClient)
@@ -49,6 +61,16 @@ class FilmDownloadWorker(
         }
         if (entity.status == FilmDownloadManager.STATUS_PAUSED) {
             return Result.success()
+        }
+
+        // Fix (13 août 2026, bug #1) : sans passage explicite en foreground service, ce
+        // CoroutineWorker reste soumis à la limite d'exécution WorkManager/JobScheduler
+        // (~10 min). Pour un HLS volumineux (plusieurs centaines de Mo à quelques Go), le
+        // système peut couper le téléchargement avant la fin — silencieusement sur beaucoup
+        // d'OEM (Xiaomi, Huawei…). setForeground() lève le plafond de durée tant que la
+        // notification de progression reste affichée.
+        runCatching {
+            setForeground(createForegroundInfo(entity.title, entity.progressPercent))
         }
 
         return try {
@@ -82,6 +104,23 @@ class FilmDownloadWorker(
         }
     }
 
+    /**
+     * Fix (13 août 2026, bug #1). Notification de foreground service : réutilise le même id
+     * que [FilmDownloadNotifier.notifyProgress] pour que les mises à jour de progression
+     * postérieures mettent à jour cette notification plutôt que d'en poster une nouvelle.
+     * Le type `DATA_SYNC` correspond à un transfert de fichier en tâche de fond, pas à de la
+     * lecture média — requis explicitement à partir d'Android 14 (API 34).
+     */
+    private fun createForegroundInfo(title: String, progressPercent: Int): ForegroundInfo {
+        val notification = notifier.buildProgressNotification(title, progressPercent)
+        val notifId = notifier.notifId(inputData.getString(KEY_DOWNLOAD_ID) ?: "")
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(notifId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            ForegroundInfo(notifId, notification)
+        }
+    }
+
     private suspend fun runMp4(id: String, entity: FilmDownloadEntity) {
         markRunning(id, entity)
         val destPartial = File(downloadsDir, "$id.partial")
@@ -101,18 +140,61 @@ class FilmDownloadWorker(
                     throw IllegalStateException("HTTP ${response.code}")
                 }
                 val body = response.body ?: throw IllegalStateException("Réponse vide")
+
+                // --- Vérification stricte Content-Range (reprise MP4) ---
+                // Si on a demandé Range: bytes=N- on exige un 206 dont le Content-Range
+                // recommence exactement à N. Sinon on repart de zéro (évite corruption).
+                var append = false
+                var startOffset = 0L
+                if (existing > 0L) {
+                    if (response.code == 206) {
+                        val contentRange = response.header("Content-Range")
+                        // formats : "bytes 123-456/789" ou "bytes 123-456/*"
+                        val match = contentRange?.let {
+                            Regex("""bytes\s+(\d+)-(\d+)/(\d+|\*)""").find(it)
+                        }
+                        val rangeStart = match?.groupValues?.get(1)?.toLongOrNull()
+                        if (rangeStart == null) {
+                            // 206 sans Content-Range exploitable → trop risqué, recommencer
+                            runCatching { destPartial.delete() }
+                            throw IllegalStateException(
+                                "HTTP 206 sans Content-Range valide — reprise annulée, relancez"
+                            )
+                        }
+                        if (rangeStart != existing) {
+                            // Le serveur ne reprend pas où on l'a demandé
+                            runCatching { destPartial.delete() }
+                            throw IllegalStateException(
+                                "Content-Range démarre à $rangeStart au lieu de $existing — fichier partiel invalidé"
+                            )
+                        }
+                        append = true
+                        startOffset = existing
+                    } else if (response.code == 200) {
+                        // Serveur ignore Range → recommencer depuis 0
+                        runCatching { destPartial.delete() }
+                        append = false
+                        startOffset = 0L
+                    } else {
+                        throw IllegalStateException("HTTP ${response.code} inattendu en reprise")
+                    }
+                }
+
                 val totalFromHeader = response.header("Content-Length")?.toLongOrNull()
+                val totalFromRange = response.header("Content-Range")?.let { cr ->
+                    Regex("""/(\d+)\s*$""").find(cr)?.groupValues?.get(1)?.toLongOrNull()
+                }
                 val total = when {
+                    totalFromRange != null -> totalFromRange
                     response.code == 206 && entity.bytesTotal != null -> entity.bytesTotal
-                    response.code == 206 && totalFromHeader != null -> existing + totalFromHeader
+                    response.code == 206 && totalFromHeader != null -> startOffset + totalFromHeader
                     totalFromHeader != null -> totalFromHeader
                     else -> entity.bytesTotal
                 }
 
-                val append = response.code == 206 && existing > 0L
                 FileOutputStream(destPartial, append).use { out ->
                     val buffer = ByteArray(64 * 1024)
-                    var downloaded = if (append) existing else 0L
+                    var downloaded = startOffset
                     var lastNotified = -1
                     body.byteStream().use { input ->
                         while (true) {
@@ -126,23 +208,9 @@ class FilmDownloadWorker(
                             } else 0
                             if (downloaded % (256 * 1024) < read || percent != lastNotified) {
                                 lastNotified = percent
-                                dao.updateProgress(
-                                    id = id,
-                                    status = FilmDownloadManager.STATUS_RUNNING,
-                                    progress = percent,
-                                    downloaded = downloaded,
-                                    total = total,
-                                    error = null,
-                                    localPath = null,
-                                    updatedAt = System.currentTimeMillis()
-                                )
-                                notifier.notifyProgress(id, entity.title, percent)
-                                setProgress(
-                                    workDataOf(
-                                        KEY_PROGRESS to percent,
-                                        KEY_TITLE to entity.title
-                                    )
-                                )
+                                if (!reportMp4Progress(id, entity.title, percent, downloaded, total)) {
+                                    return@withContext
+                                }
                             }
                         }
                     }
@@ -160,6 +228,49 @@ class FilmDownloadWorker(
                 complete(id, entity.title, destFinal)
             }
         }
+    }
+
+    /**
+     * Fix (13 août 2026, bug #3). Pendant de [reportSegmentProgress] (HLS/DASH) mais pour la
+     * boucle MP4 : le fix du 13 août — revérifier le statut en base avant d'écrire RUNNING —
+     * avait été appliqué à reportSegmentProgress mais oublié ici. La boucle MP4 ne se fiait
+     * qu'à `isStopped`, qui ne devient vrai qu'après que WorkManager ait effectivement annulé
+     * le worker suite au changement de statut en base (PAUSED/CANCELLED) — il existe donc une
+     * fenêtre de course où cette boucle pouvait réécrire RUNNING juste après un Pause/Annuler
+     * cliqué par l'utilisateur sur un MP4.
+     *
+     * @return `false` si le statut en base a été changé entre-temps (paused/cancelled/completed/
+     * supprimé) — l'appelant doit alors arrêter immédiatement l'écriture du fichier, sans passer
+     * par la finalisation normale.
+     */
+    private suspend fun reportMp4Progress(
+        id: String,
+        title: String,
+        percent: Int,
+        downloaded: Long,
+        total: Long?
+    ): Boolean {
+        val current = dao.getById(id)
+        if (current == null ||
+            current.status == FilmDownloadManager.STATUS_PAUSED ||
+            current.status == FilmDownloadManager.STATUS_CANCELLED ||
+            current.status == FilmDownloadManager.STATUS_COMPLETED
+        ) {
+            return false
+        }
+        dao.updateProgress(
+            id = id,
+            status = FilmDownloadManager.STATUS_RUNNING,
+            progress = percent,
+            downloaded = downloaded,
+            total = total,
+            error = null,
+            localPath = null,
+            updatedAt = System.currentTimeMillis()
+        )
+        notifier.notifyProgress(id, title, percent)
+        setProgress(workDataOf(KEY_PROGRESS to percent, KEY_TITLE to title))
+        return true
     }
 
     private suspend fun runHls(id: String, entity: FilmDownloadEntity) {
@@ -256,6 +367,16 @@ class FilmDownloadWorker(
         total: Int,
         bytes: Long
     ) {
+        // Fix course pause/cancel : ne pas écraser un statut PAUSED/CANCELLED
+        // posé entre-temps par FilmDownloadManager.
+        val current = dao.getById(id)
+        if (current == null ||
+            current.status == FilmDownloadManager.STATUS_PAUSED ||
+            current.status == FilmDownloadManager.STATUS_CANCELLED ||
+            current.status == FilmDownloadManager.STATUS_COMPLETED
+        ) {
+            return
+        }
         val percent = if (total > 0) ((done * 100) / total).coerceIn(0, 99) else 0
         dao.updateProgress(
             id = id,

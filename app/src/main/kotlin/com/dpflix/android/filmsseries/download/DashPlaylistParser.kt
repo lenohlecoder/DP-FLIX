@@ -50,6 +50,8 @@ object DashPlaylistParser {
 
         var isDynamic = false
         var hasDrm = false
+        var mediaPresentationDurationSec: Double? = null
+        var periodDurationSec: Double? = null
         val representations = mutableListOf<RepBuilder>()
         var currentRep: RepBuilder? = null
         var currentPeriodBase = mpdUrl
@@ -57,11 +59,13 @@ object DashPlaylistParser {
         var currentAdaptationType = ContentType.UNKNOWN
         var segmentTemplate: SegmentTemplate? = null
         var segmentListUrls = mutableListOf<String>()
+        var segmentTimeline = mutableListOf<TimelineEntry>()
         var segmentBaseUrl: String? = null
         var initializationUrl: String? = null
         var timescale = 1L
         var duration = 0L
         var startNumber = 1L
+        var timelineTimeCursor = 0L
 
         var event = parser.eventType
         while (event != XmlPullParser.END_DOCUMENT) {
@@ -71,6 +75,14 @@ object DashPlaylistParser {
                         "MPD" -> {
                             val type = parser.getAttributeValue(null, "type")
                             isDynamic = type.equals("dynamic", ignoreCase = true)
+                            // ISO-8601 duration e.g. PT1H23M45.6S
+                            mediaPresentationDurationSec = parseIsoDurationSec(
+                                parser.getAttributeValue(null, "mediaPresentationDuration")
+                            )
+                        }
+                        "Period" -> {
+                            val pd = parseIsoDurationSec(parser.getAttributeValue(null, "duration"))
+                            if (pd != null) periodDurationSec = pd
                         }
                         "BaseURL" -> {
                             val text = parser.nextText().trim()
@@ -100,8 +112,10 @@ object DashPlaylistParser {
                             }
                             segmentTemplate = null
                             segmentListUrls = mutableListOf()
+                            segmentTimeline = mutableListOf()
                             segmentBaseUrl = null
                             initializationUrl = null
+                            timelineTimeCursor = 0L
                         }
                         "Representation" -> {
                             val id = parser.getAttributeValue(null, "id")
@@ -167,6 +181,25 @@ object DashPlaylistParser {
                             // single segment often via BaseURL of representation
                             segmentBaseUrl = ""
                         }
+                        "SegmentTimeline" -> {
+                            // reset cursor; entries collected via nested S tags
+                            timelineTimeCursor = 0L
+                        }
+                        "S" -> {
+                            // SegmentTimeline entry: t (start time), d (duration), r (repeat count)
+                            val t = parser.getAttributeValue(null, "t")?.toLongOrNull()
+                            val d = parser.getAttributeValue(null, "d")?.toLongOrNull() ?: 0L
+                            val r = parser.getAttributeValue(null, "r")?.toLongOrNull() ?: 0L
+                            val start = t ?: timelineTimeCursor
+                            // r = number of *additional* repeats (total occurrences = r+1)
+                            val occurrences = (r + 1).coerceAtLeast(1)
+                            var time = start
+                            repeat(occurrences.toInt().coerceAtMost(50_000)) {
+                                segmentTimeline += TimelineEntry(time = time, duration = d)
+                                time += d
+                            }
+                            timelineTimeCursor = time
+                        }
                     }
                 }
                 XmlPullParser.END_TAG -> {
@@ -174,23 +207,33 @@ object DashPlaylistParser {
                         "Representation" -> {
                             currentRep?.let { rep ->
                                 val base = rep.baseUrl.ifBlank { currentPeriodBase }
+                                val totalDur = periodDurationSec ?: mediaPresentationDurationSec
                                 val segs = buildSegments(
                                     baseUrl = base,
                                     template = segmentTemplate,
                                     listUrls = segmentListUrls.toList(),
+                                    timeline = segmentTimeline.toList(),
                                     initUrl = initializationUrl,
-                                    segmentBase = segmentBaseUrl != null
+                                    segmentBase = segmentBaseUrl != null,
+                                    totalDurationSec = totalDur,
+                                    repId = rep.id,
+                                    bandwidth = rep.bandwidth
                                 )
                                 rep.segmentUrls = segs
                                 representations += rep
                             }
                             currentRep = null
+                            // Timeline souvent au niveau AdaptationSet (partagée) ;
+                            // si elle était sous Representation, elle a déjà été consommée.
+                            // On ne la vide pas ici pour préserver le cas AdaptationSet.
                         }
                         "AdaptationSet" -> {
                             segmentTemplate = null
                             segmentListUrls = mutableListOf()
+                            segmentTimeline = mutableListOf()
                             initializationUrl = null
                             segmentBaseUrl = null
+                            timelineTimeCursor = 0L
                             currentAdaptationType = ContentType.UNKNOWN
                         }
                     }
@@ -246,6 +289,12 @@ object DashPlaylistParser {
         val presentationTimeOffset: Long
     )
 
+    /** Entrée SegmentTimeline : temps de début et durée en unités timescale. */
+    private data class TimelineEntry(
+        val time: Long,
+        val duration: Long
+    )
+
     private class RepBuilder(
         val id: String?,
         val bandwidth: Int,
@@ -262,30 +311,58 @@ object DashPlaylistParser {
         baseUrl: String,
         template: SegmentTemplate?,
         listUrls: List<String>,
+        timeline: List<TimelineEntry>,
         initUrl: String?,
-        segmentBase: Boolean
+        segmentBase: Boolean,
+        totalDurationSec: Double? = null,
+        repId: String? = null,
+        bandwidth: Int? = null
     ): List<String> {
         val out = mutableListOf<String>()
         if (initUrl != null) {
-            out += resolveUrl(baseUrl, expandTemplate(initUrl, number = 0, time = 0, repId = null, bandwidth = null))
+            out += resolveUrl(
+                baseUrl,
+                expandTemplate(initUrl, number = 0, time = 0, repId = repId, bandwidth = bandwidth)
+            )
         }
         when {
             listUrls.isNotEmpty() -> {
                 listUrls.forEach { out += resolveUrl(baseUrl, it) }
             }
+            // SegmentTimeline : liste explicite de (t, d) — priorité sur duration fixe
+            template?.media != null && timeline.isNotEmpty() -> {
+                var n = template.startNumber
+                for (entry in timeline) {
+                    val media = expandTemplate(
+                        template.media,
+                        number = n,
+                        time = entry.time,
+                        repId = repId,
+                        bandwidth = bandwidth
+                    )
+                    out += resolveUrl(baseUrl, media)
+                    n++
+                }
+            }
             template?.media != null && template.duration > 0 -> {
-                // Estimation : ~ mediaDuration inconnue → on génère un nombre raisonnable
-                // de segments (max 5000) ; le downloader arrêtera sur HTTP 404.
-                val approxCount = 5000
+                // Nombre de segments calculé à partir de la durée réelle du MPD/Period
+                // quand elle est disponible ; sinon borne haute raisonnable + stop au 404.
+                val segDurSec = template.duration.toDouble() / template.timescale.coerceAtLeast(1L)
+                val count = when {
+                    totalDurationSec != null && segDurSec > 0 -> {
+                        (kotlin.math.ceil(totalDurationSec / segDurSec).toInt() + 2).coerceIn(1, 20_000)
+                    }
+                    else -> 500
+                }
                 var n = template.startNumber
                 var time = template.presentationTimeOffset
-                repeat(approxCount) {
+                repeat(count) {
                     val media = expandTemplate(
                         template.media,
                         number = n,
                         time = time,
-                        repId = null,
-                        bandwidth = null
+                        repId = repId,
+                        bandwidth = bandwidth
                     )
                     out += resolveUrl(baseUrl, media)
                     n++
@@ -296,7 +373,7 @@ object DashPlaylistParser {
                 // Sans duration : un seul segment média
                 out += resolveUrl(
                     baseUrl,
-                    expandTemplate(template.media, template.startNumber, 0, null, null)
+                    expandTemplate(template.media, template.startNumber, 0, repId, bandwidth)
                 )
             }
             segmentBase -> {
@@ -317,6 +394,27 @@ object DashPlaylistParser {
     /**
      * Remplace $Number$, $Time$, $RepresentationID$, $Bandwidth$ (avec éventuel format %0Nd).
      */
+
+    /**
+     * Parse une durée ISO-8601 simplifiée (PT#H#M#S / PT#S / P#DT#H…).
+     * Retourne des secondes, ou null si absent / illisible.
+     */
+    fun parseIsoDurationSec(raw: String?): Double? {
+        if (raw.isNullOrBlank()) return null
+        // Exemples : PT1H2M3.5S, PT90S, PT1.5H, P0Y0M0DT1H2M3S
+        val re = Regex(
+            """^P(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$""",
+            RegexOption.IGNORE_CASE
+        )
+        val m = re.matchEntire(raw.trim()) ?: return null
+        val days = m.groupValues[3].toDoubleOrNull() ?: 0.0
+        val hours = m.groupValues[4].toDoubleOrNull() ?: 0.0
+        val minutes = m.groupValues[5].toDoubleOrNull() ?: 0.0
+        val seconds = m.groupValues[6].toDoubleOrNull() ?: 0.0
+        // months/years ignorés volontairement (rares en VOD streaming)
+        return days * 86_400 + hours * 3600 + minutes * 60 + seconds
+    }
+
     fun expandTemplate(
         template: String,
         number: Long,
@@ -355,7 +453,7 @@ object DashPlaylistParser {
      * l'init + on laisse le downloader découvrir via Timeline si besoin.
      * Ici on borne les listes trop longues générées par estimation.
      */
-    fun trimEstimatedSegments(segments: List<String>, maxSegments: Int = 2000): List<String> {
+    fun trimEstimatedSegments(segments: List<String>, maxSegments: Int = 10_000): List<String> {
         if (segments.size <= maxSegments) return segments
         return segments.take(maxSegments)
     }
