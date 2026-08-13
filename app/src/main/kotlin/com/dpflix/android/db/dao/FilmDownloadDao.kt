@@ -28,6 +28,17 @@ interface FilmDownloadDao {
     @Query("DELETE FROM film_downloads WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    /** Déplace une vidéo vers [folderId] (null = retour à la racine « Non classés »). */
+    @Query("UPDATE film_downloads SET folderId = :folderId WHERE id = :id")
+    suspend fun setFolderId(id: String, folderId: String?)
+
+    /** Détache toutes les vidéos d'un dossier (utilisé quand on supprime un dossier sans supprimer son contenu). */
+    @Query("UPDATE film_downloads SET folderId = NULL WHERE folderId = :folderId")
+    suspend fun clearFolderId(folderId: String)
+
+    @Query("SELECT * FROM film_downloads WHERE folderId = :folderId")
+    suspend fun getByFolderId(folderId: String): List<FilmDownloadEntity>
+
     @Query(
         "UPDATE film_downloads SET status = :status, progressPercent = :progress, " +
             "bytesDownloaded = :downloaded, bytesTotal = :total, errorMessage = :error, " +

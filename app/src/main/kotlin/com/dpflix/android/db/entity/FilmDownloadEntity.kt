@@ -18,6 +18,8 @@ data class FilmDownloadEntity(
     val localPath: String?,
     /** QUEUED | RUNNING | PAUSED | COMPLETED | FAILED | CANCELLED */
     val status: String,
+    /** [FilmDownloadFolderEntity.id] du dossier de rangement, null = non classé (racine). */
+    val folderId: String? = null,
     val progressPercent: Int = 0,
     val bytesDownloaded: Long = 0L,
     val bytesTotal: Long? = null,

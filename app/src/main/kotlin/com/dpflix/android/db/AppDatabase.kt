@@ -7,9 +7,11 @@ import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import com.dpflix.android.db.dao.ChannelDao
 import com.dpflix.android.db.dao.FilmDownloadDao
+import com.dpflix.android.db.dao.FilmDownloadFolderDao
 import com.dpflix.android.db.dao.PlaylistDao
 import com.dpflix.android.db.entity.ChannelEntity
 import com.dpflix.android.db.entity.FilmDownloadEntity
+import com.dpflix.android.db.entity.FilmDownloadFolderEntity
 import com.dpflix.android.db.entity.PlaylistEntity
 
 /**
@@ -53,14 +55,21 @@ import com.dpflix.android.db.entity.PlaylistEntity
  * premier lancement de cette version (fichiers déjà écrits sur disque orphelins tant que
  * [com.dpflix.android.filmsseries.download.FilmDownloadManager] ne les nettoie pas au
  * démarrage suivant).
+ *
+ * Version 8 (organisation en dossiers de la bibliothèque de téléchargements) : ajout de
+ * [FilmDownloadFolderEntity] + de la colonne [FilmDownloadEntity.folderId]. Même
+ * justification que ci-dessus pour l'absence de `Migration` écrite —
+ * `fallbackToDestructiveMigration()` effacera aussi les téléchargements en cours au
+ * premier lancement de cette version.
  */
 @Database(
     entities = [
         PlaylistEntity::class,
         ChannelEntity::class,
-        FilmDownloadEntity::class
+        FilmDownloadEntity::class,
+        FilmDownloadFolderEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -69,6 +78,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun playlistDao(): PlaylistDao
     abstract fun channelDao(): ChannelDao
     abstract fun filmDownloadDao(): FilmDownloadDao
+    abstract fun filmDownloadFolderDao(): FilmDownloadFolderDao
 
     companion object {
         const val DATABASE_NAME = "dpflix.db"

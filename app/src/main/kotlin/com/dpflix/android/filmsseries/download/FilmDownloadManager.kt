@@ -4,7 +4,9 @@ import android.content.Context
 import android.os.StatFs
 import android.webkit.CookieManager
 import com.dpflix.android.db.dao.FilmDownloadDao
+import com.dpflix.android.db.dao.FilmDownloadFolderDao
 import com.dpflix.android.db.entity.FilmDownloadEntity
+import com.dpflix.android.db.entity.FilmDownloadFolderEntity
 import com.dpflix.android.filmsseries.stream.DetectedStream
 import com.dpflix.android.filmsseries.stream.StreamType
 import java.io.File
@@ -29,7 +31,8 @@ import kotlinx.coroutines.launch
  */
 class FilmDownloadManager(
     context: Context,
-    private val dao: FilmDownloadDao
+    private val dao: FilmDownloadDao,
+    private val folderDao: FilmDownloadFolderDao
 ) {
     private val appContext = context.applicationContext
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -48,6 +51,92 @@ class FilmDownloadManager(
     }
 
     fun observeAll(): Flow<List<FilmDownloadEntity>> = dao.observeAll()
+
+    fun observeFolders(): Flow<List<FilmDownloadFolderEntity>> = folderDao.observeAll()
+
+    /**
+     * Crée un dossier de rangement. Refuse les noms vides ou déjà utilisés (insensible
+     * à la casse) pour éviter deux dossiers d'apparence identique dans la liste.
+     */
+    suspend fun createFolder(name: String): FilmDownloadFolderEntity {
+        val trimmed = name.trim()
+        require(trimmed.isNotEmpty()) { "Le nom du dossier ne peut pas être vide." }
+        require(folderDao.countByName(trimmed) == 0) { "Un dossier « $trimmed » existe déjà." }
+        val folder = FilmDownloadFolderEntity(
+            id = UUID.randomUUID().toString(),
+            name = trimmed,
+            createdAtMillis = System.currentTimeMillis()
+        )
+        folderDao.upsert(folder)
+        return folder
+    }
+
+    /** Renomme un dossier existant (mêmes règles de validation que [createFolder]). */
+    suspend fun renameFolder(id: String, newName: String) {
+        val trimmed = newName.trim()
+        require(trimmed.isNotEmpty()) { "Le nom du dossier ne peut pas être vide." }
+        val current = folderDao.getById(id)
+        if (current != null && !current.name.equals(trimmed, ignoreCase = true)) {
+            require(folderDao.countByName(trimmed) == 0) { "Un dossier « $trimmed » existe déjà." }
+        }
+        folderDao.rename(id, trimmed)
+    }
+
+    /**
+     * Supprime un dossier.
+     * @param deleteContents si `true`, supprime aussi (fichiers + entrées) toutes les
+     * vidéos qu'il contient ; sinon elles sont simplement détachées (renvoyées à la
+     * racine « Non classés »), comportement par défaut le plus sûr.
+     */
+    suspend fun deleteFolder(id: String, deleteContents: Boolean = false) {
+        if (deleteContents) {
+            dao.getByFolderId(id).forEach { delete(it.id) }
+        } else {
+            folderDao.clearFolderId(id)
+        }
+        folderDao.deleteById(id)
+    }
+
+    /** Déplace une vidéo vers [folderId] (`null` = retour à la racine « Non classés »). */
+    suspend fun moveToFolder(id: String, folderId: String?) {
+        dao.setFolderId(id, folderId)
+    }
+
+    /**
+     * Duplique une vidéo terminée (fichier local + entrée bibliothèque) dans le même
+     * dossier. Utile pour garder une copie avant de déplacer/modifier l'originale.
+     * @return l'id de la copie, ou `null` si la vidéo source n'est pas disponible localement.
+     */
+    suspend fun copyVideo(id: String): String? {
+        val source = dao.getById(id) ?: return null
+        val sourcePath = source.localPath?.takeIf { source.status == STATUS_COMPLETED } ?: return null
+        val sourceFile = File(sourcePath)
+        if (!sourceFile.exists()) return null
+
+        ensureFreeSpace(sourceFile.length())
+
+        val newId = UUID.randomUUID().toString()
+        val newFile = File(downloadsDir, "$newId.${sourceFile.extension.ifBlank { "mp4" }}")
+        sourceFile.copyTo(newFile, overwrite = true)
+
+        // Copie du fichier audio séparé éventuel (pistes démuxées HLS/DASH).
+        MediaTrackMuxer.findSidecarAudio(sourcePath)?.let { audio ->
+            runCatching {
+                audio.copyTo(File(downloadsDir, "$newId.audio.${audio.extension}"), overwrite = true)
+            }
+        }
+
+        val now = System.currentTimeMillis()
+        val copy = source.copy(
+            id = newId,
+            title = "${source.title} (copie)",
+            localPath = newFile.absolutePath,
+            createdAtMillis = now,
+            updatedAtMillis = now
+        )
+        dao.upsert(copy)
+        return newId
+    }
 
     /**
      * Enfile un flux détecté.

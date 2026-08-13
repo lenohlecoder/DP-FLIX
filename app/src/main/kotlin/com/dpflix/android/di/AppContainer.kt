@@ -52,6 +52,10 @@ class AppContainer(context: Context) {
         channels = ChannelRepository(database.channelDao()),
         settings = SettingsRepository(settingsDataStore),
         replay = ReplayRepository(xtreamClient, playlistRepository),
-        filmDownloads = FilmDownloadManager(context.applicationContext, database.filmDownloadDao())
+        filmDownloads = FilmDownloadManager(
+            context.applicationContext,
+            database.filmDownloadDao(),
+            database.filmDownloadFolderDao()
+        )
     )
 }
