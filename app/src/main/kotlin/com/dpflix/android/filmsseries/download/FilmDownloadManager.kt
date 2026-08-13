@@ -93,7 +93,11 @@ class FilmDownloadManager(
         if (deleteContents) {
             dao.getByFolderId(id).forEach { delete(it.id) }
         } else {
-            folderDao.clearFolderId(id)
+            // Fix compilation (13 août 2026) : clearFolderId() vit sur FilmDownloadDao
+            // (`dao`, qui gère les vidéos et leur champ folderId), pas sur
+            // FilmDownloadFolderDao (`folderDao`, qui gère seulement la table des
+            // dossiers eux-mêmes) — d'où le "Unresolved reference" en CI.
+            dao.clearFolderId(id)
         }
         folderDao.deleteById(id)
     }
