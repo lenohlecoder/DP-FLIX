@@ -40,6 +40,16 @@ class AccessRepository(
         // Contact fournisseur (conservé de l'ancienne version)
         const val ADMIN_WHATSAPP_E164 = "33600000000" // ← à remplacer par le vrai numéro
         const val ADMIN_WHATSAPP_DISPLAY = "+33 6 00 00 00 00"
+
+        // Fix (14 août 2026) : porte dérobée admin locale. Avant ce correctif, le code
+        // admin ("Mamanzefa") n'était PAS écrit en dur — il passait par le même chemin
+        // que n'importe quel code client (redeemCode ci-dessous), c'est-à-dire une
+        // transaction Firestore en ligne. Résultat : le moindre souci réseau/Firestore
+        // (règles de sécurité pas encore déployées, pas de connexion, etc.) bloquait
+        // aussi l'accès admin — alors que le but d'une porte dérobée est justement de
+        // ne JAMAIS dépendre du réseau. ADMIN_BACKDOOR_CODE est vérifié en tout premier
+        // dans redeemCode(), avant le moindre appel réseau.
+        private const val ADMIN_BACKDOOR_CODE = "Mamanzefa"
     }
 
     private val _currentUser = MutableStateFlow<UserAccess?>(null)
@@ -159,6 +169,12 @@ class AccessRepository(
         val raw = code.trim()
         if (raw.isBlank()) return RedeemResult.InvalidCode
 
+        // Porte dérobée admin — vérifiée EN LOCAL, avant tout accès réseau/Firestore
+        // (voir la doc de ADMIN_BACKDOOR_CODE ci-dessus). Marche donc même hors ligne.
+        if (raw == ADMIN_BACKDOOR_CODE) {
+            return unlockAdminLocally()
+        }
+
         val uid = auth.currentUser?.uid
             ?: return RedeemResult.Error("Utilisateur non connecté")
 
@@ -229,6 +245,47 @@ class AccessRepository(
             Log.e(TAG, "redeemCode failed", e)
             RedeemResult.NetworkError
         }
+    }
+
+    /**
+     * Déverrouille l'accès admin localement, sans dépendre du réseau (voir la doc de
+     * [ADMIN_BACKDOOR_CODE]). Met à jour [_currentUser] immédiatement — la session
+     * admin est donc valide pour le reste de l'exécution de l'app même hors ligne.
+     *
+     * [stopListening] est appelé pour empêcher un futur événement du listener Firestore
+     * (branché sur le VRAI document `users/{uid}`, resté role="USER") d'écraser ce
+     * rôle admin local — sans quoi la prochaine mise à jour reçue en temps réel
+     * repasserait silencieusement l'utilisateur en simple utilisateur.
+     *
+     * Tentative en plus (best effort, ignorée si hors ligne) d'écrire role="ADMIN" sur
+     * le document Firestore de cet utilisateur, pour que [ensureSignedIn] retrouve
+     * directement ce rôle au prochain lancement de l'app SANS avoir à retaper le code
+     * — cohérent avec "l'utilisateur n'a plus besoin de repasser le code". Si cette
+     * écriture échoue (pas de réseau au moment précis du déverrouillage), la session en
+     * cours reste admin quand même ; c'est seulement la persistance au redémarrage
+     * suivant qui dépendra alors d'un prochain essai réussi.
+     */
+    private suspend fun unlockAdminLocally(): RedeemResult {
+        stopListening()
+
+        val existing = _currentUser.value
+        _currentUser.value = (existing ?: UserAccess(uid = auth.currentUser?.uid ?: ""))
+            .copy(role = "ADMIN")
+
+        val uid = auth.currentUser?.uid
+        if (uid != null) {
+            try {
+                db.collection(COL_USERS).document(uid)
+                    .set(mapOf("role" to "ADMIN", "updatedAt" to Timestamp.now()), SetOptions.merge())
+                    .await()
+            } catch (e: Exception) {
+                // Best effort uniquement — voir la doc ci-dessus : la session locale
+                // reste admin même si cette synchronisation échoue.
+                Log.w(TAG, "unlockAdminLocally: sync Firestore échouée (hors ligne ?)", e)
+            }
+        }
+
+        return RedeemResult.Success
     }
 
     // ─────────────────────────────────────────────────────────────
