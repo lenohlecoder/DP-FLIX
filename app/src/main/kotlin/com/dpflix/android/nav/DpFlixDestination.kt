@@ -51,6 +51,12 @@ sealed class DpFlixDestination(val route: String) {
 
     object Splash : DpFlixDestination("splash")
 
+    /** Écran de verrouillage / saisie de code d'activation. */
+    object Lock : DpFlixDestination("lock")
+
+    /** Espace administrateur. */
+    object Admin : DpFlixDestination("admin")
+
     object Onboarding : DpFlixDestination("onboarding")
 
     object Home : DpFlixDestination("home")

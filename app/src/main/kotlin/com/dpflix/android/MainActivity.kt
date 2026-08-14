@@ -27,9 +27,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
-        val appRepository = (application as DpFlixApplication).container.appRepository
+        val container = (application as DpFlixApplication).container
         setContent {
-            DpFlixNavHost(appRepository = appRepository)
+            DpFlixNavHost(
+                appRepository = container.appRepository,
+                accessRepository = container.accessRepository
+            )
         }
     }
 }

@@ -9,6 +9,7 @@ import com.dpflix.android.repository.ChannelRepository
 import com.dpflix.android.repository.PlaylistRepository
 import com.dpflix.android.repository.ReplayRepository
 import com.dpflix.android.repository.SettingsRepository
+import com.dpflix.android.access.AccessRepository
 import com.dpflix.android.settings.SettingsDataStore
 
 /**
@@ -58,4 +59,7 @@ class AppContainer(context: Context) {
             database.filmDownloadFolderDao()
         )
     )
+
+    /** Contrôle d'accès Firebase (Auth anonyme + codes d'activation). */
+    val accessRepository: AccessRepository = AccessRepository()
 }

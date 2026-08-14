@@ -40,6 +40,9 @@ import com.dpflix.android.player.PlayerScreen
 import com.dpflix.android.replay.ReplayScreenTv
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.settings.SettingsScreenTv
+import com.dpflix.android.access.AccessRepository
+import com.dpflix.android.access.AdminScreen
+import com.dpflix.android.access.LockScreen
 import com.dpflix.android.splash.SplashScreen
 import kotlinx.coroutines.flow.first
 
@@ -70,6 +73,7 @@ import kotlinx.coroutines.flow.first
 @Composable
 fun DpFlixTvNavHost(
     appRepository: AppRepository,
+    accessRepository: AccessRepository,
     navController: NavHostController = rememberNavController()
 ) {
     // Fix (25 juillet 2026) — même correctif que DpFlixNavHost (mobile), voir sa doc :
@@ -99,14 +103,70 @@ fun DpFlixTvNavHost(
         // du début de la pile pour empêcher tout retour vers le splash.
         composable(TV_POST_SPLASH_ROUTE) {
             LaunchedEffect(Unit) {
+                accessRepository.ensureSignedIn()
                 appRepository.applyDefaultPlaylistOnStartup()
-                val hasActivePlaylist = appRepository.playlists.observeActive().first() != null
-                val destination = if (hasActivePlaylist) DpFlixDestination.Home.route else DpFlixDestination.Onboarding.route
+                val destination = when {
+                    accessRepository.currentUser.value?.isAdmin == true ->
+                        DpFlixDestination.Admin.route
+                    !accessRepository.hasValidSession() ->
+                        DpFlixDestination.Lock.route
+                    else -> {
+                        val hasActivePlaylist =
+                            appRepository.playlists.observeActive().first() != null
+                        if (hasActivePlaylist) DpFlixDestination.Home.route
+                        else DpFlixDestination.Onboarding.route
+                    }
+                }
                 navController.navigate(destination) {
                     popUpTo(TV_POST_SPLASH_ROUTE) { inclusive = true }
                 }
             }
             Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+        }
+
+        composable(DpFlixDestination.Lock.route) {
+            // Réutilise LockScreen mobile (Compose Material3) — suffisant pour TV v1
+            LockScreen(
+                accessRepository = accessRepository,
+                onUnlocked = {
+                    navController.navigate(TV_POST_LOCK_ROUTE) {
+                        popUpTo(DpFlixDestination.Lock.route) { inclusive = true }
+                    }
+                },
+                onAdminUnlocked = {
+                    navController.navigate(DpFlixDestination.Admin.route) {
+                        popUpTo(DpFlixDestination.Lock.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        composable(TV_POST_LOCK_ROUTE) {
+            LaunchedEffect(Unit) {
+                val hasActivePlaylist = appRepository.playlists.observeActive().first() != null
+                val destination = if (hasActivePlaylist) DpFlixDestination.Home.route
+                else DpFlixDestination.Onboarding.route
+                navController.navigate(destination) {
+                    popUpTo(TV_POST_LOCK_ROUTE) { inclusive = true }
+                }
+            }
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+        }
+
+        composable(DpFlixDestination.Admin.route) {
+            AdminScreen(
+                accessRepository = accessRepository,
+                onEnterApp = {
+                    navController.navigate(TV_POST_LOCK_ROUTE) {
+                        popUpTo(DpFlixDestination.Admin.route) { inclusive = true }
+                    }
+                },
+                onBackToLock = {
+                    navController.navigate(DpFlixDestination.Lock.route) {
+                        popUpTo(DpFlixDestination.Admin.route) { inclusive = true }
+                    }
+                }
+            )
         }
 
         composable(DpFlixDestination.Onboarding.route) {
