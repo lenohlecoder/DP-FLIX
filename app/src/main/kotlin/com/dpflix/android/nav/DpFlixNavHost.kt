@@ -374,6 +374,7 @@ fun DpFlixNavHost(
 }
 
 private const val POST_SPLASH_ROUTE = "post_splash_routing"
+private const val POST_LOCK_ROUTE = "post_lock_routing"
 
 /**
  * Résout [channelId] via `AppRepository.channels.getById` (nouveau, 6c) avant d'afficher

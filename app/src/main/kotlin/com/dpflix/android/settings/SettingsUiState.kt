@@ -24,6 +24,7 @@ sealed class SettingsSection(val title: String) {
     object Playlists : SettingsSection("Playlists")
     object ChannelNumbering : SettingsSection("Numérotation des chaînes")
     object Diagnostic : SettingsSection("Diagnostic")
+    object UserGuide : SettingsSection("Guide d'utilisation")
 }
 
 /**

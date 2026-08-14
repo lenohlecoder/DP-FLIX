@@ -333,6 +333,7 @@ fun DpFlixTvNavHost(
 }
 
 private const val TV_POST_SPLASH_ROUTE = "tv_post_splash_routing"
+private const val TV_POST_LOCK_ROUTE = "tv_post_lock_routing"
 
 /**
  * Résout [channelId] avant d'afficher [PlayerScreen]. Équivalent TV de
