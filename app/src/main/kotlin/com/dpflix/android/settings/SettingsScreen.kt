@@ -141,6 +141,7 @@ fun SettingsScreen(
                         onDefaultPlaylistSelected = viewModel::setDefaultPlaylist,
                         onFilmsSeriesUrlChanged = viewModel::setFilmsSeriesUrl,
                         onFilmsSeriesUrl2Changed = viewModel::setFilmsSeriesUrl2,
+                        onFilmsSeriesUrl3Changed = viewModel::setFilmsSeriesUrl3,
                         onRequestReset = viewModel::requestReset
                     )
                     SettingsSection.Player -> PlayerSectionBody(
@@ -245,6 +246,7 @@ private fun GeneralSectionBody(
     onDefaultPlaylistSelected: (String?) -> Unit,
     onFilmsSeriesUrlChanged: (String?) -> Unit,
     onFilmsSeriesUrl2Changed: (String?) -> Unit,
+    onFilmsSeriesUrl3Changed: (String?) -> Unit,
     onRequestReset: () -> Unit
 ) {
     Column(
@@ -282,6 +284,13 @@ private fun GeneralSectionBody(
             currentUrl = uiState.generalSettings.filmsSeriesUrl2,
             defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL_2,
             onSave = onFilmsSeriesUrl2Changed
+        )
+
+        FilmsSeriesUrlSetting(
+            title = "Lien Films et Séries — Stream 3",
+            currentUrl = uiState.generalSettings.filmsSeriesUrl3,
+            defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL_3,
+            onSave = onFilmsSeriesUrl3Changed
         )
 
         ResetSetting(onRequestReset = onRequestReset)
@@ -376,12 +385,12 @@ private fun ResetSetting(onRequestReset: () -> Unit) {
  * Guide TV) : `OutlinedTextField` local + bouton "Enregistrer" plutôt qu'écriture
  * DataStore à chaque frappe (même raison que [EditPlaylistDialog] : éviter les problèmes
  * de curseur d'un champ ré-observé en continu). Champ vidé + "Enregistrer" restaure
- * [defaultUrl] (voir [SettingsViewModel.setFilmsSeriesUrl]/`setFilmsSeriesUrl2`, qui
- * traitent une chaîne vide comme `null`).
+ * [defaultUrl] (voir [SettingsViewModel.setFilmsSeriesUrl]/`setFilmsSeriesUrl2`/
+ * `setFilmsSeriesUrl3`, qui traitent une chaîne vide comme `null`).
  *
- * Réutilisé pour les deux liens ("Stream 1"/"Stream 2", French-Stream 08/08, voir
- * `FilmsSeriesStreamPickerDialog` côté accueil) : [title] et [defaultUrl] portent la
- * seule différence entre les deux appels.
+ * Réutilisé pour les trois liens ("Stream 1"/"Stream 2"/"Stream 3", French-Stream 08/08 +
+ * TheMovieBox 15/08, voir `FilmsSeriesStreamPickerDialog` côté accueil) : [title] et
+ * [defaultUrl] portent la seule différence entre les appels.
  */
 @Composable
 private fun FilmsSeriesUrlSetting(title: String, currentUrl: String?, defaultUrl: String, onSave: (String?) -> Unit) {

@@ -155,6 +155,7 @@ fun SettingsScreenTv(
                         onDefaultPlaylistSelected = viewModel::setDefaultPlaylist,
                         onFilmsSeriesUrlChanged = viewModel::setFilmsSeriesUrl,
                         onFilmsSeriesUrl2Changed = viewModel::setFilmsSeriesUrl2,
+                        onFilmsSeriesUrl3Changed = viewModel::setFilmsSeriesUrl3,
                         onRequestReset = viewModel::requestReset
                     )
                     SettingsSection.Player -> PlayerSectionBodyTv(
@@ -274,6 +275,7 @@ private fun GeneralSectionBodyTv(
     onDefaultPlaylistSelected: (String?) -> Unit,
     onFilmsSeriesUrlChanged: (String?) -> Unit,
     onFilmsSeriesUrl2Changed: (String?) -> Unit,
+    onFilmsSeriesUrl3Changed: (String?) -> Unit,
     onRequestReset: () -> Unit
 ) {
     Column(
@@ -312,6 +314,13 @@ private fun GeneralSectionBodyTv(
             currentUrl = uiState.generalSettings.filmsSeriesUrl2,
             defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL_2,
             onSave = onFilmsSeriesUrl2Changed
+        )
+
+        FilmsSeriesUrlSettingTv(
+            title = "Lien Films et Séries — Stream 3",
+            currentUrl = uiState.generalSettings.filmsSeriesUrl3,
+            defaultUrl = GeneralSettings.DEFAULT_FILMS_SERIES_URL_3,
+            onSave = onFilmsSeriesUrl3Changed
         )
 
         ResetSettingTv(onRequestReset = onRequestReset)
@@ -394,8 +403,9 @@ private fun ResetSettingTv(onRequestReset: () -> Unit) {
 /** Équivalent TV de `FilmsSeriesUrlSetting` (mobile, `SettingsScreen.kt`) — même logique
  *  brouillon local + "Enregistrer", `OutlinedTextField` (`material3`, pas `tv.material3`,
  *  qui n'a pas d'équivalent champ de texte — cohérent avec le reste de cet écran).
- *  Réutilisé pour les deux liens ("Stream 1"/"Stream 2", French-Stream 08/08) — voir la
- *  doc de son équivalent mobile pour le détail de [title]/[defaultUrl]. */
+ *  Réutilisé pour les trois liens ("Stream 1"/"Stream 2"/"Stream 3", French-Stream 08/08 +
+ *  TheMovieBox 15/08) — voir la doc de son équivalent mobile pour le détail de
+ *  [title]/[defaultUrl]. */
 @Composable
 private fun FilmsSeriesUrlSettingTv(title: String, currentUrl: String?, defaultUrl: String, onSave: (String?) -> Unit) {
     var draft by remember(currentUrl) { mutableStateOf(currentUrl.orEmpty()) }

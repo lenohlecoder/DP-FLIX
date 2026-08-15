@@ -33,6 +33,7 @@ internal object SettingsKeys {
     val DEFAULT_PLAYLIST_ID = stringPreferencesKey("general_default_playlist_id")
     val FILMS_SERIES_URL = stringPreferencesKey("general_films_series_url")
     val FILMS_SERIES_URL_2 = stringPreferencesKey("general_films_series_url_2")
+    val FILMS_SERIES_URL_3 = stringPreferencesKey("general_films_series_url_3")
     // Domaines d'exception (en plus du domaine principal) autorisés dans la navigation de
     // l'écran Films et Séries — voir [GeneralSettings.extraAllowedDomains].
     val EXTRA_ALLOWED_DOMAINS = stringSetPreferencesKey("general_extra_allowed_domains")

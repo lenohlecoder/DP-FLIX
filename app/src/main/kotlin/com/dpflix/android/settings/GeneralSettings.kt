@@ -36,8 +36,17 @@ data class GeneralSettings(
     val filmsSeriesUrl2: String? = null,
 
     /**
+     * Troisième lien "Stream 3" pour la section "Films et Séries" (TheMovieBox, 15/08) —
+     * même principe que [filmsSeriesUrl] / [filmsSeriesUrl2] (verrouillage de domaine
+     * identique, voir `com.dpflix.android.filmsseries.FilmsSeriesScreen`), une plateforme
+     * totalement indépendante des deux premières. `null`/vide = pas encore personnalisé,
+     * repli sur [DEFAULT_FILMS_SERIES_URL_3].
+     */
+    val filmsSeriesUrl3: String? = null,
+
+    /**
      * Domaines "exception" autorisés dans la navigation de l'écran Films et Séries, en plus
-     * du domaine principal ([filmsSeriesUrl]/[filmsSeriesUrl2]) — voir
+     * du domaine principal ([filmsSeriesUrl]/[filmsSeriesUrl2]/[filmsSeriesUrl3]) — voir
      * `com.dpflix.android.filmsseries.FilmsSeriesScreen` (verrouillage de domaine). Chaque
      * entrée autorise le domaine exact ainsi que ses sous-domaines (`*.domaine`), même règle
      * que le domaine principal — utile pour les CDN de téléchargement vers lesquels le site
@@ -55,9 +64,15 @@ data class GeneralSettings(
          *  [DEFAULT_FILMS_SERIES_URL] pour "Stream 1". */
         const val DEFAULT_FILMS_SERIES_URL_2 = "https://french-stream.one/"
 
-        /** CDN de téléchargement vers lequel purstream.store redirige lui-même (lien
-         *  "Télécharger" propre au site) — sans cette exception, ce lien serait bloqué par
-         *  le verrouillage de domaine avant même d'atteindre le vrai flux vidéo. */
-        val DEFAULT_EXTRA_ALLOWED_DOMAINS = setOf("vidzy.cc")
+        /** Valeur par défaut codée en dur pour "Stream 3" (TheMovieBox), même rôle que
+         *  [DEFAULT_FILMS_SERIES_URL] pour "Stream 1". */
+        const val DEFAULT_FILMS_SERIES_URL_3 = "https://themoviebox.org/"
+
+        /** CDN / pages de téléchargement vers lesquels les sites Films et Séries
+         *  redirigent eux-mêmes (lien "Télécharger") — sans ces exceptions, ces liens
+         *  seraient bloqués par le verrouillage de domaine avant d'atteindre le vrai flux.
+         *  - vidzy.cc : Stream 1 (purstream.store)
+         *  - videodownloader.site : Stream 3 (themoviebox.org) */
+        val DEFAULT_EXTRA_ALLOWED_DOMAINS = setOf("vidzy.cc", "videodownloader.site")
     }
 }

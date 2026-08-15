@@ -25,16 +25,18 @@ import androidx.tv.material3.Text as TvText
 import com.dpflix.android.ui.theme.DpFlixColors
 
 /**
- * Sélecteur "Stream 1"/"Stream 2" pour la section Films et Séries (French-Stream, 08/08) —
- * affiché au clic sur le bouton d'accès à l'accueil (`HomeScreen`/`HomeScreenTv`), avant de
- * naviguer vers [FilmsSeriesScreen]/[FilmsSeriesScreenTv] avec le `streamIndex` choisi.
+ * Sélecteur "Stream 1"/"Stream 2"/"Stream 3" pour la section Films et Séries
+ * (French-Stream, TheMovieBox, 08/08 + 15/08) — affiché au clic sur le bouton d'accès
+ * à l'accueil (`HomeScreen`/`HomeScreenTv`), avant de naviguer vers
+ * [FilmsSeriesScreen]/[FilmsSeriesScreenTv] avec le `streamIndex` choisi.
  *
- * Les deux options sont toujours actives : "Stream 1" et "Stream 2" ont chacun un lien par
- * défaut codé en dur ([com.dpflix.android.settings.GeneralSettings.DEFAULT_FILMS_SERIES_URL]/
- * [com.dpflix.android.settings.GeneralSettings.DEFAULT_FILMS_SERIES_URL_2]) — aucune
+ * Les trois options sont toujours actives : "Stream 1", "Stream 2" et "Stream 3" ont
+ * chacun un lien par défaut codé en dur
+ * ([com.dpflix.android.settings.GeneralSettings.DEFAULT_FILMS_SERIES_URL]/
+ * [com.dpflix.android.settings.GeneralSettings.DEFAULT_FILMS_SERIES_URL_2]/
+ * [com.dpflix.android.settings.GeneralSettings.DEFAULT_FILMS_SERIES_URL_3]) — aucune
  * configuration préalable dans Réglages n'est nécessaire pour que l'une ou l'autre
- * fonctionne, contrairement à une éventuelle troisième plateforme qui n'aurait pas de repli
- * connu.
+ * fonctionne.
  *
  * Deux variantes, même raison que le reste de la navigation (mobile `material3` vs TV
  * `androidx.tv.material3`, focus D-pad) : [FilmsSeriesStreamPickerDialog] (mobile,
@@ -60,6 +62,9 @@ fun FilmsSeriesStreamPickerDialog(
                 TextButton(onClick = { onSelectStream(2) }) {
                     Text("Stream 2")
                 }
+                TextButton(onClick = { onSelectStream(3) }) {
+                    Text("Stream 3")
+                }
             }
         },
         dismissButton = {
@@ -74,7 +79,7 @@ fun FilmsSeriesStreamPickerDialog(
  * Équivalent TV de [FilmsSeriesStreamPickerDialog] (voir sa doc pour le contexte général) :
  * overlay plein écran avec focus D-pad posé sur "Stream 1" à l'ouverture, plutôt qu'un
  * `AlertDialog` (pas d'équivalent `tv.material3` adapté à la télécommande) — même esprit
- * que `PlayerChannelMenuOverlay`. Les deux options restent toujours actives, pour la même
+ * que `PlayerChannelMenuOverlay`. Les trois options restent toujours actives, pour la même
  * raison que côté mobile (lien par défaut codé en dur pour chacune).
  */
 @Composable
@@ -110,6 +115,9 @@ fun FilmsSeriesStreamPickerTv(
             }
             Button(onClick = { onSelectStream(2) }) {
                 TvText("Stream 2")
+            }
+            Button(onClick = { onSelectStream(3) }) {
+                TvText("Stream 3")
             }
         }
     }

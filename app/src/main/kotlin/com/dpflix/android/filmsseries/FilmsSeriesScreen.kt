@@ -93,12 +93,14 @@ import kotlin.math.roundToInt
 
 /**
  * Section "Films et Séries" (remplace l'ancien Guide TV, retiré le 25 juillet 2026 — voir
- * `DpFlixDestination`) : navigateur intégré verrouillé sur une plateforme externe. Deux
- * plateformes indépendantes possibles ("Stream 1"/"Stream 2", French-Stream, 08/08) —
- * [streamIndex] sélectionne laquelle : 1 → [GeneralSettings.filmsSeriesUrl]/
- * [GeneralSettings.DEFAULT_FILMS_SERIES_URL], 2 → [GeneralSettings.filmsSeriesUrl2]/
- * [GeneralSettings.DEFAULT_FILMS_SERIES_URL_2]. Choisi à l'accueil via
- * `FilmsSeriesStreamPickerDialog`, transporté par `DpFlixDestination.FilmsSeries`.
+ * `DpFlixDestination`) : navigateur intégré verrouillé sur une plateforme externe. Trois
+ * plateformes indépendantes possibles ("Stream 1"/"Stream 2"/"Stream 3", French-Stream +
+ * TheMovieBox, 08/08 + 15/08) — [streamIndex] sélectionne laquelle :
+ * 1 → [GeneralSettings.filmsSeriesUrl]/[GeneralSettings.DEFAULT_FILMS_SERIES_URL],
+ * 2 → [GeneralSettings.filmsSeriesUrl2]/[GeneralSettings.DEFAULT_FILMS_SERIES_URL_2],
+ * 3 → [GeneralSettings.filmsSeriesUrl3]/[GeneralSettings.DEFAULT_FILMS_SERIES_URL_3].
+ * Choisi à l'accueil via `FilmsSeriesStreamPickerDialog`, transporté par
+ * `DpFlixDestination.FilmsSeries`.
  *
  * Réutilisé côté mobile ET TV — voir `FilmsSeriesScreenTv.kt` pour le petit wrapper qui
  * l'expose sous ce nom côté TV, avec [showVirtualCursor] activé (§ ci-dessous).
@@ -159,10 +161,10 @@ fun FilmsSeriesScreen(
     modifier: Modifier = Modifier
 ) {
     val generalSettings by appRepository.settings.generalSettings.collectAsState(initial = null)
-    val url = if (streamIndex == 2) {
-        generalSettings?.filmsSeriesUrl2 ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL_2
-    } else {
-        generalSettings?.filmsSeriesUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
+    val url = when (streamIndex) {
+        2 -> generalSettings?.filmsSeriesUrl2 ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL_2
+        3 -> generalSettings?.filmsSeriesUrl3 ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL_3
+        else -> generalSettings?.filmsSeriesUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
     }
 
     val context = LocalContext.current
@@ -575,7 +577,7 @@ private fun DetectedStreamsDialog(
  * Gestion des domaines "exception" (§Réglages Films et Séries, 12 août 2026) : liste des
  * domaines, en plus du site principal, autorisés dans la navigation de la WebView verrouillée
  * — typiquement le CDN de téléchargement vers lequel le site redirige lui-même via son propre
- * lien "Télécharger" (ex. vidzy.cc). Ajout/suppression persistés immédiatement via
+ * lien "Télécharger" (ex. vidzy.cc, videodownloader.site). Ajout/suppression persistés immédiatement via
  * [onAddDomain]/[onRemoveDomain] (voir `GeneralSettings.extraAllowedDomains`).
  */
 @Composable
@@ -663,7 +665,7 @@ private fun ExceptionDomainsDialog(
                     OutlinedTextField(
                         value = newDomainText,
                         onValueChange = { newDomainText = it },
-                        label = { Text("ex. vidzy.cc") },
+                        label = { Text("ex. vidzy.cc, videodownloader.site") },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )

@@ -215,6 +215,16 @@ class SettingsViewModel(
         }
     }
 
+    /** Troisième lien "Stream 3" (TheMovieBox, 15/08) : même logique que [setFilmsSeriesUrl],
+     *  `null`/vide remet la valeur par défaut codée en dur ([GeneralSettings.DEFAULT_FILMS_SERIES_URL_3]). */
+    fun setFilmsSeriesUrl3(value: String?) {
+        viewModelScope.launch {
+            appRepository.settings.updateGeneralSettings {
+                it.copy(filmsSeriesUrl3 = value?.trim()?.takeIf { trimmed -> trimmed.isNotEmpty() })
+            }
+        }
+    }
+
     // --- §5.1 Lecteur (étape 6e) ---
     // Toutes ces valeurs sont globales à l'app (voir la doc de `PlayerSettings`) et ne
     // prennent effet que sur la prochaine lecture ouverte : `PlayerController` (5b/5c)
