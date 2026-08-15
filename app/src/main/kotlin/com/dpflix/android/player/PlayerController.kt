@@ -309,6 +309,20 @@ class PlayerController(
      */
     private val controllerScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /**
+     * Fix (2026-08-12) — Portée dédiée à la purge disque best-effort de
+     * [cancelLivePipelineAndPurgeSessionCache], délibérément INDÉPENDANTE de
+     * [controllerScope] : cette dernière est annulée dans [release] juste après l'appel à
+     * [cancelLivePipelineAndPurgeSessionCache], ce qui tuerait la coroutine de purge avant
+     * (ou pendant) son exécution si elle y était lancée — donc `release()` ne purgerait
+     * plus jamais rien en pratique, régression silencieuse. Ce scope n'est volontairement
+     * jamais annulé par ce contrôleur : chaque purge doit pouvoir aller au bout même après
+     * la disparition de l'écran lecteur qui l'a déclenchée (fire-and-forget, cohérent avec
+     * le caractère "best-effort" déjà documenté sur la purge elle-même) ; la coroutine se
+     * termine et libère ses ressources d'elle-même une fois la purge terminée.
+     */
+    private val cachePurgeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
     /** Tâche du watchdog en cours (une seule à la fois — voir [scheduleWatchdog]/[cancelWatchdog]). */
     private var watchdogJob: Job? = null
 
@@ -393,6 +407,14 @@ class PlayerController(
     private var livePrefetchSessionOriginMs: Long? = null
 
     /**
+     * Clé de cache disque de la session LIVE courante (même schéma que [liveAwareCacheKey]).
+     * Conservée explicitement pour pouvoir [Cache.removeResource] au zap / release, sans
+     * dépendre de [livePrefetchSessionOriginMs] qui est remis à null en début de
+     * [playChannel]/[playReplay] avant même que le purge ne tourne.
+     */
+    private var activeLiveSessionCacheKey: String? = null
+
+    /**
      * Fix (revue 2026-08-11, bug cache LIVE périmé) — support Range HTTP confirmé pour la
      * session LIVE en cours. `true` par défaut (optimiste) tant qu'aucune sonde n'a
      * infirmé le Range ([probeRangeSupport]) ; passe à `false` dès qu'une réponse ne
@@ -431,6 +453,71 @@ class PlayerController(
             "$uri#live-session-$originMs"
         } else {
             uri
+        }
+    }
+
+    /**
+     * Zap / sortie du lecteur : annule immédiatement prefetcher + prebuffer initial, puis
+     * purge les octets disque de la session LIVE précédente ([Cache.removeResource]).
+     *
+     * Avant ce correctif, un zap ne faisait qu'annuler le prebuffer initial et poser une
+     * nouvelle clé de session — les octets de l'ancienne chaîne restaient dans le
+     * [SimpleCache] jusqu'à éviction LRU. Ici la libération est explicite et immédiate
+     * (RAM côté ExoPlayer via stop/setMediaItem ultérieur ; disque via removeResource).
+     *
+     * Fix (2026-08-12) — Étape purge async : l'annulation des jobs et la capture/remise à
+     * `null` des clés de session restent synchrones (aucune I/O, coût négligeable — la
+     * fonction reste volontairement non-`suspend`, appelable telle quelle depuis
+     * [playChannel]/[playReplay]/[release]). Seul le VRAI travail disque
+     * ([Cache.removeResource], potentiellement coûteux si la session précédente a beaucoup
+     * de segments en cache) est déporté sur [cachePurgeScope] (`Dispatchers.IO`), comme
+     * partout ailleurs dans ce fichier où le cache disque est touché (voir
+     * [runInitialLivePrebuffer], [runPrefetchTick], [prefetchLiveEpisodeChunk]) — avant ce
+     * fix, cette purge s'exécutait en synchrone sur le thread appelant (thread UI à chaque
+     * zap), seule fonction du fichier à déroger à cette règle.
+     *
+     * Purge lancée sur [cachePurgeScope] plutôt que [controllerScope] : ce dernier est
+     * annulé dans [release] juste après cet appel, ce qui tuerait la purge avant qu'elle
+     * ait pu s'exécuter sur le chemin de sortie — voir la doc de [cachePurgeScope].
+     *
+     * Best-effort : une erreur I/O sur le cache ne doit jamais bloquer le zap, ni être
+     * visible de l'appelant (déjà vrai avant ce fix, toujours vrai maintenant que l'échec
+     * éventuel se produit sur une coroutine détachée).
+     */
+    private fun cancelLivePipelineAndPurgeSessionCache() {
+        prefetcherJob?.cancel()
+        prefetcherJob = null
+        initialPrebufferJob?.cancel()
+        initialPrebufferJob = null
+
+        val keys = linkedSetOf<String>()
+        activeLiveSessionCacheKey?.let { keys.add(it) }
+        val originMs = livePrefetchSessionOriginMs
+        val uri = currentPlaybackUri
+        if (originMs != null && uri != null) {
+            keys.add("$uri#live-session-$originMs")
+        }
+        activeLiveSessionCacheKey = null
+        livePrefetchSessionOriginMs = null
+
+        if (keys.isEmpty()) return
+        if (!settings.hybridBufferEnabled) return
+
+        // Capture locale de [settings]/[context] : lus ici sur le thread appelant (état
+        // au moment du zap), pas relus depuis la coroutine différée pour éviter de
+        // dépendre d'un `settings` qui pourrait déjà avoir changé (updateSettings) au
+        // moment où la purge s'exécute réellement.
+        val maxSizeBytes = calculateDynamicDiskCacheMaxSizeBytes(settings)
+        cachePurgeScope.launch {
+            try {
+                val cache = MediaCacheProvider.get(context, maxSizeBytes)
+                for (key in keys) {
+                    cache.removeResource(key)
+                }
+            } catch (_: Exception) {
+                // Purge best-effort : un échec disque ne doit jamais remonter, ni bloquer
+                // quoi que ce soit — la coroutine est de toute façon détachée de l'appelant.
+            }
         }
     }
 
@@ -1374,12 +1461,12 @@ class PlayerController(
         _playbackMode.value = PlaybackMode.LIVE
         _replayProgram.value = null
         cancelWatchdog()
+        // Zap LIVE = arrêt immédiat du pipeline de l'ancienne chaîne + purge disque
+        // explicite de sa session (plus seulement nouvelle clé + LRU).
+        cancelLivePipelineAndPurgeSessionCache()
         // Étape 3a/6a : zap LIVE = nouveau pipeline complet. L'état InitialPrebuffering
         // (ou Buffering en repli) est posé par startPlayback selon que le prebuffer
         // initial s'applique ou non.
-        initialPrebufferJob?.cancel()
-        initialPrebufferJob = null
-        livePrefetchSessionOriginMs = null
         // 8d6 : les pistes de la chaine precedente n'ont plus cours - remis a vide en
         // attendant que onTracksChanged reannonce les pistes du nouveau flux (evite
         // d'afficher brievement des resolutions qui ne correspondent plus a rien).
@@ -1466,10 +1553,9 @@ class PlayerController(
         _playbackMode.value = PlaybackMode.REPLAY
         _replayProgram.value = program
         cancelWatchdog()
+        // Sortie éventuelle d'un LIVE : purge session précédente + annulation jobs.
+        cancelLivePipelineAndPurgeSessionCache()
         // Étape 1 / 6b : le replay ne fait jamais d'initial prebuffer — démarrage immédiat.
-        initialPrebufferJob?.cancel()
-        initialPrebufferJob = null
-        livePrefetchSessionOriginMs = null
         _uiState.value = PlayerUiState.Buffering
         _availableQualities.value = emptyList()
         setQualityOverride(null)
@@ -1546,7 +1632,10 @@ class PlayerController(
 
         if (shouldInitialPrebuffer) {
             // Étape 3a/3b : bloquer prepare/play jusqu'à seuil atteint (ou timeout 3c).
-            livePrefetchSessionOriginMs = SystemClock.elapsedRealtime()
+            val sessionOriginMs = SystemClock.elapsedRealtime()
+            livePrefetchSessionOriginMs = sessionOriginMs
+            // Clé de session figée pour lecture/prefetch ET purge au prochain zap.
+            activeLiveSessionCacheKey = "$uri#live-session-$sessionOriginMs"
             // Fix (revue 2026-08-11, hypothèse Range HTTP) : nouvelle session LIVE =
             // nouvelle chance pour le panel, on repart optimiste ; [runInitialLivePrebuffer]
             // réévalue via [probeRangeSupport] si le seuil dépasse un chunk.
@@ -1563,6 +1652,7 @@ class PlayerController(
         // reconnexion / fallback conteneur).
         if (!skipInitialPrebuffer) {
             livePrefetchSessionOriginMs = null
+            activeLiveSessionCacheKey = null
         }
         _uiState.value = PlayerUiState.Buffering
         // Fix (2026-08-10) : voir la doc plus haut — le watchdog s'arme ici, au moment où
@@ -1736,6 +1826,11 @@ class PlayerController(
             exoPlayer.seekTo(0L)
         }
         exoPlayer.playWhenReady = true
+        // Après un zap, [cancelLivePipelineAndPurgeSessionCache] a annulé le prefetcher.
+        // Sur un zap LIVE→LIVE l'ExoPlayer n'est pas reconstruit, donc [startPrefetcher]
+        // (appelé uniquement dans buildExoPlayer) ne tournerait plus : on le relance ici
+        // à chaque commit de lecture pour garantir l'avance synchronisée.
+        startPrefetcher(exoPlayer)
     }
 
     /**
@@ -2368,15 +2463,27 @@ class PlayerController(
             if (!liveRangeSupportConfirmed) return
             // --- Modèle « épisode » LIVE : blocs fixes de initialPrebufferSeconds ---
             // Ex. 10s : bloc 0 [0,10), bloc 1 [10,20), bloc 2 [20,30)...
-            // On ne télécharge qu'UN bloc d'avance. Dès qu'il est complet (présent en
-            // cache), le tick suivant enchaîne sur le suivant — comme un épisode livré
-            // puis le téléchargement du suivant qui repart à zéro sur le nouveau bloc.
+            // Avance synchronisée : on vise toujours au moins
+            // max(initialPrebufferSeconds, bufferSafetyMarginSeconds) d'avance pure
+            // devant la position de lecture (en plus du tampon RAM déjà compté dans
+            // alreadyCoveredMs via totalBufferedDuration). Dès qu'un bloc est complet,
+            // le tick suivant enchaîne sur le suivant.
             val chunkMs = settings.initialPrebufferSeconds * 1000L
-            // Premier bloc qui n'est pas encore entièrement couvert par la lecture+tampon.
+            val leadTargetMs = maxOf(
+                chunkMs,
+                settings.bufferSafetyMarginSeconds * 1000L
+            )
+            // Couverture cible = position de lecture + avance voulue (pas seulement
+            // alreadyCovered : si le tampon RAM est mince, on pousse quand même le
+            // téléchargement pour reconstituer l'avance).
+            val targetCoverageMs = positionMs + leadTargetMs
+            if (alreadyCoveredMs >= targetCoverageMs) return
+            // Premier bloc qui n'est pas encore entièrement couvert.
             val chunkIndex = alreadyCoveredMs / chunkMs
             val chunkStartMs = chunkIndex * chunkMs
-            val chunkEndMs = chunkStartMs + chunkMs
-            // Ne re-télécharger que ce qui manque dans ce bloc.
+            // On peut étendre jusqu'au max(fin de ce bloc, targetCoverage) pour combler
+            // l'avance en un tick si le réseau le permet, sans dépasser un bloc + lead.
+            val chunkEndMs = maxOf(chunkStartMs + chunkMs, targetCoverageMs)
             val downloadFromMs = alreadyCoveredMs.coerceAtLeast(chunkStartMs)
             prefetchLiveEpisodeChunk(uri, downloadFromMs, chunkEndMs)
             return
@@ -2653,10 +2760,7 @@ class PlayerController(
     fun release() {
         cancelWatchdog()
         bufferManagerJob?.cancel()
-        prefetcherJob?.cancel()
-        initialPrebufferJob?.cancel()
-        initialPrebufferJob = null
-        livePrefetchSessionOriginMs = null
+        cancelLivePipelineAndPurgeSessionCache()
         controllerScope.cancel()
         exoPlayer.release()
     }
