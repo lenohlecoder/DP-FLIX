@@ -1,9 +1,12 @@
 package com.dpflix.android.filmsseries
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -46,12 +49,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import android.widget.Toast
+import com.dpflix.android.R
 import com.dpflix.android.db.entity.FilmDownloadEntity
 import com.dpflix.android.db.entity.FilmDownloadFolderEntity
 import com.dpflix.android.filmsseries.download.FilmDownloadManager
@@ -93,35 +99,52 @@ fun DownloadsScreen(
 
     val visibleItems = items.filter { it.folderId == currentFolder?.id }
 
-    Scaffold(
-        modifier = modifier.fillMaxSize(),
-        containerColor = Color.Black,
-        topBar = {
-            TopAppBar(
-                title = { Text(currentFolder?.name ?: "Mes téléchargements") },
-                navigationIcon = {
-                    IconButton(onClick = {
-                        if (currentFolder != null) currentFolder = null else onBack()
-                    }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = Color.Black,
-                    titleContentColor = Color.White,
-                    navigationIconContentColor = Color.White,
-                    actionIconContentColor = Color.White
+    // Thème uniquement : fond vagues rouges. Logique (tap pour lire, dossiers, etc.) inchangée.
+    Box(modifier = modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.bg_downloads_waves),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.45f))
+        )
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            containerColor = Color.Transparent,
+            topBar = {
+                TopAppBar(
+                    title = { Text(currentFolder?.name ?: "Mes téléchargements") },
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            if (currentFolder != null) currentFolder = null else onBack()
+                        }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(
+                        containerColor = Color.Transparent,
+                        titleContentColor = Color.White,
+                        navigationIconContentColor = Color.White,
+                        actionIconContentColor = Color.White
+                    )
                 )
-            )
-        },
-        floatingActionButton = {
-            if (currentFolder == null) {
-                FloatingActionButton(onClick = { showCreateFolderDialog = true }) {
-                    Icon(Icons.Filled.CreateNewFolder, contentDescription = "Nouveau dossier")
+            },
+            floatingActionButton = {
+                if (currentFolder == null) {
+                    FloatingActionButton(
+                        onClick = { showCreateFolderDialog = true },
+                        containerColor = Color(0xFFE50914),
+                        contentColor = Color.White
+                    ) {
+                        Icon(Icons.Filled.CreateNewFolder, contentDescription = "Nouveau dossier")
+                    }
                 }
             }
-        }
-    ) { padding ->
+        ) { padding ->
         if (folders.isEmpty() && visibleItems.isEmpty()) {
             Column(
                 modifier = Modifier
@@ -296,6 +319,7 @@ fun DownloadsScreen(
             }
         )
     }
+    } // Box thème
 }
 
 @Composable
