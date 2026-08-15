@@ -34,6 +34,8 @@ import androidx.tv.material3.Text
 import com.dpflix.android.filmsseries.DownloadsScreen
 import com.dpflix.android.filmsseries.FilmsSeriesScreenTv
 import com.dpflix.android.player.LocalFilmPlayerScreen
+import com.dpflix.android.companion.InfosWebViewScreen
+import com.dpflix.android.companion.StartupVideoScreen
 import com.dpflix.android.home.HomeScreenTv
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ReplayProgram
@@ -137,12 +139,7 @@ fun DpFlixTvNavHost(
                 val destination = when {
                     !accessRepository.hasValidSession() ->
                         DpFlixDestination.Lock.route
-                    else -> {
-                        val hasActivePlaylist =
-                            appRepository.playlists.observeActive().first() != null
-                        if (hasActivePlaylist) DpFlixDestination.Home.route
-                        else DpFlixDestination.Onboarding.route
-                    }
+                    else -> DpFlixDestination.StartupVideo.route
                 }
                 navController.navigate(destination) {
                     popUpTo(TV_POST_SPLASH_ROUTE) { inclusive = true }
@@ -165,10 +162,7 @@ fun DpFlixTvNavHost(
 
         composable(TV_POST_LOCK_ROUTE) {
             LaunchedEffect(Unit) {
-                val hasActivePlaylist = appRepository.playlists.observeActive().first() != null
-                val destination = if (hasActivePlaylist) DpFlixDestination.Home.route
-                else DpFlixDestination.Onboarding.route
-                navController.navigate(destination) {
+                navController.navigate(DpFlixDestination.StartupVideo.route) {
                     popUpTo(TV_POST_LOCK_ROUTE) { inclusive = true }
                 }
             }
@@ -186,6 +180,36 @@ fun DpFlixTvNavHost(
             )
         }
 
+        composable(DpFlixDestination.StartupVideo.route) {
+            StartupVideoScreen(
+                appRepository = appRepository,
+                onFinished = {
+                    navController.navigate(TV_POST_STARTUP_VIDEO_ROUTE) {
+                        popUpTo(DpFlixDestination.StartupVideo.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        composable(TV_POST_STARTUP_VIDEO_ROUTE) {
+            LaunchedEffect(Unit) {
+                val hasActivePlaylist = appRepository.playlists.observeActive().first() != null
+                val dest = if (hasActivePlaylist) DpFlixDestination.Home.route
+                else DpFlixDestination.Onboarding.route
+                navController.navigate(dest) {
+                    popUpTo(TV_POST_STARTUP_VIDEO_ROUTE) { inclusive = true }
+                }
+            }
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black))
+        }
+
+        composable(DpFlixDestination.CompanionInfos.route) {
+            InfosWebViewScreen(
+                appRepository = appRepository,
+                onBack = { navController.popBackStack() }
+            )
+        }
+
         composable(DpFlixDestination.Home.route) {
             HomeScreenTv(
                 appRepository = appRepository,
@@ -195,6 +219,9 @@ fun DpFlixTvNavHost(
                 },
                 onNavigateToFilmDownloads = {
                     navController.navigate(DpFlixDestination.FilmDownloads.route)
+                },
+                onNavigateToInfos = {
+                    navController.navigate(DpFlixDestination.CompanionInfos.route)
                 },
                 onNavigateToPlayerFullscreen = { channelId ->
                     navController.navigate(DpFlixDestination.PlayerFullscreen.createRoute(channelId))
@@ -340,6 +367,7 @@ fun DpFlixTvNavHost(
 
 private const val TV_POST_SPLASH_ROUTE = "tv_post_splash_routing"
 private const val TV_POST_LOCK_ROUTE = "tv_post_lock_routing"
+private const val TV_POST_STARTUP_VIDEO_ROUTE = "tv_post_startup_video_routing"
 
 /**
  * Résout [channelId] avant d'afficher [PlayerScreen]. Équivalent TV de

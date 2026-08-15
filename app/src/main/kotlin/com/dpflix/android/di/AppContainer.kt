@@ -2,6 +2,7 @@ package com.dpflix.android.di
 
 import android.content.Context
 import com.dpflix.android.db.AppDatabase
+import com.dpflix.android.companion.CompanionRepository
 import com.dpflix.android.filmsseries.download.FilmDownloadManager
 import com.dpflix.android.network.XtreamClient
 import com.dpflix.android.repository.AppRepository
@@ -57,7 +58,8 @@ class AppContainer(context: Context) {
             context.applicationContext,
             database.filmDownloadDao(),
             database.filmDownloadFolderDao()
-        )
+        ),
+        companion = CompanionRepository()
     )
 
     /** Verrou d'accès 100 % local à l'appareil (Porushd1…12, Mamanzefa). */

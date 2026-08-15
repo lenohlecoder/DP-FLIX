@@ -46,7 +46,8 @@ fun Preferences.toGeneralSettings(): GeneralSettings = GeneralSettings(
     // la liste) → repli sur la valeur par défaut, pas sur un set vide (sinon vidzy.cc
     // disparaîtrait silencieusement pour tout le monde tant que personne n'a rien ajouté).
     extraAllowedDomains = this[SettingsKeys.EXTRA_ALLOWED_DOMAINS]
-        ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS
+        ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
+    lastSeenInfosVersion = this[SettingsKeys.LAST_SEEN_INFOS_VERSION] ?: 0
 )
 
 fun GeneralSettings.writeTo(prefs: MutablePreferences) {
@@ -79,4 +80,5 @@ fun GeneralSettings.writeTo(prefs: MutablePreferences) {
     // aux champs ci-dessus, un set vide est une valeur légitime et distincte de "jamais touché"
     // (ce dernier cas, lui, n'écrit jamais cette clé — voir [toGeneralSettings]).
     prefs[SettingsKeys.EXTRA_ALLOWED_DOMAINS] = extraAllowedDomains
+    prefs[SettingsKeys.LAST_SEEN_INFOS_VERSION] = lastSeenInfosVersion
 }

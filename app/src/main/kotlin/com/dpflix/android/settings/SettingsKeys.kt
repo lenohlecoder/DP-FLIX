@@ -34,6 +34,8 @@ internal object SettingsKeys {
     val FILMS_SERIES_URL = stringPreferencesKey("general_films_series_url")
     val FILMS_SERIES_URL_2 = stringPreferencesKey("general_films_series_url_2")
     val FILMS_SERIES_URL_3 = stringPreferencesKey("general_films_series_url_3")
+    // Site compagnon : dernière infosVersion vue (badge cloche accueil).
+    val LAST_SEEN_INFOS_VERSION = intPreferencesKey("companion_last_seen_infos_version")
     // Domaines d'exception (en plus du domaine principal) autorisés dans la navigation de
     // l'écran Films et Séries — voir [GeneralSettings.extraAllowedDomains].
     val EXTRA_ALLOWED_DOMAINS = stringSetPreferencesKey("general_extra_allowed_domains")

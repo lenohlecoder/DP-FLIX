@@ -1,5 +1,6 @@
 package com.dpflix.android.repository
 
+import com.dpflix.android.companion.CompanionRepository
 import com.dpflix.android.filmsseries.download.FilmDownloadManager
 import kotlinx.coroutines.flow.first
 
@@ -29,7 +30,9 @@ class AppRepository(
      *  fichiers privés + une table séparée, gérés explicitement par l'utilisateur depuis
      *  l'écran "Mes téléchargements", pas balayés par une réinitialisation générale des
      *  playlists/réglages. */
-    val filmDownloads: FilmDownloadManager
+    val filmDownloads: FilmDownloadManager,
+    /** Site compagnon Netlify (status, infos, vidéo startup). */
+    val companion: CompanionRepository
 ) {
 
     /**

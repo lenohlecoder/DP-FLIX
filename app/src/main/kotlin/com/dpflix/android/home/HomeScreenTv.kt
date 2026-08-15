@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -141,6 +142,7 @@ fun HomeScreenTv(
     onNavigateToSettings: () -> Unit,
     onNavigateToFilmsSeries: (streamIndex: Int) -> Unit,
     onNavigateToFilmDownloads: () -> Unit,
+    onNavigateToInfos: () -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -149,10 +151,21 @@ fun HomeScreenTv(
     )
     val uiState by viewModel.uiState.collectAsState()
 
+    // Site compagnon : badge cloche si nouvelles infos.
+    val generalSettings by appRepository.settings.generalSettings.collectAsState(initial = null)
+    var remoteInfosVersion by remember { mutableStateOf<Int?>(null) }
+    val showInfosBadge = remoteInfosVersion != null &&
+        generalSettings != null &&
+        remoteInfosVersion!! > generalSettings!!.lastSeenInfosVersion
+    LaunchedEffect(Unit) {
+        remoteInfosVersion = appRepository.companion.getStatus()?.infosVersion
+    }
+
     // Sélecteur "Stream 1"/"Stream 2" (French-Stream, 08/08) — voir la doc équivalente
     // côté mobile (HomeScreen.kt).
     var showFilmsSeriesPicker by remember { mutableStateOf(false) }
 
+    val infosFocusRequester = remember { FocusRequester() }
     val filmsSeriesFocusRequester = remember { FocusRequester() }
     val filmDownloadsFocusRequester = remember { FocusRequester() }
     val settingsFocusRequester = remember { FocusRequester() }
@@ -229,6 +242,16 @@ fun HomeScreenTv(
                                 imageVector = Icons.Filled.Search,
                                 contentDescription = "Rechercher une chaîne",
                                 tint = DpFlixColors.OnBackground
+                            )
+                        }
+                        Button(
+                            onClick = onNavigateToInfos,
+                            modifier = Modifier
+                                .focusRequester(infosFocusRequester)
+                                .padding(start = 12.dp)
+                        ) {
+                            Text(
+                                if (showInfosBadge) "Infos ●" else "Infos"
                             )
                         }
                         Button(

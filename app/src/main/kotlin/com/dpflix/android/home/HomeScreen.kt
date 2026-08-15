@@ -26,9 +26,12 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Movie
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -40,6 +43,8 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
@@ -92,6 +97,7 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToFilmsSeries: (streamIndex: Int) -> Unit,
     onNavigateToFilmDownloads: () -> Unit,
+    onNavigateToInfos: () -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -99,6 +105,18 @@ fun HomeScreen(
         factory = remember { HomeViewModelFactory(appRepository) }
     )
     val uiState by viewModel.uiState.collectAsState()
+
+    // Site compagnon : badge cloche si nouvelles infos programme.
+    val generalSettings by appRepository.settings.generalSettings.collectAsState(initial = null)
+    var remoteInfosVersion by remember { mutableStateOf<Int?>(null) }
+    val showInfosBadge = remoteInfosVersion != null &&
+        generalSettings != null &&
+        remoteInfosVersion!! > generalSettings!!.lastSeenInfosVersion
+
+    LaunchedEffect(Unit) {
+        val status = appRepository.companion.getStatus()
+        remoteInfosVersion = status?.infosVersion
+    }
 
     // Sélecteur "Stream 1"/"Stream 2" (French-Stream, 08/08) : état purement local à cet
     // écran, affiché au clic sur le bouton Films et Séries avant de naviguer — voir
@@ -159,6 +177,21 @@ fun HomeScreen(
                         fontWeight = FontWeight.Bold
                     )
                     Row {
+                        IconButton(onClick = onNavigateToInfos) {
+                            BadgedBox(
+                                badge = {
+                                    if (showInfosBadge) {
+                                        Badge()
+                                    }
+                                }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Filled.Notifications,
+                                    contentDescription = "Infos programme",
+                                    tint = DpFlixColors.OnBackground
+                                )
+                            }
+                        }
                         IconButton(onClick = { showFilmsSeriesPicker = true }) {
                             Icon(
                                 imageVector = Icons.Filled.Movie,

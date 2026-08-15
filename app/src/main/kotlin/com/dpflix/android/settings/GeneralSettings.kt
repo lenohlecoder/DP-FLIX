@@ -54,7 +54,13 @@ data class GeneralSettings(
      * Modifiable depuis l'icône réglages de l'écran Films et Séries (ajout/suppression),
      * pré-rempli avec [DEFAULT_EXTRA_ALLOWED_DOMAINS] tant que l'utilisateur n'y a pas touché.
      */
-    val extraAllowedDomains: Set<String> = DEFAULT_EXTRA_ALLOWED_DOMAINS
+    val extraAllowedDomains: Set<String> = DEFAULT_EXTRA_ALLOWED_DOMAINS,
+
+    /**
+     * Dernière [CompanionStatus.infosVersion] consultée via la cloche (site compagnon).
+     * Badge rouge sur l'accueil tant que status.infosVersion > cette valeur.
+     */
+    val lastSeenInfosVersion: Int = 0
 ) {
     companion object {
         /** Valeur par défaut codée en dur pour "Stream 1", restaurée si le champ Réglages est vidé. */

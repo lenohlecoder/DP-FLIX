@@ -58,6 +58,12 @@ sealed class DpFlixDestination(val route: String) {
 
     object Home : DpFlixDestination("home")
 
+    /** Vidéo d'accueil site compagnon (après lock, avant Home/Onboarding). */
+    object StartupVideo : DpFlixDestination("startup_video")
+
+    /** Infos programme (WebView site compagnon). */
+    object CompanionInfos : DpFlixDestination("companion_infos")
+
     object Settings : DpFlixDestination("settings")
 
     /**

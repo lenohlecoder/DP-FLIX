@@ -32,6 +32,8 @@ import androidx.navigation.navArgument
 import com.dpflix.android.filmsseries.DownloadsScreen
 import com.dpflix.android.filmsseries.FilmsSeriesScreen
 import com.dpflix.android.player.LocalFilmPlayerScreen
+import com.dpflix.android.companion.InfosWebViewScreen
+import com.dpflix.android.companion.StartupVideoScreen
 import com.dpflix.android.home.HomeScreen
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ReplayProgram
@@ -165,10 +167,8 @@ fun DpFlixNavHost(
                     !accessRepository.hasValidSession() ->
                         DpFlixDestination.Lock.route
                     else -> {
-                        val hasActivePlaylist =
-                            appRepository.playlists.observeActive().first() != null
-                        if (hasActivePlaylist) DpFlixDestination.Home.route
-                        else DpFlixDestination.Onboarding.route
+                        // Session déjà valide : interstitiel vidéo puis Home/Onboarding.
+                        DpFlixDestination.StartupVideo.route
                     }
                 }
                 navController.navigate(destination) {
@@ -198,10 +198,8 @@ fun DpFlixNavHost(
 
         composable(POST_LOCK_ROUTE) {
             LaunchedEffect(Unit) {
-                val hasActivePlaylist = appRepository.playlists.observeActive().first() != null
-                val destination = if (hasActivePlaylist) DpFlixDestination.Home.route
-                else DpFlixDestination.Onboarding.route
-                navController.navigate(destination) {
+                // Toujours la vidéo compagnon après unlock ; elle enchaîne vers Home/Onboarding.
+                navController.navigate(DpFlixDestination.StartupVideo.route) {
                     popUpTo(POST_LOCK_ROUTE) { inclusive = true }
                 }
             }
@@ -226,6 +224,43 @@ fun DpFlixNavHost(
             )
         }
 
+        composable(DpFlixDestination.StartupVideo.route) {
+            StartupVideoScreen(
+                appRepository = appRepository,
+                onFinished = {
+                    navController.navigate(POST_STARTUP_VIDEO_ROUTE) {
+                        popUpTo(DpFlixDestination.StartupVideo.route) { inclusive = true }
+                    }
+                }
+            )
+        }
+
+        composable(POST_STARTUP_VIDEO_ROUTE) {
+            LaunchedEffect(Unit) {
+                val hasActivePlaylist = appRepository.playlists.observeActive().first() != null
+                val dest = if (hasActivePlaylist) DpFlixDestination.Home.route
+                else DpFlixDestination.Onboarding.route
+                navController.navigate(dest) {
+                    popUpTo(POST_STARTUP_VIDEO_ROUTE) { inclusive = true }
+                }
+            }
+            Surface(modifier = Modifier.fillMaxSize(), color = Color.Black) {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center),
+                        color = Color.White
+                    )
+                }
+            }
+        }
+
+        composable(DpFlixDestination.CompanionInfos.route) {
+            InfosWebViewScreen(
+                appRepository = appRepository,
+                onBack = { navController.popBackStack() }
+            )
+        }
+
         composable(DpFlixDestination.Home.route) {
             HomeScreen(
                 appRepository = appRepository,
@@ -235,6 +270,9 @@ fun DpFlixNavHost(
                 },
                 onNavigateToFilmDownloads = {
                     navController.navigate(DpFlixDestination.FilmDownloads.route)
+                },
+                onNavigateToInfos = {
+                    navController.navigate(DpFlixDestination.CompanionInfos.route)
                 },
                 onNavigateToPlayerFullscreen = { channelId ->
                     navController.navigate(DpFlixDestination.PlayerFullscreen.createRoute(channelId))
