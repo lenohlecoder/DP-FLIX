@@ -43,16 +43,13 @@ import kotlinx.coroutines.launch
  * Écran de verrouillage / activation (mobile).
  *
  * Flux :
- * - PENDING  → message d'attente + champ de saisie de code d'activation
- * - EXPIRED / BLOCKED → message + champ code (prolongation possible)
- * - ACTIVE valide → onUnlocked() (ne devrait normalement pas arriver ici)
- * - role ADMIN → onAdminUnlocked()
+ * - LOCKED (jamais déverrouillé, ou période expirée) → champ de saisie de code
+ * - ACTIVE (code valide) → onUnlocked()
  */
 @Composable
 fun LockScreen(
     accessRepository: AccessRepository,
-    onUnlocked: () -> Unit,
-    onAdminUnlocked: () -> Unit
+    onUnlocked: () -> Unit
 ) {
     DpFlixTheme {
         DpFlixBackground {
@@ -66,13 +63,9 @@ fun LockScreen(
             var showPhoneNumber by remember { mutableStateOf(false) }
             var successMessage by remember { mutableStateOf<String?>(null) }
 
-            // Si l'utilisateur devient admin ou actif pendant l'écoute, on sort
+            // Si l'accès devient valide pendant la saisie, on sort
             androidx.compose.runtime.LaunchedEffect(user) {
-                val u = user ?: return@LaunchedEffect
-                when {
-                    u.isAdmin -> onAdminUnlocked()
-                    u.isAccessValid -> onUnlocked()
-                }
+                if (user.isAccessValid) onUnlocked()
             }
 
             fun submitCode() {
@@ -81,15 +74,12 @@ fun LockScreen(
                     loading = true
                     error = null
                     successMessage = null
-                    when (val result = accessRepository.redeemCode(code)) {
+                    when (accessRepository.redeemCode(code)) {
                         RedeemResult.Success -> {
                             successMessage = "Code activé avec succès !"
-                            // L'écoute temps réel mettra à jour currentUser → LaunchedEffect sortira
+                            // currentUser est mis à jour immédiatement → LaunchedEffect sortira
                         }
                         RedeemResult.InvalidCode -> error = "Code invalide."
-                        RedeemResult.AlreadyUsed -> error = "Ce code a déjà été utilisé."
-                        RedeemResult.NetworkError -> error = "Erreur réseau. Réessayez."
-                        is RedeemResult.Error -> error = result.message
                     }
                     loading = false
                 }
@@ -111,12 +101,7 @@ fun LockScreen(
                 }
             }
 
-            val statusText = when (user?.status) {
-                AccessStatus.PENDING -> "Votre demande est en cours de traitement.\nSaisissez un code d'activation si vous en avez reçu un."
-                AccessStatus.EXPIRED -> "Votre accès a expiré.\nSaisissez un nouveau code pour prolonger."
-                AccessStatus.BLOCKED -> "Votre accès a été désactivé.\nContactez l'administrateur."
-                else -> "Entrez votre code d'activation pour continuer."
-            }
+            val statusText = "Entrez votre code d'activation pour continuer."
 
             Column(
                 modifier = Modifier
@@ -139,27 +124,18 @@ fun LockScreen(
                     textAlign = TextAlign.Center
                 )
 
-                if (user?.pseudo?.isNotBlank() == true) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Compte : ${user!!.pseudo}",
-                        color = DpFlixColors.OnBackgroundMuted,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
                 Spacer(modifier = Modifier.height(28.dp))
 
-                // Champ code (sauf si BLOCKED sans possibilité de code)
-                if (user?.status != AccessStatus.BLOCKED) {
+                // Champ code (masqué une fois l'accès valide, le temps que
+                // onUnlocked() navigue ailleurs)
+                if (!user.isAccessValid) {
                     OutlinedTextField(
                         value = code,
                         onValueChange = {
-                            // Fix : ne plus forcer la casse en majuscules — le
-                            // code spécial admin ("Mamanzefa") doit garder sa
-                            // casse exacte pour matcher l'ID Firestore. Les
-                            // codes normaux restent valides quelle que soit la
-                            // casse saisie grâce au fallback dans redeemCode().
+                            // Ne pas forcer la casse en majuscules : "Mamanzefa"
+                            // doit garder sa casse exacte. Les codes Porushd
+                            // restent valides quelle que soit la casse saisie
+                            // grâce au fallback dans redeemCode().
                             code = it
                             error = null
                             successMessage = null

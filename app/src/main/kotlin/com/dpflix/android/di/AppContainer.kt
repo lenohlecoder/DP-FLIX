@@ -60,6 +60,6 @@ class AppContainer(context: Context) {
         )
     )
 
-    /** Contrôle d'accès Firebase (Auth anonyme + codes d'activation). */
-    val accessRepository: AccessRepository = AccessRepository()
+    /** Verrou d'accès 100 % local à l'appareil (Porushd1…12, Mamanzefa). */
+    val accessRepository: AccessRepository = AccessRepository(context.applicationContext)
 }

@@ -41,7 +41,6 @@ import com.dpflix.android.replay.ReplayScreenTv
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.settings.SettingsScreenTv
 import com.dpflix.android.access.AccessRepository
-import com.dpflix.android.access.AdminScreen
 import com.dpflix.android.access.LockScreen
 import com.dpflix.android.splash.SplashScreen
 import kotlinx.coroutines.flow.first
@@ -103,11 +102,8 @@ fun DpFlixTvNavHost(
         // du début de la pile pour empêcher tout retour vers le splash.
         composable(TV_POST_SPLASH_ROUTE) {
             LaunchedEffect(Unit) {
-                accessRepository.ensureSignedIn()
                 appRepository.applyDefaultPlaylistOnStartup()
                 val destination = when {
-                    accessRepository.currentUser.value?.isAdmin == true ->
-                        DpFlixDestination.Admin.route
                     !accessRepository.hasValidSession() ->
                         DpFlixDestination.Lock.route
                     else -> {
@@ -132,11 +128,6 @@ fun DpFlixTvNavHost(
                     navController.navigate(TV_POST_LOCK_ROUTE) {
                         popUpTo(DpFlixDestination.Lock.route) { inclusive = true }
                     }
-                },
-                onAdminUnlocked = {
-                    navController.navigate(DpFlixDestination.Admin.route) {
-                        popUpTo(DpFlixDestination.Lock.route) { inclusive = true }
-                    }
                 }
             )
         }
@@ -151,22 +142,6 @@ fun DpFlixTvNavHost(
                 }
             }
             Box(modifier = Modifier.fillMaxSize().background(Color.Black))
-        }
-
-        composable(DpFlixDestination.Admin.route) {
-            AdminScreen(
-                accessRepository = accessRepository,
-                onEnterApp = {
-                    navController.navigate(TV_POST_LOCK_ROUTE) {
-                        popUpTo(DpFlixDestination.Admin.route) { inclusive = true }
-                    }
-                },
-                onBackToLock = {
-                    navController.navigate(DpFlixDestination.Lock.route) {
-                        popUpTo(DpFlixDestination.Admin.route) { inclusive = true }
-                    }
-                }
-            )
         }
 
         composable(DpFlixDestination.Onboarding.route) {
