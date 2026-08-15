@@ -1,6 +1,7 @@
 package com.dpflix.android.settings
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardActions
@@ -45,6 +46,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -1379,8 +1382,13 @@ private fun UserGuideTopicDetail(topic: UserGuideTopic, onBack: () -> Unit) {
                 .padding(horizontal = 20.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            userGuideContentFor(topic).forEach { (heading, body) ->
-                UserGuideBlock(title = heading, body = body)
+            userGuideContentFor(topic).forEach { block ->
+                UserGuideBlock(
+                    title = block.title,
+                    body = block.body,
+                    imageRes = block.imageRes,
+                    imageCaption = block.imageCaption
+                )
             }
             Spacer(modifier = Modifier.height(24.dp))
         }
@@ -1388,7 +1396,12 @@ private fun UserGuideTopicDetail(topic: UserGuideTopic, onBack: () -> Unit) {
 }
 
 @Composable
-private fun UserGuideBlock(title: String, body: String) {
+private fun UserGuideBlock(
+    title: String,
+    body: String,
+    imageRes: Int? = null,
+    imageCaption: String? = null
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
             text = title,
@@ -1401,6 +1414,26 @@ private fun UserGuideBlock(title: String, body: String) {
             color = DpFlixColors.OnBackgroundMuted,
             style = MaterialTheme.typography.bodyMedium
         )
+        if (imageRes != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Image(
+                    painter = painterResource(id = imageRes),
+                    contentDescription = imageCaption ?: title,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp)),
+                    contentScale = ContentScale.FillWidth
+                )
+                if (!imageCaption.isNullOrBlank()) {
+                    Text(
+                        text = imageCaption,
+                        color = DpFlixColors.OnBackgroundMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+        }
     }
 }
 

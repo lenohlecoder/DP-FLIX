@@ -53,8 +53,24 @@ class ReplayRepository(
         return when (val result = xtreamClient.fetchShortEpg(credentials, streamId)) {
             is XtreamResult.Success -> {
                 val now = System.currentTimeMillis()
+                // Fix (2026-08-15) — crash au scroll dans "Programmes passés" : certains
+                // panels (get_simple_data_table en particulier, grille du jour) renvoient
+                // des entrées EXACTEMENT dupliquées (même start_timestamp) — souvent des
+                // programmes à cheval sur minuit répétés sur les deux jours de la fenêtre
+                // interrogée. `ReplayProgramList` (ReplayScreen.kt) utilise
+                // `items(programs, key = { it.startMillis })` : Compose exige une clé
+                // unique par item et lève `IllegalArgumentException("Key ... was already
+                // used")` dès qu'un doublon entre dans la fenêtre d'items dont LazyColumn
+                // calcule la table clé→index (recalculée par tranche pour rester
+                // performante sur une grande liste) — d'où un crash qui ne se déclenche
+                // qu'en scrollant jusqu'à atteindre les entrées dupliquées, jamais à
+                // l'ouverture de l'écran, symptôme sinon déroutant. `distinctBy` avant le
+                // tri règle la cause racine (deux programmes ne peuvent légitimement pas
+                // démarrer à la même seconde sur UNE même chaîne, donc startMillis est un
+                // identifiant sûr ici) plutôt que de contourner le symptôme côté UI.
                 val pastPrograms = result.data
                     .filter { it.endMillis <= now }
+                    .distinctBy { it.startMillis }
                     .sortedByDescending { it.startMillis }
                 ReplayProgramsResult.Success(pastPrograms)
             }

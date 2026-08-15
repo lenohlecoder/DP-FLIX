@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -145,7 +145,15 @@ private fun ReplayProgramList(
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        items(programs, key = { it.startMillis }) { program ->
+        // Fix (2026-08-15) — filet de sécurité UI, en plus de la déduplication à la source
+        // dans ReplayRepository.fetchPastPrograms (voir sa doc pour la cause racine) :
+        // clé composite `"$index-${it.startMillis}"` plutôt que `startMillis` seul. Compose
+        // exige une clé unique par item et plante sinon ("Key ... was already used") — en
+        // préfixant par la position dans la liste (toujours unique), un doublon qui
+        // remonterait malgré tout (ex. futur appelant de cet écran qui ne passerait pas
+        // par ReplayRepository) dégraderait au pire l'affichage plutôt que de faire
+        // planter tout l'écran.
+        itemsIndexed(programs, key = { index, program -> "$index-${program.startMillis}" }) { _, program ->
             ReplayProgramRow(program = program, onClick = { onProgramClicked(program) })
         }
     }
