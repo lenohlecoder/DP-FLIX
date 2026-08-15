@@ -13,6 +13,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -25,6 +26,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.dpflix.android.filmsseries.DownloadsScreen
@@ -41,6 +43,7 @@ import com.dpflix.android.settings.SettingsScreen
 import com.dpflix.android.access.AccessRepository
 import com.dpflix.android.access.LockScreen
 import com.dpflix.android.splash.SplashScreen
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 
 /**
@@ -93,6 +96,41 @@ fun DpFlixNavHost(
     // fondu, supprimant la fenêtre de chevauchement. Contrepartie assumée : les
     // transitions entre écrans (Accueil ↔ Réglages ↔ Lecteur plein écran) sont
     // désormais des coupures franches plutôt que des fondus enchaînés.
+
+    // Garde de session (correctif expiration code local) : tant que l'app reste
+    // ouverte, un unlock temporaire (Porushd1…12) qui arrive à expiration doit
+    // reverrouiller l'app SANS attendre un redémarrage. On programme un réveil
+    // exact à l'échéance (pas de sondage périodique) qui relit les prefs via
+    // accessRepository.refresh() ; dès que currentUser devient invalide, on
+    // renvoie vers l'écran de verrouillage en vidant la pile de navigation
+    // (impossible de revenir en arrière vers un écran protégé). Mamanzefa
+    // (unlockUntilMs == null) ne programme jamais de réveil : accès permanent.
+    val currentUser by accessRepository.currentUser.collectAsState()
+    val currentBackStackEntry by navController.currentBackStackEntryAsState()
+
+    LaunchedEffect(currentUser.unlockUntilMs, currentUser.status) {
+        val until = currentUser.unlockUntilMs ?: return@LaunchedEffect
+        val delayMs = until - System.currentTimeMillis()
+        if (delayMs > 0) {
+            delay(delayMs)
+            accessRepository.refresh()
+        }
+    }
+
+    LaunchedEffect(currentUser.isAccessValid, currentBackStackEntry?.destination?.route) {
+        val route = currentBackStackEntry?.destination?.route
+        // On ne coupe pas Splash (qui gère déjà l'aiguillage initial) ni Lock
+        // (déjà dessus) — uniquement les écrans protégés atteints après coup.
+        if (!currentUser.isAccessValid &&
+            route != DpFlixDestination.Splash.route &&
+            route != DpFlixDestination.Lock.route
+        ) {
+            navController.navigate(DpFlixDestination.Lock.route) {
+                popUpTo(0) { inclusive = true }
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = DpFlixDestination.Splash.route,

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -24,6 +25,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import androidx.tv.material3.Button
@@ -43,6 +45,7 @@ import com.dpflix.android.settings.SettingsScreenTv
 import com.dpflix.android.access.AccessRepository
 import com.dpflix.android.access.LockScreen
 import com.dpflix.android.splash.SplashScreen
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 
 /**
@@ -78,6 +81,34 @@ fun DpFlixTvNavHost(
     // Fix (25 juillet 2026) — même correctif que DpFlixNavHost (mobile), voir sa doc :
     // évite le chevauchement de deux ExoPlayer actifs (mini-lecteur + plein écran)
     // pendant l'animation de transition par défaut.
+
+    // Garde de session (correctif expiration code local) — même mécanique que
+    // DpFlixNavHost (mobile), voir sa doc : réveil exact à l'échéance d'un unlock
+    // temporaire, reverrouillage sans attendre un redémarrage de l'app.
+    val currentUser by accessRepository.currentUser.collectAsState()
+    val currentBackStackEntry by navController.currentBackStackEntryAsState()
+
+    LaunchedEffect(currentUser.unlockUntilMs, currentUser.status) {
+        val until = currentUser.unlockUntilMs ?: return@LaunchedEffect
+        val delayMs = until - System.currentTimeMillis()
+        if (delayMs > 0) {
+            delay(delayMs)
+            accessRepository.refresh()
+        }
+    }
+
+    LaunchedEffect(currentUser.isAccessValid, currentBackStackEntry?.destination?.route) {
+        val route = currentBackStackEntry?.destination?.route
+        if (!currentUser.isAccessValid &&
+            route != DpFlixDestination.Splash.route &&
+            route != DpFlixDestination.Lock.route
+        ) {
+            navController.navigate(DpFlixDestination.Lock.route) {
+                popUpTo(0) { inclusive = true }
+            }
+        }
+    }
+
     NavHost(
         navController = navController,
         startDestination = DpFlixDestination.Splash.route,
