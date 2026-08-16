@@ -40,13 +40,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * État exposé par [PlayerController] à l'UI (§7 étape 5a : "contrôle basique play/pause/erreur").
@@ -1692,72 +1696,96 @@ class PlayerController(
         val deadlineElapsedRealtimeMs =
             SystemClock.elapsedRealtime() + INITIAL_PREBUFFER_TIMEOUT_MS
 
-        // Fix (revue 2026-08-11, hypothèse Range HTTP) : si le seuil dépasse un seul
-        // chunk, on va devoir demander des offsets > 0 en connexions séparées. On sonde
-        // AVANT de s'engager : un panel qui sert "maintenant" à toute nouvelle connexion,
-        // quel que soit l'offset demandé, romprait la continuité du flux si on continuait
-        // à chaîner des blocs à l'aveugle. Si la sonde échoue, on borne targetBytes à UN
-        // seul chunk (offset 0, trivialement correct : c'est ce que "maintenant" sert de
-        // toute façon) — démarrage dégradé avec un tampon initial réduit plutôt qu'un flux
-        // corrompu. Voir [liveRangeSupportConfirmed] pour l'effet sur le prefetcher continu.
+        // Fix (2026-08-16) — le budget [INITIAL_PREBUFFER_TIMEOUT_MS] n'était vérifié
+        // qu'entre deux appels réseau, jamais PENDANT : un seul appel bloquant
+        // (probeRangeSupport / prefetchByteRange) pouvait rester coincé bien plus
+        // longtemps que 90s à cause de la cascade de User-Agent d'IptvHttpDataSourceFactory
+        // (jusqu'à 5 tentatives × connect/read timeout OkHttp ≈ 175s dans le pire cas).
+        // On borne désormais RÉELLEMENT toute la phase réseau via un `callTimeout` OkHttp
+        // dérivé sur chaque appel (contrairement à connectTimeout/readTimeout, celui-ci
+        // couvre tout l'appel — cascade de retries incluse) + un `withTimeout` englobant,
+        // pour que le fail-open (démarrage dégradé) soit vraiment atteint au plus tard à
+        // 90s, quoi qu'il arrive côté réseau.
         var effectiveTargetBytes = targetBytes
-        if (targetBytes > PREFETCH_CHUNK_BYTES) {
-            val rangeOk = withContext(Dispatchers.IO) {
-                probeRangeSupport(uri, PREFETCH_CHUNK_BYTES)
-            }
-            liveRangeSupportConfirmed = rangeOk
-            if (!rangeOk) {
-                effectiveTargetBytes = PREFETCH_CHUNK_BYTES
-                appendRecentError(
-                    "Préchargement initial réduit : ce panel ne semble pas honorer les " +
-                        "requêtes Range sur le flux direct (tampon initial limité à un seul " +
-                        "bloc au lieu de $targetSeconds s)."
-                )
-            }
-        }
-
         var downloadedBytes = 0L
         try {
-            while (coroutineContext.isActive && downloadedBytes < effectiveTargetBytes) {
-                if (SystemClock.elapsedRealtime() >= deadlineElapsedRealtimeMs) break
-                if (currentPlaybackUri != uri) return // zap / annulation
-
-                val remaining = effectiveTargetBytes - downloadedBytes
-                val chunkLength = minOf(remaining, PREFETCH_CHUNK_BYTES)
-                // Déjà en cache ? (re-zap rapide sur la MÊME session LIVE uniquement,
-                // voir liveAwareCacheKey — plus de faux "déjà en cache" entre deux zaps).
-                val cacheKey = liveAwareCacheKey(uri)
-                val cachedLength = cache.getCachedLength(cacheKey, downloadedBytes, chunkLength)
-                if (cachedLength >= chunkLength) {
-                    downloadedBytes += chunkLength
-                } else {
-                    withContext(Dispatchers.IO) {
-                        prefetchByteRange(
-                            cache,
-                            uri,
-                            downloadedBytes,
-                            downloadedBytes + chunkLength
+            withTimeout(INITIAL_PREBUFFER_TIMEOUT_MS) {
+                if (targetBytes > PREFETCH_CHUNK_BYTES) {
+                    ensureActive()
+                    val remainingForProbe =
+                        (deadlineElapsedRealtimeMs - SystemClock.elapsedRealtime()).coerceAtLeast(1L)
+                    val rangeOk = withTimeoutOrNull(remainingForProbe) {
+                        withContext(Dispatchers.IO) {
+                            probeRangeSupport(uri, PREFETCH_CHUNK_BYTES, remainingForProbe)
+                        }
+                    } ?: true // budget épuisé pendant la sonde elle-même : reste optimiste
+                    liveRangeSupportConfirmed = rangeOk
+                    if (!rangeOk) {
+                        effectiveTargetBytes = PREFETCH_CHUNK_BYTES
+                        appendRecentError(
+                            "Préchargement initial réduit : ce panel ne semble pas honorer les " +
+                                "requêtes Range sur le flux direct (tampon initial limité à un seul " +
+                                "bloc au lieu de $targetSeconds s)."
                         )
                     }
-                    // Après écriture, relire la longueur réellement présente.
-                    val after = cache.getCachedLength(cacheKey, downloadedBytes, chunkLength)
-                    if (after > 0L) {
-                        downloadedBytes += after.coerceAtMost(chunkLength)
-                    } else {
-                        // Rien de nouveau (réseau mort sur ce morceau) : petite pause
-                        // pour éviter un spin, le timeout global gère l'abandon.
-                        delay(500L)
-                    }
                 }
 
-                val progressSec =
-                    (downloadedBytes.toDouble() * 8.0 / bitrateKbps.toDouble() / 1000.0)
-                        .toFloat()
-                        .coerceAtMost(targetSeconds.toFloat())
-                if (_uiState.value is PlayerUiState.InitialPrebuffering) {
-                    _uiState.value = PlayerUiState.InitialPrebuffering(progressSeconds = progressSec)
+                while (isActive && downloadedBytes < effectiveTargetBytes) {
+                    ensureActive()
+                    val remainingBudgetMs =
+                        deadlineElapsedRealtimeMs - SystemClock.elapsedRealtime()
+                    if (remainingBudgetMs <= 0L) break
+                    if (currentPlaybackUri != uri) return@withTimeout // zap / annulation
+
+                    val remaining = effectiveTargetBytes - downloadedBytes
+                    val chunkLength = minOf(remaining, PREFETCH_CHUNK_BYTES)
+                    // Déjà en cache ? (re-zap rapide sur la MÊME session LIVE uniquement,
+                    // voir liveAwareCacheKey — plus de faux "déjà en cache" entre deux zaps).
+                    val cacheKey = liveAwareCacheKey(uri)
+                    val cachedLength = cache.getCachedLength(cacheKey, downloadedBytes, chunkLength)
+                    if (cachedLength >= chunkLength) {
+                        downloadedBytes += chunkLength
+                    } else {
+                        val wrote = withTimeoutOrNull(remainingBudgetMs) {
+                            withContext(Dispatchers.IO) {
+                                prefetchByteRange(
+                                    cache,
+                                    uri,
+                                    downloadedBytes,
+                                    downloadedBytes + chunkLength,
+                                    callTimeoutMs = remainingBudgetMs
+                                )
+                            }
+                        }
+                        if (wrote == null) {
+                            // Budget global épuisé pendant l'appel réseau → fail-open.
+                            break
+                        }
+                        // Après écriture, relire la longueur réellement présente.
+                        val after = cache.getCachedLength(cacheKey, downloadedBytes, chunkLength)
+                        if (after > 0L) {
+                            downloadedBytes += after.coerceAtMost(chunkLength)
+                        } else {
+                            // Rien de nouveau (réseau mort sur ce morceau) : petite pause
+                            // pour éviter un spin, le timeout global gère l'abandon.
+                            delay(500L)
+                        }
+                    }
+
+                    val progressSec =
+                        (downloadedBytes.toDouble() * 8.0 / bitrateKbps.toDouble() / 1000.0)
+                            .toFloat()
+                            .coerceAtMost(targetSeconds.toFloat())
+                    if (_uiState.value is PlayerUiState.InitialPrebuffering) {
+                        _uiState.value = PlayerUiState.InitialPrebuffering(progressSeconds = progressSec)
+                    }
                 }
             }
+        } catch (_: TimeoutCancellationException) {
+            appendRecentError(
+                "Préchargement initial : délai de ${INITIAL_PREBUFFER_TIMEOUT_MS / 1000}s atteint, " +
+                    "démarrage dégradé avec ${downloadedBytes} octet(s)."
+            )
         } catch (_: Exception) {
             // Best-effort : on tente un démarrage dégradé ci-dessous.
         }
@@ -2550,9 +2578,21 @@ class PlayerController(
         cache: Cache,
         uri: String,
         startBytes: Long,
-        endBytes: Long
+        endBytes: Long,
+        callTimeoutMs: Long = INITIAL_PREBUFFER_TIMEOUT_MS
     ) {
-        val upstreamFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
+        // Client dérivé avec callTimeout borné : coupe la cascade User-Agent + lecture
+        // bloquante pour ne jamais dépasser le budget restant du prébuffer initial.
+        val boundedClient = com.dpflix.android.network.IptvHttpDataSourceFactory
+            .httpClient(playlist)
+            .newBuilder()
+            .callTimeout(
+                callTimeoutMs.coerceIn(1_000L, INITIAL_PREBUFFER_TIMEOUT_MS),
+                java.util.concurrent.TimeUnit.MILLISECONDS
+            )
+            .build()
+        val boundedFactory = OkHttpDataSource.Factory(boundedClient)
+        val upstreamFactory = DefaultDataSource.Factory(context, boundedFactory)
         val cacheDataSource = CacheDataSource.Factory()
             .setCache(cache)
             .setUpstreamDataSourceFactory(upstreamFactory)
@@ -2625,14 +2665,26 @@ class PlayerController(
      * incohérent le fait ; sinon un simple aléa réseau dégraderait inutilement chaque
      * session.
      */
-    private fun probeRangeSupport(uri: String, probeOffsetBytes: Long): Boolean {
+    private fun probeRangeSupport(
+        uri: String,
+        probeOffsetBytes: Long,
+        callTimeoutMs: Long = INITIAL_PREBUFFER_TIMEOUT_MS
+    ): Boolean {
         if (probeOffsetBytes <= 0L) return true
         val dataSpec = DataSpec.Builder()
             .setUri(uri)
             .setPosition(probeOffsetBytes)
             .setLength(PROBE_RANGE_BYTES)
             .build()
-        val dataSource = httpDataSourceFactory.createDataSource()
+        val boundedClient = com.dpflix.android.network.IptvHttpDataSourceFactory
+            .httpClient(playlist)
+            .newBuilder()
+            .callTimeout(
+                callTimeoutMs.coerceIn(1_000L, INITIAL_PREBUFFER_TIMEOUT_MS),
+                java.util.concurrent.TimeUnit.MILLISECONDS
+            )
+            .build()
+        val dataSource = OkHttpDataSource.Factory(boundedClient).createDataSource()
         return try {
             dataSource.open(dataSpec)
             val headers = dataSource.responseHeaders
