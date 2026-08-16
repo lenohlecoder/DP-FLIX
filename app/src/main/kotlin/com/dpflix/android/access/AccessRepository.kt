@@ -9,9 +9,13 @@ import com.dpflix.android.companion.CompanionConfig
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * Verrou d'accès via le site compagnon Netlify uniquement
@@ -50,6 +54,22 @@ class AccessRepository(
 
     private val _currentUser = MutableStateFlow(loadFromPrefs())
     val currentUser: StateFlow<UserAccess> = _currentUser.asStateFlow()
+
+    /** Scope propre au repository, vit tant que l'instance vit (singleton applicatif attendu). */
+    private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Relit l'état et le confirme via le réseau si possible, sans jamais naviguer
+     * (c'est [AccessSessionGuards] qui observe [currentUser] et décide de naviguer).
+     * Non-suspend à dessein : appelable depuis un callback non-coroutine
+     * (ex. [androidx.lifecycle.LifecycleEventObserver] sur ON_START).
+     * Lance [ensureAccessAtStartup] en tâche de fond ; met à jour [currentUser] au retour.
+     */
+    fun refresh() {
+        repositoryScope.launch {
+            ensureAccessAtStartup()
+        }
+    }
 
     private fun loadFromPrefs(): UserAccess {
         val companionCode = prefs.getString(KEY_COMPANION_CODE, null)
