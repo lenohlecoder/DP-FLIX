@@ -87,6 +87,7 @@ import com.dpflix.android.filmsseries.stream.DetectedStream
 import com.dpflix.android.filmsseries.stream.StreamSniffer
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.settings.GeneralSettings
+import com.dpflix.android.ui.theme.DpFlixColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
