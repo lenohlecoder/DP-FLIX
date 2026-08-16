@@ -105,6 +105,18 @@ class ReplayRepository(
         return xtreamClient.resolveTimeshiftUrl(credentials, streamId, program)
     }
 
+    /**
+     * Invalide le format timeshift mémorisé pour cette chaîne.
+     * À appeler uniquement après une erreur de parsing/conteneur confirmée côté lecteur
+     * (pas sur timeout / IO réseau). Le prochain [buildTimeshiftUrl] pour cette chaîne
+     * relancera un sondage frais via [XtreamClient.resolveTimeshiftUrl].
+     */
+    suspend fun invalidateTimeshiftFormat(channel: Channel) {
+        val streamId = channel.xtreamStreamId ?: return
+        val credentials = credentialsFor(channel) ?: return
+        xtreamClient.invalidateTimeshiftFormat(credentials, streamId)
+    }
+
     private suspend fun credentialsFor(channel: Channel): XtreamCredentials? {
         val playlist = playlists.getById(channel.playlistId) ?: return null
         val serverUrl = playlist.xtreamServerUrl

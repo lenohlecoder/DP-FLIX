@@ -188,7 +188,14 @@ data class BufferManagerSnapshot(
 class PlayerController(
     private val context: Context,
     private var settings: PlayerSettings,
-    private val playlist: com.dpflix.android.model.Playlist? = null
+    private val playlist: com.dpflix.android.model.Playlist? = null,
+    /**
+     * Appelé uniquement en mode [PlaybackMode.REPLAY] lorsqu'une erreur de
+     * parsing/conteneur est confirmée (pas sur timeout/IO). Permet à la couche qui
+     * détient [com.dpflix.android.network.XtreamClient] d'invalider le format timeshift
+     * mémorisé pour cette chaîne avant un prochain [resolveTimeshiftUrl].
+     */
+    private val onReplayParsingError: ((Channel) -> Unit)? = null
 ) {
 
     private val _uiState = MutableStateFlow<PlayerUiState>(PlayerUiState.Idle)
@@ -1214,9 +1221,20 @@ class PlayerController(
                         return
                     }
 
-                    if (error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED &&
-                        containerFallbackQueue.isNotEmpty()
-                    ) {
+                    // Repli conteneur uniquement sur erreurs de parsing/conteneur confirmées
+                    // (pas sur réseau/IO générique ou transitoire). Inclut MANIFEST_MALFORMED
+                    // et équivalents en plus de CONTAINER_UNSUPPORTED (plan cache timeshift).
+                    val isParsingError = error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
+                        error.errorCode == PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED
+                    // Étape 3 (cache timeshift) : en REPLAY, invalider le format mémorisé
+                    // pour cette chaîne afin que le prochain resolveTimeshiftUrl sonde à nouveau.
+                    // Jamais sur erreur réseau/IO — uniquement parsing confirmé.
+                    if (isParsingError && _playbackMode.value == PlaybackMode.REPLAY) {
+                        currentChannel?.let { ch -> onReplayParsingError?.invoke(ch) }
+                    }
+                    if (isParsingError && containerFallbackQueue.isNotEmpty()) {
                         val next = containerFallbackQueue.removeFirst()
                         // Diagnostic ciblé (2026-07-24) : la dernière réponse HTTP réellement
                         // reçue (code, Content-Type, début du corps si non-binaire) — voir
@@ -2985,14 +3003,19 @@ class PlayerController(
         suspend fun create(
             context: Context,
             settingsRepository: SettingsRepository,
-            playlist: com.dpflix.android.model.Playlist? = null
+            playlist: com.dpflix.android.model.Playlist? = null,
+            onReplayParsingError: ((Channel) -> Unit)? = null
         ): PlayerController {
             val settings = settingsRepository.playerSettings.first()
-            return PlayerController(context, settings, playlist)
+            return PlayerController(context, settings, playlist, onReplayParsingError)
         }
 
         /** Variante pratique quand on n'a pas déjà un [SettingsRepository] sous la main (bancs de test). */
-        suspend fun create(context: Context, playlist: com.dpflix.android.model.Playlist? = null): PlayerController =
-            create(context, SettingsRepository(SettingsDataStore(context)), playlist)
+        suspend fun create(
+            context: Context,
+            playlist: com.dpflix.android.model.Playlist? = null,
+            onReplayParsingError: ((Channel) -> Unit)? = null
+        ): PlayerController =
+            create(context, SettingsRepository(SettingsDataStore(context)), playlist, onReplayParsingError)
     }
 }

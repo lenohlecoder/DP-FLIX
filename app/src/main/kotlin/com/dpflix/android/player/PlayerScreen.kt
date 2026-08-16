@@ -445,7 +445,20 @@ fun PlayerScreen(
         // appliqué — `null` si absente (chaîne orpheline) ou si aucun appRepository
         // n'est fourni (mini-lecteur), même comportement automatique qu'avant dans ce cas.
         val playlist = appRepository?.playlists?.getById(channel.playlistId)
-        val created = PlayerController.create(context, playlist = playlist)
+        // Étape 3 (cache timeshift) : en cas d'erreur de parsing confirmée en REPLAY,
+        // invalider le format mémorisé pour cette chaîne (via ReplayRepository → XtreamClient).
+        val onReplayParsingError: ((Channel) -> Unit)? = appRepository?.let { repo ->
+            { ch ->
+                coroutineScope.launch {
+                    repo.replay.invalidateTimeshiftFormat(ch)
+                }
+            }
+        }
+        val created = PlayerController.create(
+            context = context,
+            playlist = playlist,
+            onReplayParsingError = onReplayParsingError
+        )
         // Étape R5b : programme en différé demandé (voir la doc du paramètre
         // initialReplayProgram) — construit l'URL timeshift.php avant playReplay. Repli
         // sur playChannel (direct) si la construction échoue ou si aucun appRepository
@@ -879,7 +892,29 @@ fun PlayerScreen(
                             .onFocusChanged { isRetryFocused = it.isFocused }
                             .border(width = if (isRetryFocused) 2.dp else 0.dp, color = Color.Red)
                             .padding(8.dp)
-                            .clickable { currentController.retry(currentChannel) }
+                            .clickable {
+                                // REPLAY + parsing invalidé : re-résoudre l'URL (sondage frais)
+                                // plutôt que de rejouer l'ancienne timeshiftUrl potentiellement fausse.
+                                val program = currentController.replayProgram.value
+                                val isReplay = currentController.playbackMode.value == PlaybackMode.REPLAY
+                                if (isReplay && program != null && appRepository != null) {
+                                    coroutineScope.launch {
+                                        appRepository.replay.invalidateTimeshiftFormat(currentChannel)
+                                        val freshUrl = appRepository.replay.buildTimeshiftUrl(
+                                            currentChannel, program
+                                        )
+                                        if (freshUrl != null) {
+                                            currentController.playReplay(
+                                                currentChannel, program, freshUrl
+                                            )
+                                        } else {
+                                            currentController.retry(currentChannel)
+                                        }
+                                    }
+                                } else {
+                                    currentController.retry(currentChannel)
+                                }
+                            }
                     )
                 }
             }

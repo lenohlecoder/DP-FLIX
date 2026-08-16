@@ -102,10 +102,12 @@ class XtreamClient(
         .build()
 
     /**
-     * Mémorise, par panel (clé = hôte + utilisateur), le format timeshift déjà confirmé
-     * par [resolveTimeshiftUrl] — pour ne sonder qu'UNE fois par panel, jamais à chaque
-     * programme lu. Vidé si l'app recrée cette instance (redémarrage) : un re-sondage
-     * occasionnel est sans conséquence, largement préférable à une convention figée.
+     * Mémorise, par chaîne (clé = hôte + utilisateur + streamId), le format timeshift
+     * déjà confirmé par [resolveTimeshiftUrl] — pour ne sonder qu'UNE fois par chaîne,
+     * jamais à chaque programme lu. Chaque chaîne mémorise son propre format validé
+     * (les panels peuvent servir des formats différents selon le stream). Vidé si l'app
+     * recrée cette instance (redémarrage) : un re-sondage occasionnel est sans
+     * conséquence, largement préférable à une convention figée.
      */
     private val timeshiftFormatCache = java.util.concurrent.ConcurrentHashMap<String, TimeshiftFormat>()
 
@@ -454,9 +456,9 @@ class XtreamClient(
      *
      * Sonde [TIMESHIFT_FORMAT_CANDIDATES] dans l'ordre (du format le plus répandu au plus
      * rare) via [probeTimeshiftCandidate], et retient le premier qui répond. Le résultat
-     * est mémorisé dans [timeshiftFormatCache] : le sondage (jusqu'à 6 requêtes légères)
-     * n'a lieu qu'UNE fois par panel — les lectures suivantes construisent l'URL
-     * directement, aussi vite qu'avant ce fix.
+     * est mémorisé dans [timeshiftFormatCache] par chaîne (streamId) : le sondage
+     * (jusqu'à 6 requêtes légères) n'a lieu qu'UNE fois par chaîne — les lectures
+     * suivantes construisent l'URL directement, aussi vite qu'avant ce fix.
      *
      * Ne renvoie jamais `null` : si aucun candidat ne répond positivement (panel qui
      * bloque les requêtes `Range`, aléa réseau ponctuel...), retombe sur le premier
@@ -472,7 +474,7 @@ class XtreamClient(
         val durationMinutes = kotlin.math.ceil(
             (program.endMillis - program.startMillis) / 60_000.0
         ).toInt().coerceAtLeast(1)
-        val cacheKey = timeshiftCacheKey(credentials)
+        val cacheKey = timeshiftCacheKey(credentials, streamId)
 
         timeshiftFormatCache[cacheKey]?.let { knownFormat ->
             return@withContext buildTimeshiftCandidateUrl(
@@ -495,8 +497,20 @@ class XtreamClient(
         )
     }
 
-    private fun timeshiftCacheKey(credentials: XtreamCredentials): String =
-        "${baseUrl(credentials.serverUrl)}|${credentials.username}"
+    private fun timeshiftCacheKey(credentials: XtreamCredentials, streamId: String): String =
+        "${baseUrl(credentials.serverUrl)}|${credentials.username}|$streamId"
+
+    /**
+     * Invalide le format timeshift mémorisé pour une chaîne précise (streamId).
+     * À appeler uniquement sur une erreur de parsing/conteneur confirmée côté lecteur
+     * (ERROR_CODE_PARSING_MANIFEST_MALFORMED, ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED
+     * et équivalents) — jamais sur une erreur réseau/IO générique ou transitoire.
+     * Le prochain [resolveTimeshiftUrl] pour cette chaîne relancera un sondage frais.
+     */
+    fun invalidateTimeshiftFormat(credentials: XtreamCredentials, streamId: String) {
+        val key = timeshiftCacheKey(credentials, streamId)
+        timeshiftFormatCache.remove(key)
+    }
 
     /**
      * Construit l'URL pour un [format] candidat donné — variante paramétrable de la
@@ -546,28 +560,37 @@ class XtreamClient(
     }
 
     /**
-     * Sonde une URL candidate avec une requête `GET` minimaliste (`Range: bytes=0-1`) :
+     * Sonde une URL candidate avec une requête `GET` minimaliste (`Range: bytes=0-31`) :
      * inutile de télécharger un flux entier pour savoir si le chemin existe, mais un
      * simple `HEAD` n'est pas fiable sur ces endpoints — beaucoup de panels/reverse-proxies
      * PHP ne l'implémentent pas correctement pour du streaming (405, voire 200 vide qui
      * masquerait un vrai 404 en `GET`). Une requête `Range` emprunte EXACTEMENT le même
-     * chemin de code serveur qu'une vraie lecture, pour deux octets seulement.
+     * chemin de code serveur qu'une vraie lecture, pour ~32 octets seulement.
+     *
+     * Validation par contenu réel (pas seulement le code HTTP) :
+     * - si l'URL se termine par `.m3u8` : le body doit commencer par `#EXTM3U`
+     * - si l'URL se termine par `.ts` (ou sans extension claire) : le premier octet
+     *   doit être le sync byte MPEG-TS `0x47`, et le body ne doit contenir aucune
+     *   balise HTML d'erreur (`<html`, `<!DOCTYPE`) qui trahirait une page d'erreur
+     *   déguisée en 200.
      *
      * Reprend la cascade de User-Agent ([NetworkConstants.USER_AGENT_FALLBACKS], mêmes
      * raisons que [executeGetWithUserAgentCascade]) : un panel qui bloque un User-Agent
      * inconnu sur `player_api.php` le bloque en général aussi sur ses endpoints de stream.
      *
-     * @return `true` si un des User-Agent obtient un `200`/`206` (`206 Partial Content` =
-     * le serveur a honoré le `Range` ; `200` = flux présent mais serveur qui ignore
-     * `Range` — fréquent chez certains panels, on ne lit alors surtout pas le corps).
+     * @return `true` si un des User-Agent obtient un `200`/`206` **et** que le contenu
+     * lu correspond au format attendu pour cette URL.
      */
     private fun probeTimeshiftCandidate(url: String): Boolean {
         for (userAgent in NetworkConstants.USER_AGENT_FALLBACKS) {
             try {
-                val requestBuilder = Request.Builder().url(url).header("Range", "bytes=0-1").get()
+                val requestBuilder = Request.Builder().url(url).header("Range", "bytes=0-31").get()
                 if (userAgent != null) requestBuilder.header("User-Agent", userAgent)
                 probeHttpClient.newCall(requestBuilder.build()).execute().use { response ->
-                    if (response.code == 200 || response.code == 206) return true
+                    if (response.code != 200 && response.code != 206) return@use
+                    val bodyBytes = response.body?.bytes() ?: return@use
+                    if (bodyBytes.isEmpty()) return@use
+                    if (isValidTimeshiftProbeBody(url, bodyBytes)) return true
                 }
             } catch (e: IOException) {
                 // Cette combinaison UA/URL ne joint pas le serveur (timeout court du
@@ -579,6 +602,33 @@ class XtreamClient(
             }
         }
         return false
+    }
+
+    /**
+     * Vérifie que les premiers octets lus correspondent réellement au format attendu
+     * pour [url], et non à une page d'erreur HTML servie avec un code 200.
+     */
+    private fun isValidTimeshiftProbeBody(url: String, body: ByteArray): Boolean {
+        val lowerUrl = url.lowercase()
+        val asText = try {
+            String(body, Charsets.UTF_8)
+        } catch (_: Exception) {
+            null
+        }
+        // Rejet immédiat des pages d'erreur HTML déguisées
+        if (asText != null) {
+            val head = asText.take(64).lowercase()
+            if (head.contains("<html") || head.contains("<!doctype") || head.contains("<head")) {
+                return false
+            }
+        }
+        return when {
+            lowerUrl.contains(".m3u8") -> {
+                asText != null && asText.trimStart().startsWith("#EXTM3U")
+            }
+            // .ts ou format sans extension claire (QUERY_PHP notamment) : sync byte MPEG-TS
+            else -> body.isNotEmpty() && body[0] == 0x47.toByte()
+        }
     }
 
     /** Les trois axes de divergence entre panels pour l'URL de catch-up (voir

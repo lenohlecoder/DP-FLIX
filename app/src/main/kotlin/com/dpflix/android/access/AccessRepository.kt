@@ -17,6 +17,8 @@ import java.util.Calendar
  *   - Porushd1 … Porushd12 → déverrouille l'appareil pour 1 à 12 mois
  *     (la nouvelle durée REMPLACE l'expiration existante, pas de cumul :
  *     repart de la date du jour à chaque saisie).
+ *   - Porushd → déverrouille l'appareil pour 1 heure uniquement
+ *     (code de test de fiabilité, durée courte, remplace aussi toute période existante).
  *   - Mamanzefa → déverrouille l'appareil de façon permanente
  *     (pas de rôle admin, pas d'espace administrateur : juste un accès
  *     illimité reconnu par l'application).
@@ -61,6 +63,9 @@ class AccessRepository(private val appContext: Context) {
 
         /** Code local permanent (hardcodé). Doit matcher exactement la casse saisie. */
         const val LOCAL_PERMANENT_CODE = "Mamanzefa"
+
+        /** Code de test court (1 heure). Casse exacte requise. */
+        const val LOCAL_TEST_CODE_1H = "Porushd"
 
         /** Préférences locales du verrou (100 % offline). */
         private const val PREFS_NAME = "dpflix_local_unlock"
@@ -164,8 +169,8 @@ class AccessRepository(private val appContext: Context) {
     fun hasValidSession(): Boolean = loadFromPrefs().isAccessValid
 
     /**
-     * Valide un code d'activation (Porushd1…12 ou Mamanzefa). 100 % local,
-     * aucun réseau. Retourne [RedeemResult.InvalidCode] pour tout autre code.
+     * Valide un code d'activation (Porushd1…12, Porushd 1h test, ou Mamanzefa).
+     * 100 % local, aucun réseau. Retourne [RedeemResult.InvalidCode] pour tout autre code.
      */
     fun redeemCode(code: String): RedeemResult {
         val trimmed = code.trim()
@@ -173,7 +178,13 @@ class AccessRepository(private val appContext: Context) {
 
         // Mamanzefa : casse exacte requise (comme demandé)
         if (trimmed == LOCAL_PERMANENT_CODE) {
-            saveLocalUnlock(months = null, permanent = true, codeUsed = trimmed)
+            saveLocalUnlock(months = null, hours = null, permanent = true, codeUsed = trimmed)
+            return RedeemResult.Success
+        }
+
+        // Porushd : code de test 1 heure (casse exacte)
+        if (trimmed == LOCAL_TEST_CODE_1H) {
+            saveLocalUnlock(months = null, hours = 1, permanent = false, codeUsed = trimmed)
             return RedeemResult.Success
         }
 
@@ -184,34 +195,37 @@ class AccessRepository(private val appContext: Context) {
             }?.value
 
         if (months != null) {
-            saveLocalUnlock(months = months, permanent = false, codeUsed = trimmed)
+            saveLocalUnlock(months = months, hours = null, permanent = false, codeUsed = trimmed)
             return RedeemResult.Success
         }
 
         return RedeemResult.InvalidCode
     }
 
-    private fun saveLocalUnlock(months: Int?, permanent: Boolean, codeUsed: String) {
+    private fun saveLocalUnlock(months: Int?, hours: Int?, permanent: Boolean, codeUsed: String) {
         prefs.edit().apply {
             if (permanent) {
                 putBoolean(KEY_IS_PERMANENT, true)
                 remove(KEY_UNLOCK_UNTIL_MS)
             } else {
-                // Pas de cumul : chaque code saisi repart de la date du jour
+                // Pas de cumul : chaque code saisi repart de maintenant
                 // et remplace l'expiration existante.
                 putBoolean(KEY_IS_PERMANENT, false)
                 // Base = estimatedNowMs() (heure fiable si disponible) plutôt que
                 // l'heure système brute.
                 val cal = Calendar.getInstance().apply {
                     timeInMillis = estimatedNowMs()
-                    add(Calendar.MONTH, months ?: 0)
+                    when {
+                        hours != null && hours > 0 -> add(Calendar.HOUR_OF_DAY, hours)
+                        months != null && months > 0 -> add(Calendar.MONTH, months)
+                    }
                 }
                 putLong(KEY_UNLOCK_UNTIL_MS, cal.timeInMillis)
             }
             putString(KEY_LAST_LOCAL_CODE, codeUsed)
             apply()
         }
-        Log.i(TAG, "Local unlock saved: permanent=$permanent months=$months code=$codeUsed")
+        Log.i(TAG, "Local unlock saved: permanent=$permanent months=$months hours=$hours code=$codeUsed")
         _currentUser.value = loadFromPrefs()
     }
 }
