@@ -121,7 +121,7 @@ fun DpFlixTvNavHost(
                 val companionStatus = appRepository.companion.getStatus()
                 companionStatus?.serverTimeMs?.let { accessRepository.recordTrustedTime(it) }
                 val destination = when {
-                    !accessRepository.hasValidSession() ->
+                    !accessRepository.ensureAccessAtStartup() ->
                         DpFlixDestination.Lock.route
                     else -> DpFlixDestination.StartupVideo.route
                 }

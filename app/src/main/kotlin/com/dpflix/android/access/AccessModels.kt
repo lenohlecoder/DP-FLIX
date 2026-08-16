@@ -1,38 +1,43 @@
 package com.dpflix.android.access
 
 /**
- * Statut d'accès local à l'appareil (100 % offline, plus de Firebase).
+ * Statut d'accès local à l'appareil.
+ * Source de vérité : site compagnon (redeem-code / code-status).
+ * Le stockage local est un cache + tolérance hors-ligne.
  */
 enum class AccessStatus {
-    LOCKED,   // aucun code valide saisi, ou période expirée
-    ACTIVE    // code valide (temporaire ou permanent)
+    LOCKED,
+    ACTIVE
 }
 
 /**
- * État d'accès de l'appareil, reconstruit à chaque lecture depuis
- * SharedPreferences (voir [AccessRepository]). Il n'y a plus de notion
- * de compte, d'UID ou de synchronisation : tout est local à l'appareil.
+ * État d'accès reconstruit depuis SharedPreferences ([AccessRepository]).
  */
 data class UserAccess(
     val status: AccessStatus = AccessStatus.LOCKED,
-    /** Date d'expiration (epoch ms). Null = permanent (Mamanzefa) ou pas de session. */
-    val unlockUntilMs: Long? = null
+    /**
+     * Date d'expiration (epoch ms), issue de `expireLe` serveur.
+     * Avec la lettre de durée **P** (~100 ans), cette date est très lointaine
+     * mais **jamais null** après une activation réussie via le site compagnon.
+     */
+    val unlockUntilMs: Long? = null,
+    /** Code compagnon actif (format @XXXXY). */
+    val companionCode: String? = null
 ) {
     val isAccessValid: Boolean
         get() = status == AccessStatus.ACTIVE
 
-    /** Jours restants avant expiration (null = illimité ou verrouillé). */
-    fun daysRemaining(): Long? {
+    fun daysRemaining(nowMs: Long = System.currentTimeMillis()): Long? {
         val until = unlockUntilMs ?: return null
-        val diff = until - System.currentTimeMillis()
-        return diff / (24 * 60 * 60 * 1000)
+        return (until - nowMs) / (24 * 60 * 60 * 1000)
     }
 }
 
-/**
- * Résultat d'une tentative d'activation de code local.
- */
+/** Résultat d'une tentative d'activation via l'API compagnon. */
 sealed class RedeemResult {
     data object Success : RedeemResult()
     data object InvalidCode : RedeemResult()
+    data object Expired : RedeemResult()
+    data object RateLimited : RedeemResult()
+    data class NetworkError(val detail: String? = null) : RedeemResult()
 }

@@ -134,7 +134,7 @@ fun DpFlixNavHost(
                 companionStatus?.serverTimeMs?.let { accessRepository.recordTrustedTime(it) }
 
                 val destination = when {
-                    !accessRepository.hasValidSession() ->
+                    !accessRepository.ensureAccessAtStartup() ->
                         DpFlixDestination.Lock.route
                     else -> {
                         // Session déjà valide : interstitiel vidéo puis Home/Onboarding.

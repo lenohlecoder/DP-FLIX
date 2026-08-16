@@ -76,12 +76,18 @@ fun LockScreen(
                     loading = true
                     error = null
                     successMessage = null
-                    when (accessRepository.redeemCode(code)) {
+                    when (val result = accessRepository.redeemCode(code)) {
                         RedeemResult.Success -> {
                             successMessage = "Code activé avec succès !"
-                            // currentUser est mis à jour immédiatement → LaunchedEffect sortira
+                            // currentUser mis à jour → LaunchedEffect sortira
                         }
                         RedeemResult.InvalidCode -> error = "Code invalide."
+                        RedeemResult.Expired ->
+                            error = "Votre accès a expiré. Contactez l'administrateur."
+                        RedeemResult.RateLimited ->
+                            error = "Trop de tentatives. Réessayez dans quelques minutes."
+                        is RedeemResult.NetworkError ->
+                            error = "Réseau indisponible. Vérifiez votre connexion."
                     }
                     loading = false
                 }
@@ -145,8 +151,6 @@ fun LockScreen(
                     OutlinedTextField(
                         value = code,
                         onValueChange = {
-                            // Ne pas forcer la casse en majuscules : "Mamanzefa"
-                            // doit garder sa casse exacte. Les codes Porushd
                             // restent valides quelle que soit la casse saisie
                             // grâce au fallback dans redeemCode().
                             code = it
