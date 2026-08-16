@@ -31,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -41,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Button
@@ -171,6 +174,7 @@ fun HomeScreenTv(
     val settingsFocusRequester = remember { FocusRequester() }
     val firstChannelFocusRequester = remember { FocusRequester() }
     var hasRequestedInitialFocus by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
 
     // Mini-lecteur (§ réintégration 8 août 2026) : même garde-fou que côté mobile — voir
     // la doc de classe ci-dessus et celle de [HomeScreen] pour le détail complet.
@@ -286,6 +290,13 @@ fun HomeScreenTv(
                 }
 
                 val preview = uiState.previewChannel
+                // Quand un aperçu s'ouvre, ramener la liste en haut pour que le mini-lecteur
+                // (au-dessus de la liste) reste dans le contexte visuel de l'utilisateur.
+                LaunchedEffect(preview?.id) {
+                    if (preview != null) {
+                        listState.animateScrollToItem(0)
+                    }
+                }
                 if (preview != null) {
                     MiniPlayerTv(
                         channel = preview,
@@ -307,18 +318,24 @@ fun HomeScreenTv(
                     searchActive && filteredCategories.isEmpty() -> EmptyStateTv(
                         text = "Aucune chaîne ne correspond à « $searchQuery »."
                     )
-                    else -> ChannelCategoryListTv(
-                        categories = filteredCategories,
-                        selectedChannelId = preview?.id,
-                        firstChannelFocusRequester = firstChannelFocusRequester,
-                        onChannelClick = { channel ->
-                            val goFullscreen = viewModel.onChannelClicked(channel)
-                            if (goFullscreen) {
-                                viewModel.suspendPreviewPlayback()
-                                pendingFullscreenChannelId = channel.id
+                    else -> Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                        ChannelCategoryListTv(
+                            categories = filteredCategories,
+                            selectedChannelId = preview?.id,
+                            listState = listState,
+                            firstChannelFocusRequester = firstChannelFocusRequester,
+                            onChannelClick = { channel ->
+                                // Même logique que mobile : 1er OK = mini-aperçu, 2e OK (même
+                                // chaîne) = plein écran. Le mini-lecteur TV a été réintégré
+                                // volontairement — ne pas le court-circuiter.
+                                val goFullscreen = viewModel.onChannelClicked(channel)
+                                if (goFullscreen) {
+                                    viewModel.suspendPreviewPlayback()
+                                    pendingFullscreenChannelId = channel.id
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             }
 
@@ -346,6 +363,7 @@ fun HomeScreenTv(
 private fun ChannelCategoryListTv(
     categories: List<ChannelCategory>,
     selectedChannelId: String?,
+    listState: LazyListState,
     firstChannelFocusRequester: FocusRequester,
     onChannelClick: (Channel) -> Unit
 ) {
@@ -355,6 +373,7 @@ private fun ChannelCategoryListTv(
         ?.channels?.firstOrNull()?.id
 
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(28.dp)
@@ -434,11 +453,32 @@ private fun ChannelCardTv(
         modifier = Modifier
             .width(160.dp)
             .onFocusChanged { isFocused = it.isFocused }
+            .graphicsLayer {
+                // Agrandissement net au focus pour que la carte active soit
+                // immédiatement identifiable en LazyRow (sinon bordure 3.dp trop discrète).
+                val s = if (isFocused) 1.1f else 1f
+                scaleX = s
+                scaleY = s
+            }
             .clip(RoundedCornerShape(8.dp))
-            .background(DpFlixColors.Surface)
+            .background(
+                when {
+                    isFocused -> DpFlixColors.Red.copy(alpha = 0.25f)
+                    isSelected -> DpFlixColors.Surface
+                    else -> DpFlixColors.Surface
+                }
+            )
             .border(
-                width = if (isFocused) 3.dp else 0.dp,
-                color = DpFlixColors.Red,
+                width = when {
+                    isFocused -> 4.dp
+                    isSelected -> 2.dp
+                    else -> 0.dp
+                },
+                color = when {
+                    isFocused -> DpFlixColors.Red
+                    isSelected -> DpFlixColors.Red.copy(alpha = 0.55f)
+                    else -> Color.Transparent
+                },
                 shape = RoundedCornerShape(8.dp)
             )
             .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
@@ -458,8 +498,9 @@ private fun ChannelCardTv(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        if (isSelected) {
-            Text(text = "En aperçu", color = DpFlixColors.Red, fontSize = 12.sp)
+        when {
+            isFocused -> Text(text = "▶ Focus", color = DpFlixColors.Red, fontSize = 12.sp)
+            isSelected -> Text(text = "En aperçu", color = DpFlixColors.Red, fontSize = 12.sp)
         }
     }
 }
@@ -496,12 +537,19 @@ private fun MiniPlayerTv(
             .fillMaxWidth()
             .padding(horizontal = 48.dp, vertical = 8.dp)
     ) {
+        var playerFocused by remember { mutableStateOf(false) }
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(280.dp)
+                .onFocusChanged { playerFocused = it.isFocused }
                 .clip(RoundedCornerShape(12.dp))
                 .background(Color.Black)
+                .border(
+                    width = if (playerFocused) 4.dp else 2.dp,
+                    color = if (playerFocused) DpFlixColors.Red else DpFlixColors.OnBackgroundMuted.copy(alpha = 0.4f),
+                    shape = RoundedCornerShape(12.dp)
+                )
                 .clickable(onClick = onExpand)
         ) {
             if (playbackActive) {

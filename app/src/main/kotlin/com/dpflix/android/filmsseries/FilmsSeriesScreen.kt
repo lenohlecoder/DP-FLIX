@@ -304,13 +304,17 @@ fun FilmsSeriesScreen(
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
+                    preferDesktopUserAgent = streamIndex == 3,
                     savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
                     onSaveState = { bundle ->
                         webViewStateBundle = bundle
                         webViewStateUrl = url
                     },
-                    extraAllowedHosts = generalSettings?.extraAllowedDomains
-                        ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
+                    extraAllowedHosts = resolveAllowedHosts(
+                        streamIndex = streamIndex,
+                        userExtras = generalSettings?.extraAllowedDomains
+                            ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
+                    ),
                     onWebViewCreated = { webView ->
                         webViewRef.value = webView
                         if (showVirtualCursor) {
@@ -723,8 +727,8 @@ private fun StreamRow(
 }
 
 private const val DOUBLE_BACK_WINDOW_MS = 2000L
-private const val DPAD_MOVE_STEP_DP = 28
-private const val CURSOR_SIZE_DP = 22
+private const val DPAD_MOVE_STEP_DP = 48
+private const val CURSOR_SIZE_DP = 36
 
 /** Simule un tap à ([x], [y]) — coordonnées en pixels, dans le repère de la WebView. */
 private fun WebView.simulateClick(x: Float, y: Float) {
@@ -738,6 +742,10 @@ private fun WebView.simulateClick(x: Float, y: Float) {
 }
 
 /** Petit curseur circulaire (blanc, bordure noire) superposé à la WebView, positionné en pixels. */
+/**
+ * Curseur style télécommande TV : disque clair bien visible sur fond clair ou sombre
+ * (anneau noir fin + cœur blanc + point d'accent), taille proche d'un pointeur TV système.
+ */
 @Composable
 private fun VirtualCursor(offset: Offset, modifier: Modifier = Modifier) {
     val density = LocalDensity.current
@@ -751,9 +759,54 @@ private fun VirtualCursor(offset: Offset, modifier: Modifier = Modifier) {
                 )
             }
             .size(CURSOR_SIZE_DP.dp)
+            // Halo sombre léger pour détacher le curseur du fond de page.
+            .background(Color.Black.copy(alpha = 0.35f), shape = CircleShape)
+            .padding(2.dp)
             .background(Color.White, shape = CircleShape)
             .border(2.dp, Color.Black, CircleShape)
+            .padding(5.dp)
+            .background(DpFlixColors.Red, shape = CircleShape)
     )
+}
+
+
+/**
+ * Domaines d'infrastructure légitimes par stream (CDN, API, assets, domaines frères).
+ * Le domaine principal du lien (et tous ses sous-domaines) est toujours autorisé à part.
+ * Seules les navigations hors de cet ensemble sont traitées comme redirections à bloquer.
+ */
+private val STREAM_INFRASTRUCTURE_HOSTS: Map<Int, Set<String>> = mapOf(
+    1 to setOf(
+        "purstream.tv",
+        "purstream.wiki",
+        "themoviedb.org",
+        "api.themoviedb.org",
+        "image.tmdb.org",
+    ),
+    2 to setOf(
+        "french-manga.net",
+        "cdnjs.cloudflare.com",
+        "image.tmdb.org",
+        "themoviedb.org",
+    ),
+    3 to setOf(
+        "aoneroom.com",
+        "cloudfront.net",
+        "themoviebox.app",
+        "moviebox.co",
+        "moviebox.ph",
+        "movieboxonline.net",
+        "trasre.com",
+        "downloadmoviebox.com",
+        "downloader2.com",
+    ),
+)
+
+private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<String> {
+    return buildSet {
+        addAll(userExtras)
+        addAll(STREAM_INFRASTRUCTURE_HOSTS[streamIndex].orEmpty())
+    }
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -768,14 +821,14 @@ private fun LockedWebView(
     onFullscreenChanged: (Boolean) -> Unit,
     onPageTitleChanged: (String?) -> Unit = {},
     onRendererGone: () -> Unit = {},
+    /** TV : UA bureau pour limiter les pages vides / versions mobiles cassées. */
+    preferDesktopUserAgent: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val allowedHost = remember(url) { Uri.parse(url).host }
-    // Domaines "exception" (§Réglages Films et Séries) — ex. CDN de téléchargement
-    // (vidzy.cc) vers lequel le site principal redirige lui-même via son propre lien
-    // "Télécharger". Normalisés une fois ici (retirer un éventuel "www.", mettre en
-    // minuscule) pour que la comparaison ci-dessous soit fiable quelle que soit la forme
-    // saisie par l'utilisateur dans le dialogue de gestion.
+    val allowedHostNormalized = remember(url) {
+        Uri.parse(url).host?.lowercase()?.removePrefix("www.")
+    }
+    // Infra stream + exceptions Réglages, normalisés (minuscule, sans www.).
     val normalizedExtraHosts = remember(extraAllowedHosts) {
         extraAllowedHosts
             .map { it.trim().lowercase().removePrefix("www.") }
@@ -799,6 +852,15 @@ private fun LockedWebView(
 
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                if (preferDesktopUserAgent) {
+                    // Stream 3 (themoviebox) : UA bureau + viewport large pour que la
+                    // mise en page desktop reste exploitable avec le curseur D-pad TV.
+                    settings.userAgentString =
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+                            "(KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                    settings.useWideViewPort = true
+                    settings.loadWithOverviewMode = true
+                }
                 // Nécessaire pour que les sites Films & Séries démarrent la lecture sans
                 // exiger un second tap dédié côté page (le tap initial de l'utilisateur
                 // reste requis, ce réglage évite seulement un blocage supplémentaire du
@@ -816,21 +878,18 @@ private fun LockedWebView(
                         view: WebView,
                         request: WebResourceRequest
                     ): Boolean {
-                        val host = request.url.host?.lowercase() ?: return true
-                        val isMainDomain = allowedHost != null &&
-                            (host == allowedHost || host.endsWith(".$allowedHost"))
-                        // Domaine d'exception (§Réglages Films et Séries) : même règle
-                        // hôte exact + sous-domaines que le domaine principal ci-dessus —
-                        // permet au lien "Télécharger" propre au site de rediriger vers son
-                        // CDN (ex. vidzy.cc) sans que ce soit traité comme une redirection
-                        // publicitaire/tierce à bloquer.
+                        val host = request.url.host?.lowercase()?.removePrefix("www.") ?: return true
+                        // Domaine du stream + tous ses sous-domaines (ex. api.purstream.store).
+                        val isMainDomain = allowedHostNormalized != null &&
+                            (host == allowedHostNormalized ||
+                                host.endsWith(".$allowedHostNormalized"))
+                        // Infra du stream + domaines d'exception Réglages (CDN téléchargement,
+                        // API, assets). Sous-domaines inclus. Tout le reste = redirection
+                        // publicitaire / page tierce → bloqué (return true).
                         val isExtraAllowed = normalizedExtraHosts.any { extra ->
                             host == extra || host.endsWith(".$extra")
                         }
                         val isAllowed = isMainDomain || isExtraAllowed
-                        // true = on bloque la navigation (Android n'appelle pas loadUrl,
-                        // la page affichée reste inchangée) ; false = on laisse la WebView
-                        // la charger elle-même.
                         return !isAllowed
                     }
 

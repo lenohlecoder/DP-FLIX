@@ -45,6 +45,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.dpflix.android.repository.AppRepository
@@ -81,7 +84,9 @@ fun StartupVideoScreen(
     BackHandler { finishOnce() }
 
     LaunchedEffect(Unit) {
-        val status = appRepository.companion.getStatus()
+        // Cache du préchargement (écran code) si déjà chaud, sinon fetch réseau.
+        val status = appRepository.companion.peekCachedStatus()
+            ?: appRepository.companion.getStatus()
         val url = status?.videoUrl?.trim().orEmpty()
         if (url.isEmpty()) {
             finishOnce()
@@ -169,11 +174,31 @@ private fun DirectVideoPlayer(
 ) {
     val context = LocalContext.current
     val player = remember(url) {
-        ExoPlayer.Builder(context).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.parse(url)))
-            prepare()
-            playWhenReady = true
-        }
+        // Buffer plus généreux que les défauts ExoPlayer : limite les micro-coupures
+        // (STATE_BUFFERING) sur TV / liaisons instables sans toucher au site compagnon.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                /* minBufferMs */ 15_000,
+                /* maxBufferMs */ 50_000,
+                /* bufferForPlaybackMs */ 1_500,
+                /* bufferForPlaybackAfterRebufferMs */ 5_000
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(20_000)
+            .setAllowCrossProtocolRedirects(true)
+            .setUserAgent("DP-Flix-StartupVideo")
+        ExoPlayer.Builder(context)
+            .setLoadControl(loadControl)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(httpFactory))
+            .build()
+            .apply {
+                setMediaItem(MediaItem.fromUri(Uri.parse(url)))
+                prepare()
+                playWhenReady = true
+            }
     }
 
     DisposableEffect(player) {
@@ -250,6 +275,10 @@ private fun StartupWebView(
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
                 settings.mediaPlaybackRequiresUserGesture = false
+                // Cache HTTP de la page / assets : réduit les à-coups si la vidéo est
+                // embarquée dans une page HTML distante (cas fréquent du site compagnon).
+                settings.cacheMode = android.webkit.WebSettings.LOAD_DEFAULT
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                 // Ne pas laisser la WebView capturer tout le D-pad : le skip reste
                 // géré par le Box parent + bouton Passer (focus Compose).
                 isFocusable = false

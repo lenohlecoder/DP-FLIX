@@ -156,6 +156,12 @@ fun DpFlixNavHost(
         }
 
         composable(DpFlixDestination.Lock.route) {
+            // Dès l'écran code : résoudre videoUrl + chauffer l'hôte vidéo (DNS/TLS)
+            // pour que StartupVideo démarre sans latence réseau « à froid ».
+            LaunchedEffect(Unit) {
+                appRepository.companion.prefetchStartupMedia()
+            }
+
             LockScreen(
                 accessRepository = accessRepository,
                 onUnlocked = {

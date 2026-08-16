@@ -255,6 +255,7 @@ private fun XtreamFormStepTv(
             modifier = Modifier.focusProperties {
                 up = passwordFocusRequester
                 down = submitFocusRequester
+                right = submitFocusRequester
             }
         )
     }
@@ -329,6 +330,7 @@ private fun M3uFormStepTv(
             modifier = Modifier.focusProperties {
                 up = urlFocusRequester
                 down = submitFocusRequester
+                right = submitFocusRequester
             }
         )
     }
@@ -339,10 +341,9 @@ private fun M3uFormStepTv(
 }
 
 /**
- * Squelette commun aux deux formulaires TV : trois colonnes (titre/erreur à gauche,
- * contenu au centre, actions à droite) — voir la doc de [OnboardingScreenTv] sur ce
- * choix. [ChooseTypeStepTv] n'utilise pas ce scaffold (pas de colonne d'actions,
- * disposition à deux colonnes seulement).
+ * Squelette commun aux deux formulaires TV : colonne verticale unique
+ * (titre / erreur → champs scrollables → Suivant / Précédent) pour un parcours
+ * D-pad haut/bas naturel. [ChooseTypeStepTv] n'utilise pas ce scaffold.
  */
 @Composable
 private fun OnboardingScaffoldTv(
@@ -352,31 +353,34 @@ private fun OnboardingScaffoldTv(
     actions: @Composable ColumnScope.() -> Unit,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Row(
+    // Colonne unique (titre → champs scrollables → Suivant/Précédent) plutôt qu'un Row
+    // 3 colonnes : avec la télécommande, haut/bas est l'instinct naturel. En disposition
+    // latérale, le focus restait souvent bloqué sur Suivant/Précédent faute de lien up/left
+    // fiable selon les appareils.
+    Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = 56.dp, vertical = 48.dp),
-        horizontalArrangement = Arrangement.spacedBy(48.dp)
+            .padding(horizontal = 56.dp, vertical = 40.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Column(modifier = Modifier.weight(0.9f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(text = title, fontSize = 28.sp, color = DpFlixColors.OnBackground)
-            if (subtitle != null) {
-                Text(text = subtitle, fontSize = 16.sp, color = DpFlixColors.OnBackgroundMuted)
-            }
-            if (errorMessage != null) {
-                Text(text = errorMessage, fontSize = 16.sp, color = DpFlixColors.Red)
-            }
+        Text(text = title, fontSize = 28.sp, color = DpFlixColors.OnBackground)
+        if (subtitle != null) {
+            Text(text = subtitle, fontSize = 16.sp, color = DpFlixColors.OnBackgroundMuted)
+        }
+        if (errorMessage != null) {
+            Text(text = errorMessage, fontSize = 16.sp, color = DpFlixColors.Red)
         }
         Column(
             modifier = Modifier
-                .weight(1.3f)
+                .weight(1f)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             content()
         }
         Column(
-            modifier = Modifier.weight(0.7f),
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             actions()
@@ -406,7 +410,10 @@ private fun OnboardingActionsTv(
         enabled = !isSubmitting,
         focusRequester = submitFocusRequester,
         modifier = Modifier.focusProperties {
+            // Disposition verticale : Haut = dernier champ du formulaire,
+            // Bas = Précédent. left aussi câblé en secours (anciennes habitudes D-pad).
             up = previousFocusRequester
+            left = previousFocusRequester
             down = backFocusRequester
         },
         content = if (isSubmitting) {
@@ -420,7 +427,11 @@ private fun OnboardingActionsTv(
         onClick = onBack,
         enabled = !isSubmitting,
         focusRequester = backFocusRequester,
-        modifier = Modifier.focusProperties { up = submitFocusRequester }
+        modifier = Modifier.focusProperties {
+            // Uniquement vers Suivant : left vers le formulaire créait un saut déroutant
+            // depuis le bas de la colonne d'actions.
+            up = submitFocusRequester
+        }
     )
 }
 

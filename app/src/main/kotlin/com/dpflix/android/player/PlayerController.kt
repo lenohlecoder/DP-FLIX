@@ -198,6 +198,18 @@ class PlayerController(
     private val onReplayParsingError: ((Channel) -> Unit)? = null
 ) {
 
+    /**
+     * Garde d'idempotence (correctif ActivePlayerHolder, 16/08) : [release] peut désormais
+     * être appelé deux fois de suite dans un scénario réel — [ActivePlayerHolder.releaseIfAny]
+     * avant navigation vers Lock, PUIS le `DisposableEffect(onDispose)` de [PlayerScreen] au
+     * démontage qui suit. Sans ce garde, [release] réexécuterait
+     * `controllerScope.cancel()`/`exoPlayer.release()` une seconde fois — inoffensif dans la
+     * plupart des cas mais non garanti (dépend d'ExoPlayer/coroutines), donc rendu explicite
+     * ici plutôt que supposé.
+     */
+    @Volatile
+    private var released = false
+
     private val _uiState = MutableStateFlow<PlayerUiState>(PlayerUiState.Idle)
     val uiState: StateFlow<PlayerUiState> = _uiState
 
@@ -2827,10 +2839,6 @@ class PlayerController(
     }
 
     /** À appeler impérativement quand l'écran qui détient ce controller disparaît. */
-    /** Évite un double [release] (holder NavHost + DisposableEffect PlayerScreen). */
-    @Volatile
-    private var released: Boolean = false
-
     fun release() {
         if (released) return
         released = true
@@ -2838,11 +2846,7 @@ class PlayerController(
         bufferManagerJob?.cancel()
         cancelLivePipelineAndPurgeSessionCache()
         controllerScope.cancel()
-        try {
-            exoPlayer.release()
-        } catch (_: Exception) {
-            // Idempotence : un second appel ne doit jamais planter le process.
-        }
+        exoPlayer.release()
     }
 
     companion object {

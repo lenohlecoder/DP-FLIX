@@ -133,6 +133,12 @@ fun DpFlixTvNavHost(
         }
 
         composable(DpFlixDestination.Lock.route) {
+            // Dès l'écran code : résoudre videoUrl + chauffer l'hôte vidéo (DNS/TLS)
+            // pour que StartupVideo démarre sans latence réseau « à froid ».
+            LaunchedEffect(Unit) {
+                appRepository.companion.prefetchStartupMedia()
+            }
+
             // Réutilise LockScreen mobile (Compose Material3), avec isTv=true pour
             // adapter le contact fournisseur (numéro affiché en grand plutôt que
             // tentative de redirection WhatsApp, voir LockScreen).

@@ -2,6 +2,7 @@ package com.dpflix.android.access
 
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -87,11 +88,14 @@ fun LockScreen(
             }
 
             fun contactProvider() {
-                // TV : pas d'app WhatsApp installée dans l'immense majorité des cas, et
-                // tenter ACTION_VIEW pourrait ouvrir un navigateur TV de façon peu naturelle
-                // à la télécommande — on affiche directement le numéro en grand plutôt que
-                // de rediriger vers quoi que ce soit.
-                if (isTv) {
+                // TV / Leanback : jamais d'intent WhatsApp (navigateur TV peu utilisable
+                // à la télécommande) — afficher le numéro en grand sur l'écran.
+                val leanback = context.packageManager.hasSystemFeature(
+                    PackageManager.FEATURE_LEANBACK
+                ) || context.packageManager.hasSystemFeature(
+                    "android.software.leanback"
+                )
+                if (isTv || leanback) {
                     showPhoneNumber = true
                     return
                 }

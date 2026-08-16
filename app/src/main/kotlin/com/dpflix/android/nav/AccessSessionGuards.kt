@@ -25,7 +25,8 @@ import kotlinx.coroutines.delay
  *    pause jusqu'à l'expiration d'un code temporaire.
  * 3. **Garde [UserAccess.isAccessValid]** — seule source de navigation vers Lock ;
  *    appelle [ActivePlayerHolder.releaseIfAny] **avant** de naviguer pour éviter une
- *    course avec le teardown ExoPlayer.
+ *    course avec le teardown ExoPlayer, puis vide toute la pile via `popUpTo(0)`
+ *    (voir le commentaire sur place — Splash n'y est déjà plus la plupart du temps).
  */
 @Composable
 fun AccessSessionGuards(
@@ -69,8 +70,14 @@ fun AccessSessionGuards(
             // C — arrêter ExoPlayer / scopes avant de vider le back stack.
             activePlayerHolder.releaseIfAny()
             navController.navigate(DpFlixDestination.Lock.route) {
-                // E — route-string plutôt que popUpTo(0) magique.
-                popUpTo(DpFlixDestination.Splash.route) { inclusive = true }
+                // popUpTo(0) plutôt que popUpTo(Splash.route) : Splash se retire lui-même
+                // de la pile dès la toute première navigation (voir DpFlixNavHost/
+                // DpFlixTvNavHost), donc ce garde se déclenche presque toujours APRÈS que
+                // Splash a déjà disparu — popUpTo(Splash.route) ne trouverait alors rien à
+                // vider, laissant les écrans protégés visités sous Lock (bouton Retour
+                // pourrait y ramener sans code). popUpTo(0) vide toute la pile sans
+                // dépendre d'une route précise qui y soit encore présente.
+                popUpTo(0) { inclusive = true }
             }
         }
     }

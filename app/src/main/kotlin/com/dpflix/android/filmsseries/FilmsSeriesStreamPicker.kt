@@ -1,6 +1,13 @@
 package com.dpflix.android.filmsseries
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,6 +24,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
@@ -90,6 +98,8 @@ fun FilmsSeriesStreamPickerTv(
     BackHandler(onBack = onDismiss)
 
     val stream1FocusRequester = remember { FocusRequester() }
+    val stream2FocusRequester = remember { FocusRequester() }
+    val stream3FocusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         stream1FocusRequester.requestFocus()
     }
@@ -107,18 +117,57 @@ fun FilmsSeriesStreamPickerTv(
         ) {
             TvText(text = "Films et Séries", color = DpFlixColors.OnBackground)
             TvText(text = "Quel lien veux-tu ouvrir ?", color = DpFlixColors.OnBackgroundMuted)
-            Button(
+            StreamPickerOptionTv(
+                label = "Stream 1",
                 onClick = { onSelectStream(1) },
-                modifier = Modifier.focusRequester(stream1FocusRequester)
-            ) {
-                TvText("Stream 1")
-            }
-            Button(onClick = { onSelectStream(2) }) {
-                TvText("Stream 2")
-            }
-            Button(onClick = { onSelectStream(3) }) {
-                TvText("Stream 3")
-            }
+                focusRequester = stream1FocusRequester,
+                modifier = Modifier.focusProperties { down = stream2FocusRequester }
+            )
+            StreamPickerOptionTv(
+                label = "Stream 2",
+                onClick = { onSelectStream(2) },
+                focusRequester = stream2FocusRequester,
+                modifier = Modifier.focusProperties {
+                    up = stream1FocusRequester
+                    down = stream3FocusRequester
+                }
+            )
+            StreamPickerOptionTv(
+                label = "Stream 3",
+                onClick = { onSelectStream(3) },
+                focusRequester = stream3FocusRequester,
+                modifier = Modifier.focusProperties { up = stream2FocusRequester }
+            )
         }
+    }
+}
+
+@Composable
+private fun StreamPickerOptionTv(
+    label: String,
+    onClick: () -> Unit,
+    focusRequester: FocusRequester,
+    modifier: Modifier = Modifier
+) {
+    var isFocused by remember { mutableStateOf(false) }
+    Box(
+        modifier = modifier
+            .fillMaxWidth(0.5f)
+            .onFocusChanged { isFocused = it.isFocused }
+            .background(DpFlixColors.Surface, shape = RoundedCornerShape(10.dp))
+            .border(
+                width = if (isFocused) 4.dp else 0.dp,
+                color = DpFlixColors.Red,
+                shape = RoundedCornerShape(10.dp)
+            )
+            .focusRequester(focusRequester)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        TvText(
+            text = if (isFocused) "▶ $label" else label,
+            color = DpFlixColors.OnBackground
+        )
     }
 }
