@@ -136,6 +136,11 @@ fun DpFlixTvNavHost(
         composable(TV_POST_SPLASH_ROUTE) {
             LaunchedEffect(Unit) {
                 appRepository.applyDefaultPlaylistOnStartup()
+                // Correctif recul d'horloge (15/08) — même mécanique que DpFlixNavHost
+                // (mobile), voir sa doc : heure serveur du site compagnon en priorité,
+                // repli automatique sur l'heure système si indisponible.
+                val companionStatus = appRepository.companion.getStatus()
+                companionStatus?.serverTimeMs?.let { accessRepository.recordTrustedTime(it) }
                 val destination = when {
                     !accessRepository.hasValidSession() ->
                         DpFlixDestination.Lock.route
@@ -149,9 +154,12 @@ fun DpFlixTvNavHost(
         }
 
         composable(DpFlixDestination.Lock.route) {
-            // Réutilise LockScreen mobile (Compose Material3) — suffisant pour TV v1
+            // Réutilise LockScreen mobile (Compose Material3), avec isTv=true pour
+            // adapter le contact fournisseur (numéro affiché en grand plutôt que
+            // tentative de redirection WhatsApp, voir LockScreen).
             LockScreen(
                 accessRepository = accessRepository,
+                isTv = true,
                 onUnlocked = {
                     navController.navigate(TV_POST_LOCK_ROUTE) {
                         popUpTo(DpFlixDestination.Lock.route) { inclusive = true }

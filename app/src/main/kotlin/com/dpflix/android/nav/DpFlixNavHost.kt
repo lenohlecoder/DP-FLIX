@@ -163,6 +163,16 @@ fun DpFlixNavHost(
             LaunchedEffect(Unit) {
                 appRepository.applyDefaultPlaylistOnStartup()
 
+                // Correctif recul d'horloge (15/08) : avant d'évaluer le verrou, on
+                // tente de récupérer une heure serveur fiable via le site compagnon
+                // (déjà interrogé pour l'interstitiel vidéo — même appel, même
+                // timeout court 5s, jamais bloquant : getStatus() ne jette jamais et
+                // rend null en cas d'échec réseau). Priorité toujours au site ; en
+                // son absence, AccessRepository se rabat automatiquement sur l'heure
+                // système (voir la doc de la classe).
+                val companionStatus = appRepository.companion.getStatus()
+                companionStatus?.serverTimeMs?.let { accessRepository.recordTrustedTime(it) }
+
                 val destination = when {
                     !accessRepository.hasValidSession() ->
                         DpFlixDestination.Lock.route
