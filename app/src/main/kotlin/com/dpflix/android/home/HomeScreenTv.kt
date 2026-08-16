@@ -449,58 +449,75 @@ private fun ChannelCardTv(
     onClick: () -> Unit
 ) {
     var isFocused by remember { mutableStateOf(false) }
-    Column(
+    // Fix (16 août 2026) : la LazyRow parente (comme tout conteneur scrollable Compose)
+    // rogne son contenu à ses propres limites mesurées. Le `graphicsLayer` d'agrandissement
+    // ci-dessous ne change que le DESSIN de la carte, jamais sa taille réellement mesurée —
+    // sans marge de réserve, les ~10% de débordement au focus (bordure comprise) se
+    // faisaient donc couper net par ce rognage : au lieu du halo net attendu, seul un mince
+    // filet de bordure restait visible (§ retour utilisateur : "lueur de focus peu
+    // visible"). Cette Box externe, de taille fixe (176.dp = 160.dp de carte + 8.dp de
+    // marge de chaque côté), est ce que la LazyRow mesure réellement pour chaque item —
+    // l'agrandissement au focus se dessine désormais entièrement à l'intérieur de cette
+    // marge réservée, sans plus jamais dépasser les limites mesurées de l'item.
+    Box(
         modifier = Modifier
-            .width(160.dp)
-            .onFocusChanged { isFocused = it.isFocused }
-            .graphicsLayer {
-                // Agrandissement net au focus pour que la carte active soit
-                // immédiatement identifiable en LazyRow (sinon bordure 3.dp trop discrète).
-                val s = if (isFocused) 1.1f else 1f
-                scaleX = s
-                scaleY = s
-            }
-            .clip(RoundedCornerShape(8.dp))
-            .background(
-                when {
-                    isFocused -> DpFlixColors.Red.copy(alpha = 0.25f)
-                    isSelected -> DpFlixColors.Surface
-                    else -> DpFlixColors.Surface
-                }
-            )
-            .border(
-                width = when {
-                    isFocused -> 4.dp
-                    isSelected -> 2.dp
-                    else -> 0.dp
-                },
-                color = when {
-                    isFocused -> DpFlixColors.Red
-                    isSelected -> DpFlixColors.Red.copy(alpha = 0.55f)
-                    else -> Color.Transparent
-                },
-                shape = RoundedCornerShape(8.dp)
-            )
-            .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
-            .clickable(onClick = onClick)
-            .padding(8.dp)
+            .width(176.dp)
+            .padding(8.dp),
+        contentAlignment = Alignment.Center
     ) {
-        channel.displayNumber?.let { number ->
-            Text(text = "$number", color = DpFlixColors.OnBackgroundMuted, fontSize = 14.sp)
-        }
-        // [Fix logos accueil] voir la doc de com.dpflix.android.ui.ChannelLogo —
-        // même correctif que côté mobile (HomeScreen.ChannelCard).
-        ChannelLogo(channel = channel, size = 48.dp)
-        Text(
-            text = channel.name,
-            color = DpFlixColors.OnBackground,
-            fontSize = 16.sp,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
-        when {
-            isFocused -> Text(text = "▶ Focus", color = DpFlixColors.Red, fontSize = 12.sp)
-            isSelected -> Text(text = "En aperçu", color = DpFlixColors.Red, fontSize = 12.sp)
+        Column(
+            modifier = Modifier
+                .width(160.dp)
+                .onFocusChanged { isFocused = it.isFocused }
+                .graphicsLayer {
+                    // Agrandissement net au focus pour que la carte active soit
+                    // immédiatement identifiable en LazyRow (sinon bordure 3.dp trop discrète).
+                    val s = if (isFocused) 1.1f else 1f
+                    scaleX = s
+                    scaleY = s
+                }
+                .clip(RoundedCornerShape(8.dp))
+                .background(
+                    when {
+                        isFocused -> DpFlixColors.Red.copy(alpha = 0.25f)
+                        isSelected -> DpFlixColors.Surface
+                        else -> DpFlixColors.Surface
+                    }
+                )
+                .border(
+                    width = when {
+                        isFocused -> 4.dp
+                        isSelected -> 2.dp
+                        else -> 0.dp
+                    },
+                    color = when {
+                        isFocused -> DpFlixColors.Red
+                        isSelected -> DpFlixColors.Red.copy(alpha = 0.55f)
+                        else -> Color.Transparent
+                    },
+                    shape = RoundedCornerShape(8.dp)
+                )
+                .let { if (focusRequester != null) it.focusRequester(focusRequester) else it }
+                .clickable(onClick = onClick)
+                .padding(8.dp)
+        ) {
+            channel.displayNumber?.let { number ->
+                Text(text = "$number", color = DpFlixColors.OnBackgroundMuted, fontSize = 14.sp)
+            }
+            // [Fix logos accueil] voir la doc de com.dpflix.android.ui.ChannelLogo —
+            // même correctif que côté mobile (HomeScreen.ChannelCard).
+            ChannelLogo(channel = channel, size = 48.dp)
+            Text(
+                text = channel.name,
+                color = DpFlixColors.OnBackground,
+                fontSize = 16.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            when {
+                isFocused -> Text(text = "▶ Focus", color = DpFlixColors.Red, fontSize = 12.sp)
+                isSelected -> Text(text = "En aperçu", color = DpFlixColors.Red, fontSize = 12.sp)
+            }
         }
     }
 }

@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -77,7 +76,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -90,7 +88,6 @@ import com.dpflix.android.settings.GeneralSettings
 import com.dpflix.android.ui.theme.DpFlixColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlin.math.roundToInt
 
 /**
  * Section "Films et Séries" (remplace l'ancien Guide TV, retiré le 25 juillet 2026 — voir
@@ -352,7 +349,10 @@ fun FilmsSeriesScreen(
 
         val offset = cursorOffset
         if (showVirtualCursor && offset != null) {
-            VirtualCursor(offset = offset)
+            // Fix (16 août 2026) : voir doc de [VirtualCursorView] plus bas — une View
+            // interop (la WebView) dessine toujours par-dessus le contenu Compose composé
+            // après elle, curseur donc invisible tant qu'il restait un Composable pur.
+            VirtualCursorOverlay(offsetPx = offset)
         }
 
         // Réglages (domaines d'exception) + flèche téléchargement + raccourci bibliothèque
@@ -742,31 +742,72 @@ private fun WebView.simulateClick(x: Float, y: Float) {
     upEvent.recycle()
 }
 
-/** Petit curseur circulaire (blanc, bordure noire) superposé à la WebView, positionné en pixels. */
 /**
- * Curseur style télécommande TV : disque clair bien visible sur fond clair ou sombre
- * (anneau noir fin + cœur blanc + point d'accent), taille proche d'un pointeur TV système.
+ * Overlay du curseur virtuel rendu comme une vraie View Android (`onDraw` custom) plutôt
+ * qu'en Compose pur.
+ *
+ * Fix (16 août 2026) : une `WebView` intégrée via `AndroidView` dessine TOUJOURS par-dessus
+ * tout contenu Compose composé après elle dans le même arbre — limitation connue de
+ * l'interop Compose/View (une View interop "passe devant" le rendu Compose, quel que soit
+ * l'ordre dans le code source). L'ancien curseur (`VirtualCursor`, Composable pur) était
+ * donc bien positionné et bien recalculé à chaque appui D-pad, mais invisible à l'écran :
+ * rendu "sous" la WebView. Deux Views Android natives respectent en revanche leur ordre
+ * d'ajout entre elles — cet overlay est donc lui aussi une View native, ajoutée après la
+ * WebView dans l'arbre, ce qui la fait apparaître par-dessus comme attendu.
+ *
+ * Style : curseur noir plein (§ demande utilisateur — souris bien visible façon navigateur
+ * classique) cerné d'un anneau blanc pour rester lisible même sur un fond de page sombre.
  */
+private class VirtualCursorView(context: android.content.Context) : View(context) {
+
+    /** Position en pixels dans le repère de cette View ; `null` = rien à dessiner. */
+    var cursorOffsetPx: Offset? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    private val outerRingPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.WHITE
+        style = android.graphics.Paint.Style.FILL
+    }
+    private val bodyPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.BLACK
+        style = android.graphics.Paint.Style.FILL
+    }
+    private val haloPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.argb(70, 0, 0, 0)
+        style = android.graphics.Paint.Style.FILL
+    }
+
+    override fun onDraw(canvas: android.graphics.Canvas) {
+        super.onDraw(canvas)
+        val offset = cursorOffsetPx ?: return
+        val outerRadius = resources.displayMetrics.density * (CURSOR_SIZE_DP / 2f)
+        // Halo léger pour détacher le curseur d'un fond de page très clair.
+        canvas.drawCircle(offset.x, offset.y, outerRadius + resources.displayMetrics.density * 3f, haloPaint)
+        // Anneau blanc, bien visible même sur fond sombre.
+        canvas.drawCircle(offset.x, offset.y, outerRadius, outerRingPaint)
+        // Cœur noir plein — le curseur "souris" demandé.
+        canvas.drawCircle(offset.x, offset.y, outerRadius * 0.72f, bodyPaint)
+    }
+}
+
 @Composable
-private fun VirtualCursor(offset: Offset, modifier: Modifier = Modifier) {
-    val density = LocalDensity.current
-    val halfSizePx = with(density) { (CURSOR_SIZE_DP.dp / 2).toPx() }
-    Box(
-        modifier = modifier
-            .offset {
-                IntOffset(
-                    (offset.x - halfSizePx).roundToInt(),
-                    (offset.y - halfSizePx).roundToInt()
-                )
+private fun VirtualCursorOverlay(offsetPx: Offset, modifier: Modifier = Modifier) {
+    AndroidView(
+        modifier = modifier.fillMaxSize(),
+        factory = { ctx ->
+            VirtualCursorView(ctx).apply {
+                // Ne doit jamais intercepter de touch/focus : elle n'est là que pour
+                // dessiner par-dessus la WebView, tout le reste (D-pad, clics simulés)
+                // reste géré par le gestionnaire de curseur de `FilmsSeriesScreen`.
+                isClickable = false
+                isFocusable = false
+                cursorOffsetPx = offsetPx
             }
-            .size(CURSOR_SIZE_DP.dp)
-            // Halo sombre léger pour détacher le curseur du fond de page.
-            .background(Color.Black.copy(alpha = 0.35f), shape = CircleShape)
-            .padding(2.dp)
-            .background(Color.White, shape = CircleShape)
-            .border(2.dp, Color.Black, CircleShape)
-            .padding(5.dp)
-            .background(DpFlixColors.Red, shape = CircleShape)
+        },
+        update = { view -> view.cursorOffsetPx = offsetPx }
     )
 }
 
@@ -853,6 +894,19 @@ private fun LockedWebView(
 
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
+                // Fix (16 août 2026) : cookies jamais activés jusqu'ici. La plupart des
+                // sites Films & Séries (stream 1 en particulier) passent par une
+                // vérification anti-bot / session basée sur cookie avant d'afficher quoi
+                // que ce soit — sans ça la page reste bloquée indéfiniment sur un écran
+                // noir, le HTML est chargé mais l'échange de session ne se termine jamais.
+                val cookieManager = android.webkit.CookieManager.getInstance()
+                cookieManager.setAcceptCookie(true)
+                cookieManager.setAcceptThirdPartyCookies(this, true)
+                // Fix (16 août 2026) : Android bloque par défaut les ressources http://
+                // chargées depuis une page https:// (MIXED_CONTENT_NEVER_ALLOW). Plusieurs
+                // CDN d'images de stream 3 sont encore servis en http:// → les vignettes de
+                // programme restaient invisibles (cases vides) sans jamais d'erreur visible.
+                settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 if (preferDesktopUserAgent) {
                     // Stream 3 (themoviebox) : UA bureau + viewport large pour que la
                     // mise en page desktop reste exploitable avec le curseur D-pad TV.

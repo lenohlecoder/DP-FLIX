@@ -213,7 +213,23 @@ private fun XtreamFormStepTv(
             OnboardingActionsTv(
                 isSubmitting = state.isSubmitting,
                 onBack = onBack,
-                onSubmit = onSubmit,
+                // Fix (16 août 2026, § demande utilisateur) : sur TV, sans clavier
+                // physique la plupart du temps, il est facile d'appuyer sur "Suivant"
+                // en pensant avoir tout rempli. Avant, un formulaire incomplet
+                // déclenchait simplement l'erreur générique de [onSubmit] (venant du
+                // ViewModel) sans indiquer QUEL champ manque — l'utilisateur devait
+                // remonter à l'aveugle. Désormais : le premier champ vide reçoit le
+                // focus directement (le curseur/clavier s'y ouvre), sans appeler
+                // [onSubmit] tant que le formulaire n'est pas complet. Validation
+                // réelle seulement une fois tous les champs requis remplis.
+                onSubmit = {
+                    when {
+                        form.serverUrl.isBlank() -> serverFocusRequester.requestFocus()
+                        form.username.isBlank() -> usernameFocusRequester.requestFocus()
+                        form.password.isBlank() -> passwordFocusRequester.requestFocus()
+                        else -> onSubmit()
+                    }
+                },
                 submitFocusRequester = submitFocusRequester,
                 backFocusRequester = backFocusRequester,
                 previousFocusRequester = toggleFocusRequester
@@ -293,7 +309,18 @@ private fun M3uFormStepTv(
             OnboardingActionsTv(
                 isSubmitting = state.isSubmitting,
                 onBack = onBack,
-                onSubmit = onSubmit,
+                // Fix (16 août 2026) : même principe que XtreamFormStepTv — saute au
+                // premier champ manquant plutôt que de tenter une validation qui
+                // échouera. URL et fichier importé sont des alternatives (§4.2,
+                // "en alternative") : l'un des deux suffit, seul leur absence conjointe
+                // bloque la validation.
+                onSubmit = {
+                    when {
+                        form.name.isBlank() -> nameFocusRequester.requestFocus()
+                        form.url.isBlank() && form.localFileUri == null -> urlFocusRequester.requestFocus()
+                        else -> onSubmit()
+                    }
+                },
                 submitFocusRequester = submitFocusRequester,
                 backFocusRequester = backFocusRequester,
                 previousFocusRequester = importFocusRequester
