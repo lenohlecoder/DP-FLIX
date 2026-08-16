@@ -40,7 +40,7 @@ import com.dpflix.android.ui.theme.DpFlixTheme
 import kotlinx.coroutines.launch
 
 /**
- * Écran de verrouillage / activation (mobile).
+ * Écran de verrouillage / activation — partagé mobile + TV (voir [isTv]).
  *
  * Flux :
  * - LOCKED (jamais déverrouillé, ou période expirée) → champ de saisie de code
@@ -49,7 +49,8 @@ import kotlinx.coroutines.launch
 @Composable
 fun LockScreen(
     accessRepository: AccessRepository,
-    onUnlocked: () -> Unit
+    onUnlocked: () -> Unit,
+    isTv: Boolean = false
 ) {
     DpFlixTheme {
         DpFlixBackground {
@@ -86,6 +87,14 @@ fun LockScreen(
             }
 
             fun contactProvider() {
+                // TV : pas d'app WhatsApp installée dans l'immense majorité des cas, et
+                // tenter ACTION_VIEW pourrait ouvrir un navigateur TV de façon peu naturelle
+                // à la télécommande — on affiche directement le numéro en grand plutôt que
+                // de rediriger vers quoi que ce soit.
+                if (isTv) {
+                    showPhoneNumber = true
+                    return
+                }
                 val waUri = Uri.parse(
                     "https://wa.me/${AccessRepository.ADMIN_WHATSAPP_E164}" +
                         "?text=" + Uri.encode(
@@ -200,14 +209,16 @@ fun LockScreen(
                     Text(
                         text = "Appelez ou écrivez au :",
                         color = DpFlixColors.OnBackgroundMuted,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = if (isTv) MaterialTheme.typography.headlineSmall
+                            else MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = AccessRepository.ADMIN_WHATSAPP_DISPLAY,
                         color = DpFlixColors.OnBackground,
-                        style = MaterialTheme.typography.headlineSmall,
+                        style = if (isTv) MaterialTheme.typography.displayMedium
+                            else MaterialTheme.typography.headlineSmall,
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center
                     )
