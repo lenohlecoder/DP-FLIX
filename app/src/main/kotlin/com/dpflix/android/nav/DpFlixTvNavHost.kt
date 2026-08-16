@@ -78,38 +78,17 @@ import kotlinx.coroutines.flow.first
 fun DpFlixTvNavHost(
     appRepository: AppRepository,
     accessRepository: AccessRepository,
+    activePlayerHolder: com.dpflix.android.player.ActivePlayerHolder,
     navController: NavHostController = rememberNavController()
 ) {
-    // Fix (25 juillet 2026) — même correctif que DpFlixNavHost (mobile), voir sa doc :
-    // évite le chevauchement de deux ExoPlayer actifs (mini-lecteur + plein écran)
-    // pendant l'animation de transition par défaut.
+    // Fix (25 juillet 2026) — même correctif transitions que mobile (pas de double ExoPlayer).
 
-    // Garde de session (correctif expiration code local) — même mécanique que
-    // DpFlixNavHost (mobile), voir sa doc : réveil exact à l'échéance d'un unlock
-    // temporaire, reverrouillage sans attendre un redémarrage de l'app.
-    val currentUser by accessRepository.currentUser.collectAsState()
-    val currentBackStackEntry by navController.currentBackStackEntryAsState()
-
-    LaunchedEffect(currentUser.unlockUntilMs, currentUser.status) {
-        val until = currentUser.unlockUntilMs ?: return@LaunchedEffect
-        val delayMs = until - System.currentTimeMillis()
-        if (delayMs > 0) {
-            delay(delayMs)
-            accessRepository.refresh()
-        }
-    }
-
-    LaunchedEffect(currentUser.isAccessValid, currentBackStackEntry?.destination?.route) {
-        val route = currentBackStackEntry?.destination?.route
-        if (!currentUser.isAccessValid &&
-            route != DpFlixDestination.Splash.route &&
-            route != DpFlixDestination.Lock.route
-        ) {
-            navController.navigate(DpFlixDestination.Lock.route) {
-                popUpTo(0) { inclusive = true }
-            }
-        }
-    }
+    // Gardes de session partagées (ON_START, réveil échéance, Lock + release lecteur).
+    AccessSessionGuards(
+        accessRepository = accessRepository,
+        navController = navController,
+        activePlayerHolder = activePlayerHolder
+    )
 
     NavHost(
         navController = navController,

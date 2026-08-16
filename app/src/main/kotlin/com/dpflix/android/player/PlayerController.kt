@@ -2827,12 +2827,22 @@ class PlayerController(
     }
 
     /** À appeler impérativement quand l'écran qui détient ce controller disparaît. */
+    /** Évite un double [release] (holder NavHost + DisposableEffect PlayerScreen). */
+    @Volatile
+    private var released: Boolean = false
+
     fun release() {
+        if (released) return
+        released = true
         cancelWatchdog()
         bufferManagerJob?.cancel()
         cancelLivePipelineAndPurgeSessionCache()
         controllerScope.cancel()
-        exoPlayer.release()
+        try {
+            exoPlayer.release()
+        } catch (_: Exception) {
+            // Idempotence : un second appel ne doit jamais planter le process.
+        }
     }
 
     companion object {

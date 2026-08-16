@@ -64,4 +64,11 @@ class AppContainer(context: Context) {
 
     /** Verrou d'accès 100 % local à l'appareil (Porushd1…12, Mamanzefa). */
     val accessRepository: AccessRepository = AccessRepository(context.applicationContext)
+
+    /**
+     * Lecteur actuellement actif (process-scoped) — permet au garde d'accès NavHost
+     * d'appeler [com.dpflix.android.player.ActivePlayerHolder.releaseIfAny] avant de
+     * naviguer vers le verrouillage.
+     */
+    val activePlayerHolder = com.dpflix.android.player.ActivePlayerHolder()
 }

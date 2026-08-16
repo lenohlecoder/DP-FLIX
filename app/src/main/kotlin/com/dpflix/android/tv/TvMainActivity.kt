@@ -34,7 +34,8 @@ class TvMainActivity : ComponentActivity() {
         setContent {
             DpFlixTvNavHost(
                 appRepository = container.appRepository,
-                accessRepository = container.accessRepository
+                accessRepository = container.accessRepository,
+                activePlayerHolder = container.activePlayerHolder
             )
         }
     }

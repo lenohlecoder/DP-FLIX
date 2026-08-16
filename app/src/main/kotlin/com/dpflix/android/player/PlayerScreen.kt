@@ -48,6 +48,7 @@ import androidx.media3.ui.PlayerView
 import com.dpflix.android.settings.SettingsScreen
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ReplayProgram
+import com.dpflix.android.DpFlixApplication
 import com.dpflix.android.repository.AppRepository
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -221,6 +222,9 @@ fun PlayerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val coroutineScope = rememberCoroutineScope()
+    val activePlayerHolder = remember(context) {
+        (context.applicationContext as? DpFlixApplication)?.container?.activePlayerHolder
+    }
     var controller by remember(channel.id) { mutableStateOf<PlayerController?>(null) }
     var playerView by remember(channel.id) { mutableStateOf<PlayerView?>(null) }
 
@@ -472,6 +476,7 @@ fun PlayerScreen(
         } else {
             created.playChannel(channel)
         }
+        activePlayerHolder?.register(created)
         controller = created
     }
 
@@ -697,7 +702,10 @@ fun PlayerScreen(
 
     DisposableEffect(channel.id) {
         onDispose {
-            controller?.release()
+            controller?.let { c ->
+                activePlayerHolder?.unregister(c)
+                c.release()
+            }
             if (osdEnabled) {
                 PlayerMetricsBridge.clear()
             }

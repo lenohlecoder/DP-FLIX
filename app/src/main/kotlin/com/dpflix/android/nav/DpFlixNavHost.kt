@@ -78,60 +78,20 @@ import kotlinx.coroutines.flow.first
 fun DpFlixNavHost(
     appRepository: AppRepository,
     accessRepository: AccessRepository,
+    activePlayerHolder: com.dpflix.android.player.ActivePlayerHolder,
     navController: NavHostController = rememberNavController()
 ) {
     // Fix (25 juillet 2026) : crash net à l'entrée en plein écran depuis le mini-lecteur
-    // ("l'application s'arrête net, retour à l'accueil du téléphone, parfois notification
-    // Android d'un bug"). Cause probable : NavHost anime par défaut (fondu enchaîné,
-    // AnimatedContent) chaque changement de destination — pendant toute la durée de cette
-    // animation, l'ancienne destination (Home, avec son mini-lecteur donc SON propre
-    // ExoPlayer/décodeur matériel actif, voir PlayerScreen/PlayerController) reste
-    // composée EN MÊME TEMPS que la nouvelle (PlayerFullscreen, qui crée un SECOND
-    // ExoPlayer sur la même chaîne). Deux décodeurs vidéo matériels actifs
-    // simultanément est une situation que beaucoup de téléphones (surtout entrée/milieu
-    // de gamme, ressources MediaCodec limitées) ne supportent pas et qui peut faire
-    // planter tout le processus au lieu de lever une exception Java proprement
-    // rattrapable — cohérent avec un arrêt net sans écran d'erreur applicatif.
-    // enterTransition/exitTransition à None rendent les transitions instantanées : le
-    // mini-lecteur (et son ExoPlayer, libéré par le DisposableEffect(channel.id) de
-    // PlayerScreen) disparaît immédiatement au lieu de rester visible/actif pendant un
-    // fondu, supprimant la fenêtre de chevauchement. Contrepartie assumée : les
-    // transitions entre écrans (Accueil ↔ Réglages ↔ Lecteur plein écran) sont
-    // désormais des coupures franches plutôt que des fondus enchaînés.
+    // — enterTransition/exitTransition à None pour éviter deux ExoPlayer actifs pendant
+    // une animation (voir historique / doc précédente).
 
-    // Garde de session (correctif expiration code local) : tant que l'app reste
-    // ouverte, un unlock temporaire (Porushd1…12) qui arrive à expiration doit
-    // reverrouiller l'app SANS attendre un redémarrage. On programme un réveil
-    // exact à l'échéance (pas de sondage périodique) qui relit les prefs via
-    // accessRepository.refresh() ; dès que currentUser devient invalide, on
-    // renvoie vers l'écran de verrouillage en vidant la pile de navigation
-    // (impossible de revenir en arrière vers un écran protégé). Mamanzefa
-    // (unlockUntilMs == null) ne programme jamais de réveil : accès permanent.
-    val currentUser by accessRepository.currentUser.collectAsState()
-    val currentBackStackEntry by navController.currentBackStackEntryAsState()
-
-    LaunchedEffect(currentUser.unlockUntilMs, currentUser.status) {
-        val until = currentUser.unlockUntilMs ?: return@LaunchedEffect
-        val delayMs = until - System.currentTimeMillis()
-        if (delayMs > 0) {
-            delay(delayMs)
-            accessRepository.refresh()
-        }
-    }
-
-    LaunchedEffect(currentUser.isAccessValid, currentBackStackEntry?.destination?.route) {
-        val route = currentBackStackEntry?.destination?.route
-        // On ne coupe pas Splash (qui gère déjà l'aiguillage initial) ni Lock
-        // (déjà dessus) — uniquement les écrans protégés atteints après coup.
-        if (!currentUser.isAccessValid &&
-            route != DpFlixDestination.Splash.route &&
-            route != DpFlixDestination.Lock.route
-        ) {
-            navController.navigate(DpFlixDestination.Lock.route) {
-                popUpTo(0) { inclusive = true }
-            }
-        }
-    }
+    // Gardes de session (ON_START refresh, réveil à échéance, navigation Lock) :
+    // extraites dans AccessSessionGuards (partagé mobile/TV).
+    AccessSessionGuards(
+        accessRepository = accessRepository,
+        navController = navController,
+        activePlayerHolder = activePlayerHolder
+    )
 
     NavHost(
         navController = navController,

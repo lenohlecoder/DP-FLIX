@@ -31,7 +31,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             DpFlixNavHost(
                 appRepository = container.appRepository,
-                accessRepository = container.accessRepository
+                accessRepository = container.accessRepository,
+                activePlayerHolder = container.activePlayerHolder
             )
         }
     }
