@@ -211,8 +211,10 @@ fun FilmsSeriesScreen(
 
     LaunchedEffect(containerSize) {
         if (showVirtualCursor && cursorOffset == null && containerSize != IntSize.Zero) {
-            // Curseur centré à l'ouverture.
-            cursorOffset = Offset(containerSize.width / 2f, containerSize.height / 2f)
+            // Curseur centré à l'ouverture + premier survol pour initialiser le DOM.
+            val start = Offset(containerSize.width / 2f, containerSize.height / 2f)
+            cursorOffset = start
+            webViewRef.value?.simulateHover(start.x, start.y)
         }
     }
 
@@ -262,23 +264,31 @@ fun FilmsSeriesScreen(
                 val current = cursorOffset ?: return@onKeyEvent false
                 when (keyEvent.key) {
                     Key.DirectionUp -> {
-                        cursorOffset = current.copy(y = (current.y - cursorStepPx).coerceAtLeast(0f))
+                        val next = current.copy(y = (current.y - cursorStepPx).coerceAtLeast(0f))
+                        cursorOffset = next
+                        webViewRef.value?.simulateHover(next.x, next.y)
                         true
                     }
                     Key.DirectionDown -> {
-                        cursorOffset = current.copy(
+                        val next = current.copy(
                             y = (current.y + cursorStepPx).coerceAtMost(containerSize.height.toFloat())
                         )
+                        cursorOffset = next
+                        webViewRef.value?.simulateHover(next.x, next.y)
                         true
                     }
                     Key.DirectionLeft -> {
-                        cursorOffset = current.copy(x = (current.x - cursorStepPx).coerceAtLeast(0f))
+                        val next = current.copy(x = (current.x - cursorStepPx).coerceAtLeast(0f))
+                        cursorOffset = next
+                        webViewRef.value?.simulateHover(next.x, next.y)
                         true
                     }
                     Key.DirectionRight -> {
-                        cursorOffset = current.copy(
+                        val next = current.copy(
                             x = (current.x + cursorStepPx).coerceAtMost(containerSize.width.toFloat())
                         )
+                        cursorOffset = next
+                        webViewRef.value?.simulateHover(next.x, next.y)
                         true
                     }
                     Key.DirectionCenter, Key.Enter, Key.NumPadEnter -> {
@@ -303,6 +313,7 @@ fun FilmsSeriesScreen(
                     url = url,
                     sniffer = sniffer,
                     preferDesktopUserAgent = streamIndex == 3,
+                    forceSoftwareLayer = showVirtualCursor,
                     savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
                     onSaveState = { bundle ->
                         webViewStateBundle = bundle
@@ -321,6 +332,9 @@ fun FilmsSeriesScreen(
                             // ci-dessus, jamais au contenu de la WebView elle-même.
                             webView.isFocusable = false
                             webView.isFocusableInTouchMode = false
+                            // Double filet Z-order (au cas où le factory n'aurait pas
+                            // encore appliqué forceSoftwareLayer).
+                            webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                         }
                     },
                     onFullscreenChanged = { fullscreen ->
@@ -731,8 +745,106 @@ private const val DOUBLE_BACK_WINDOW_MS = 2000L
 private const val DPAD_MOVE_STEP_DP = 48
 private const val CURSOR_SIZE_DP = 36
 
-/** Simule un tap à ([x], [y]) — coordonnées en pixels, dans le repère de la WebView. */
+/**
+ * Convertit des pixels **vue WebView** (écran) en coordonnées **viewport CSS**
+ * pour `elementFromPoint` / MouseEvent DOM.
+ *
+ * Ne pas utiliser `density` : avec UA desktop (Stream 3) la page est large et
+ * [WebView.getScale] reflète le vrai zoom appliqué, souvent ≠ density.
+ */
+private fun WebView.cssViewportCoords(viewX: Float, viewY: Float): Pair<Float, Float> {
+    val s = scale.coerceAtLeast(0.01f)
+    return (viewX / s) to (viewY / s)
+}
+
+/**
+ * Survol souris à ([x], [y]) en pixels vue WebView.
+ * - Natif : ACTION_HOVER_MOVE (SOURCE_MOUSE)
+ * - Fallback JS : mouseout/mouseleave sur l'ancien élément, puis
+ *   mousemove/mouseover/mouseenter sur le nouveau (évite les :hover coincés)
+ */
+private fun WebView.simulateHover(x: Float, y: Float) {
+    val time = SystemClock.uptimeMillis()
+    val props = arrayOf(
+        MotionEvent.PointerProperties().apply {
+            id = 0
+            toolType = MotionEvent.TOOL_TYPE_MOUSE
+        }
+    )
+    val coords = arrayOf(
+        MotionEvent.PointerCoords().apply {
+            this.x = x
+            this.y = y
+            pressure = 1f
+            size = 1f
+        }
+    )
+    val hover = MotionEvent.obtain(
+        time,
+        time,
+        MotionEvent.ACTION_HOVER_MOVE,
+        1,
+        props,
+        coords,
+        0,
+        0,
+        1f,
+        1f,
+        0,
+        0,
+        android.view.InputDevice.SOURCE_MOUSE,
+        0
+    )
+    dispatchGenericMotionEvent(hover)
+    hover.recycle()
+
+    val (cssX, cssY) = cssViewportCoords(x, y)
+    // window.__dpflixLastHoverEl : élément précédemment survolé (fallback JS only).
+    evaluateJavascript(
+        """
+        (function(){
+          var x = %f, y = %f;
+          var prev = window.__dpflixLastHoverEl || null;
+          var el = document.elementFromPoint(x, y);
+          if (prev && prev !== el) {
+            try {
+              var leaveOpts = {
+                bubbles: true, cancelable: true, clientX: x, clientY: y,
+                view: window, relatedTarget: el
+              };
+              prev.dispatchEvent(new MouseEvent('mouseout', leaveOpts));
+              prev.dispatchEvent(new MouseEvent('mouseleave', {
+                bubbles: false, cancelable: true, clientX: x, clientY: y,
+                view: window, relatedTarget: el
+              }));
+            } catch (e) {}
+          }
+          if (el) {
+            try {
+              var enterOpts = {
+                bubbles: true, cancelable: true, clientX: x, clientY: y,
+                view: window, relatedTarget: prev
+              };
+              el.dispatchEvent(new MouseEvent('mousemove', enterOpts));
+              if (prev !== el) {
+                el.dispatchEvent(new MouseEvent('mouseover', enterOpts));
+                el.dispatchEvent(new MouseEvent('mouseenter', {
+                  bubbles: false, cancelable: true, clientX: x, clientY: y,
+                  view: window, relatedTarget: prev
+                }));
+              }
+            } catch (e) {}
+          }
+          window.__dpflixLastHoverEl = el || null;
+        })();
+        """.trimIndent().format(cssX, cssY),
+        null
+    )
+}
+
+/** Simule un tap à ([x], [y]) — touch + clic souris DOM (coords CSS via scale WebView). */
 private fun WebView.simulateClick(x: Float, y: Float) {
+    simulateHover(x, y)
     val downTime = SystemClock.uptimeMillis()
     val downEvent = MotionEvent.obtain(downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0)
     val upEvent = MotionEvent.obtain(downTime, downTime + 50, MotionEvent.ACTION_UP, x, y, 0)
@@ -740,6 +852,22 @@ private fun WebView.simulateClick(x: Float, y: Float) {
     dispatchTouchEvent(upEvent)
     downEvent.recycle()
     upEvent.recycle()
+
+    val (cssX, cssY) = cssViewportCoords(x, y)
+    evaluateJavascript(
+        """
+        (function(){
+          var x = %f, y = %f;
+          var el = document.elementFromPoint(x, y);
+          if (!el) return;
+          var opts = {bubbles:true, cancelable:true, clientX:x, clientY:y, view:window};
+          el.dispatchEvent(new MouseEvent('mousedown', opts));
+          el.dispatchEvent(new MouseEvent('mouseup', opts));
+          el.dispatchEvent(new MouseEvent('click', opts));
+        })();
+        """.trimIndent().format(cssX, cssY),
+        null
+    )
 }
 
 /**
@@ -865,6 +993,11 @@ private fun LockedWebView(
     onRendererGone: () -> Unit = {},
     /** TV : UA bureau pour limiter les pages vides / versions mobiles cassées. */
     preferDesktopUserAgent: Boolean = false,
+    /**
+     * TV + curseur : force [View.LAYER_TYPE_SOFTWARE] pour éviter le punch-through
+     * SurfaceView de la WebView qui cache le curseur (Z-order SurfaceFlinger).
+     */
+    forceSoftwareLayer: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val allowedHostNormalized = remember(url) {
@@ -891,6 +1024,12 @@ private fun LockedWebView(
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
                 setBackgroundColor(Color.Black.toArgb())
+
+                // Fix Z-order curseur TV (SurfaceFlinger / SurfaceView interne WebView) :
+                // sans ceci le curseur peut rester invisible même s'il est au-dessus dans l'arbre.
+                if (forceSoftwareLayer) {
+                    setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                }
 
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = true
@@ -952,6 +1091,11 @@ private fun LockedWebView(
                         // Nouvelle page dans l'historique du site → les flux capturés pour
                         // l'ancienne page n'ont plus cours (module téléchargement).
                         snifferState.value.resetForNewPage(pageUrl)
+                        // Évite de renvoyer mouseout vers un élément de la page précédente.
+                        view?.evaluateJavascript(
+                            "window.__dpflixLastHoverEl = null;",
+                            null
+                        )
                     }
 
                     /**
