@@ -1,43 +1,21 @@
 workflows:
-  android-release:
-    name: DP-Flix — Build Android release (APK signé)
+  android-workflow:
+    name: TvFlix Host - Android Build
     max_build_duration: 60
-    # mac_mini_m2 : disponible sur le plan gratuit Codemagic (500 min/mois), contrairement
-    # à linux_x2 qui nécessite un compte avec facturation activée. Un simple
-    # `assembleRelease` Android n'a besoin ni d'émulateur ni de Docker, donc tourne aussi
-    # bien sur macOS que sur Linux.
-    instance_type: mac_mini_m2
-
+    instance_type: linux_x2
+    working_directory: tvflix-host
     environment:
-      # "dpflix_keystore" doit être le NOM EXACT donné au keystore uploadé dans
-      # Codemagic → Teams → Code signing identities → Android keystores.
-      # Codemagic injecte alors automatiquement 4 variables d'environnement
-      # utilisées par app/build.gradle.kts :
-      #   CM_KEYSTORE_PATH, CM_KEYSTORE_PASSWORD, CM_KEY_ALIAS, CM_KEY_PASSWORD
-      android_signing:
-        - dpflix_keystore
-      java: 17
       vars:
-        PACKAGE_NAME: "com.dpflix.android"
-
-    triggering:
-      events:
-        - push
-      # ⚠️ à adapter si la branche par défaut du dépôt n'est pas "main"
-      branch_patterns:
-        - pattern: main
-          include: true
-          source: true
-
+        PACKAGE_NAME: "com.djamylova.tvflixhost"
+      java: 17
     scripts:
-      - name: Générer le wrapper Gradle (absent du dépôt, cf. étape 2a)
+      - name: Set up local.properties
         script: |
-          gradle wrapper --gradle-version 8.9
-
-      - name: Construire l'APK release signé
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > "$CM_BUILD_DIR/tvflix-host/local.properties"
+      - name: Build debug APK
         script: |
-          ./gradlew assembleRelease
-
+          cd $CM_BUILD_DIR/tvflix-host
+          chmod +x ./gradlew
+          ./gradlew assembleDebug
     artifacts:
-      - app/build/outputs/apk/release/*.apk
-      - app/build/outputs/**/mapping.txt
+      - tvflix-host/app/build/outputs/**/*.apk
