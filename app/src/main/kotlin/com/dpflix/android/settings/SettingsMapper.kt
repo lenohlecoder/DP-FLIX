@@ -47,6 +47,7 @@ fun Preferences.toGeneralSettings(): GeneralSettings = GeneralSettings(
     // disparaîtrait silencieusement pour tout le monde tant que personne n'a rien ajouté).
     extraAllowedDomains = this[SettingsKeys.EXTRA_ALLOWED_DOMAINS]
         ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
+    strictDomainLock = this[SettingsKeys.STRICT_DOMAIN_LOCK] ?: false,
     lastSeenInfosVersion = this[SettingsKeys.LAST_SEEN_INFOS_VERSION] ?: 0
 )
 
@@ -80,5 +81,6 @@ fun GeneralSettings.writeTo(prefs: MutablePreferences) {
     // aux champs ci-dessus, un set vide est une valeur légitime et distincte de "jamais touché"
     // (ce dernier cas, lui, n'écrit jamais cette clé — voir [toGeneralSettings]).
     prefs[SettingsKeys.EXTRA_ALLOWED_DOMAINS] = extraAllowedDomains
+    prefs[SettingsKeys.STRICT_DOMAIN_LOCK] = strictDomainLock
     prefs[SettingsKeys.LAST_SEEN_INFOS_VERSION] = lastSeenInfosVersion
 }

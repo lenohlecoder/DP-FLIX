@@ -39,4 +39,7 @@ internal object SettingsKeys {
     // Domaines d'exception (en plus du domaine principal) autorisés dans la navigation de
     // l'écran Films et Séries — voir [GeneralSettings.extraAllowedDomains].
     val EXTRA_ALLOWED_DOMAINS = stringSetPreferencesKey("general_extra_allowed_domains")
+    // Verrouillage strict de domaine (whitelist) — optionnel, désactivé par défaut.
+    // Voir [GeneralSettings.strictDomainLock] + icône réglages Films & Séries.
+    val STRICT_DOMAIN_LOCK = booleanPreferencesKey("general_strict_domain_lock")
 }

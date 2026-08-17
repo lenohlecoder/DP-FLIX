@@ -47,6 +47,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -104,11 +105,21 @@ import kotlinx.coroutines.launch
  * l'expose sous ce nom côté TV, avec [showVirtualCursor] activé (§ ci-dessous).
  *
  * ## Verrouillage du navigateur
- * - Un seul domaine autorisé : celui de [url] au moment de l'ouverture, plus ses
- *   sous-domaines (`*.host`) — toute navigation vers un autre domaine (redirection
- *   publicitaire, lien tiers) est interceptée par [WebViewClient.shouldOverrideUrlLoading]
- *   et simplement ignorée : la page reste sur son état courant, jamais de nouvel onglet
- *   ni de sortie vers un navigateur externe.
+ * - Un seul domaine autorisé par défaut : celui de [url] au moment de l'ouverture, plus
+ *   ses sous-domaines (`*.host`), l'infra du stream ([STREAM_INFRASTRUCTURE_HOSTS]) et les
+ *   domaines d'exception Réglages — vérifiés dans [WebViewClient.shouldOverrideUrlLoading].
+ * - Deux modes, réglables via l'icône Réglages de l'écran (`GeneralSettings.strictDomainLock`) :
+ *   - **Strict** (`strictDomainLock = true`) : whitelist exclusive, toute navigation
+ *     hors de cet ensemble est bloquée sans exception.
+ *   - **Ouvert + protection soft** (`strictDomainLock = false`, réglage par défaut,
+ *     comme un navigateur TV classique) : la navigation est laissée ouverte (redirects
+ *     anti-bot, CDN, OAuth légitimes...), sauf vers un hôte de la liste noire
+ *     [KNOWN_AD_REDIRECT_HOSTS] (régies pub / redirecteurs connus), qui reste bloqué
+ *     même via redirection HTTP ou geste utilisateur (voir doc de
+ *     [isKnownAdRedirectHost] sur l'ordre de vérification, volontairement place avant
+ *     ces deux exemptions).
+ * - Dans les deux modes : jamais de nouvel onglet ni de sortie vers un navigateur externe,
+ *   la navigation bloquée est simplement ignorée (la page reste sur son état courant).
  * - `setSupportMultipleWindows(false)` + [WebChromeClient.onCreateWindow] retourne
  *   toujours `false` : `window.open()`/`target="_blank"` n'ouvrent rien. Pas de barre
  *   d'adresse, de navigation précédente/suivante ni de menu long-press (désactivé
@@ -308,12 +319,13 @@ fun FilmsSeriesScreen(
             // écran est déjà ouvert (retour arrière, changement, retour ici), on force une
             // toute nouvelle WebView plutôt que de tenter un `loadUrl` sur l'existante —
             // plus simple et plus sûr que de garder une référence mutable à la WebView.
-            key(url) {
+            key(url, generalSettings?.strictDomainLock == true) {
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
                     preferDesktopUserAgent = streamIndex == 3,
                     forceSoftwareLayer = showVirtualCursor,
+                    strictDomainLock = generalSettings?.strictDomainLock == true,
                     savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
                     onSaveState = { bundle ->
                         webViewStateBundle = bundle
@@ -417,6 +429,14 @@ fun FilmsSeriesScreen(
             ExceptionDomainsDialog(
                 domains = generalSettings?.extraAllowedDomains
                     ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
+                strictDomainLock = generalSettings?.strictDomainLock == true,
+                onStrictDomainLockChange = { enabled ->
+                    scope.launch {
+                        appRepository.settings.updateGeneralSettings { current ->
+                            current.copy(strictDomainLock = enabled)
+                        }
+                    }
+                },
                 onDismiss = { showExceptionDomainsDialog = false },
                 onAddDomain = { newDomain ->
                     scope.launch {
@@ -602,6 +622,8 @@ private fun DetectedStreamsDialog(
 @Composable
 private fun ExceptionDomainsDialog(
     domains: Set<String>,
+    strictDomainLock: Boolean,
+    onStrictDomainLockChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onAddDomain: (String) -> Unit,
     onRemoveDomain: (String) -> Unit
@@ -615,7 +637,7 @@ private fun ExceptionDomainsDialog(
             tonalElevation = 6.dp,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 480.dp)
+                .heightIn(max = 520.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Row(
@@ -623,7 +645,7 @@ private fun ExceptionDomainsDialog(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
-                        text = "Domaines d'exception",
+                        text = "Navigation WebView",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f)
                     )
@@ -631,9 +653,42 @@ private fun ExceptionDomainsDialog(
                         Icon(Icons.Filled.Close, contentDescription = "Fermer")
                     }
                 }
+                // Protection stricte (whitelist exclusive) — OFF par défaut : mode ouvert
+                // + filtrage soft des régies pub connues, voir doc de classe de
+                // `FilmsSeriesScreen`.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = "Activer la protection stricte",
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            text = "Verrouillage strict : seuls le site, ses sous-domaines " +
+                                "et la liste ci-dessous sont autorisés. Désactivé = navigation " +
+                                "ouverte (recommandé) avec filtrage soft des régies pub connues.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = strictDomainLock,
+                        onCheckedChange = onStrictDomainLockChange
+                    )
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 Text(
-                    text = "Domaines autorisés en plus du site principal (ex. un CDN de " +
-                        "téléchargement vers lequel le site redirige lui-même). Un domaine " +
+                    text = "Domaines d'exception",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                Text(
+                    text = "Utiles surtout si la protection stricte est activée (CDN / " +
+                        "pages de téléchargement hors domaine principal). Un domaine " +
                         "autorise aussi ses sous-domaines.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -979,12 +1034,74 @@ private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<
     }
 }
 
+/**
+ * Hôtes typiques de redirections publicitaires / pop-under / trackers agressifs.
+ * Protection « anti-redirection » du mode ouvert (§ [LockedWebView], `strictDomainLock =
+ * false`) : on bloque ces destinations **sur la navigation principale**, sans empêcher les
+ * redirects HTTP légitimes (Cloudflare, OAuth, CDN, lecture vidéo) ni les sous-ressources.
+ *
+ * Liste volontairement courte et ciblée — à enrichir si besoin.
+ */
+private val KNOWN_AD_REDIRECT_HOSTS: Set<String> = setOf(
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "advertising.com",
+    "adnxs.com",
+    "adservice.google.com",
+    "pagead2.googlesyndication.com",
+    "popads.net",
+    "popcash.net",
+    "propellerads.com",
+    "propellerclick.com",
+    "adsterra.com",
+    "juicyads.com",
+    "exoclick.com",
+    "clickadu.com",
+    "trafficjunky.com",
+    "realsrv.com",
+    "tsyndicate.com",
+    "ad-maven.com",
+    "adcash.com",
+    "bidvertiser.com",
+    "openx.net",
+    "pubmatic.com",
+    "rubiconproject.com",
+    "taboola.com",
+    "outbrain.com",
+    "mgid.com",
+    "revcontent.com",
+)
+
+/**
+ * `host` (déjà normalisé — minuscule, sans `www.`) est-il [KNOWN_AD_REDIRECT_HOSTS] ou un
+ * sous-domaine de l'un de ces hôtes ?
+ *
+ * Appelée dans [LockedWebView.shouldOverrideUrlLoading] **avant** les exemptions
+ * `request.isRedirect` / `request.hasGesture()` du mode ouvert : un tap-hijack (calque
+ * publicitaire invisible qui capte le tap "lecture" de l'utilisateur) est justement une
+ * navigation avec `hasGesture() == true`, et une régie pub peut tout autant être atteinte
+ * via un redirect HTTP 3xx classique — si ces deux cas étaient vérifiés avant celui-ci, la
+ * liste noire ne bloquerait plus jamais rien en pratique.
+ */
+private fun isKnownAdRedirectHost(host: String): Boolean {
+    if (host.isEmpty()) return false
+    return KNOWN_AD_REDIRECT_HOSTS.any { base -> host == base || host.endsWith(".$base") }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun LockedWebView(
     url: String,
     sniffer: StreamSniffer,
     extraAllowedHosts: Set<String> = emptySet(),
+    /**
+     * Verrouillage strict de domaine (whitelist exclusive) : `false` par défaut →
+     * navigation ouverte + filtrage soft des hôtes pub connus ([KNOWN_AD_REDIRECT_HOSTS]).
+     * `true` = seuls le domaine principal, l'infra du stream et [extraAllowedHosts] passent.
+     * Voir doc de classe de `FilmsSeriesScreen` (§ Verrouillage du navigateur).
+     */
+    strictDomainLock: Boolean = false,
     savedState: Bundle? = null,
     onSaveState: (Bundle) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit,
@@ -1072,19 +1189,58 @@ private fun LockedWebView(
                         view: WebView,
                         request: WebResourceRequest
                     ): Boolean {
+                        // Schémas non-web (intent:, market:, tel:, etc.) : jamais suivis,
+                        // pour ne jamais sortir de l'app vers un handler externe opaque.
+                        val scheme = request.url.scheme?.lowercase()
+                        if (scheme != "http" && scheme != "https") {
+                            return true
+                        }
                         val host = request.url.host?.lowercase()?.removePrefix("www.") ?: return true
                         // Domaine du stream + tous ses sous-domaines (ex. api.purstream.store).
                         val isMainDomain = allowedHostNormalized != null &&
                             (host == allowedHostNormalized ||
                                 host.endsWith(".$allowedHostNormalized"))
                         // Infra du stream + domaines d'exception Réglages (CDN téléchargement,
-                        // API, assets). Sous-domaines inclus. Tout le reste = redirection
-                        // publicitaire / page tierce → bloqué (return true).
+                        // API, assets). Sous-domaines inclus.
                         val isExtraAllowed = normalizedExtraHosts.any { extra ->
                             host == extra || host.endsWith(".$extra")
                         }
                         val isAllowed = isMainDomain || isExtraAllowed
-                        return !isAllowed
+
+                        // --- Mode STRICT (whitelist exclusive) ---
+                        if (strictDomainLock) {
+                            return !isAllowed
+                        }
+
+                        // --- Mode ouvert + protection soft (défaut, style navigateur TV) ---
+                        if (isAllowed) {
+                            return false
+                        }
+                        // Reste sur le même hôte (ou un sous/sur-domaine) que la page
+                        // actuellement affichée : navigation interne normale du site.
+                        val currentHost = view.url?.let { u ->
+                            Uri.parse(u).host?.lowercase()?.removePrefix("www.")
+                        }
+                        if (currentHost != null && (
+                                host == currentHost ||
+                                    host.endsWith(".$currentHost") ||
+                                    currentHost.endsWith(".$host")
+                                )
+                        ) {
+                            return false
+                        }
+                        // Liste noire pub vérifiée AVANT les exemptions redirect/gesture —
+                        // voir doc de [isKnownAdRedirectHost].
+                        if (isKnownAdRedirectHost(host)) {
+                            return true
+                        }
+                        if (request.isRedirect) {
+                            return false
+                        }
+                        if (request.hasGesture()) {
+                            return false
+                        }
+                        return false
                     }
 
                     override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {

@@ -57,6 +57,16 @@ data class GeneralSettings(
     val extraAllowedDomains: Set<String> = DEFAULT_EXTRA_ALLOWED_DOMAINS,
 
     /**
+     * Verrouillage strict de domaine sur l'écran Films & Séries (whitelist exclusive) :
+     * seules les navigations vers le domaine principal, ses sous-domaines, l'infra stream
+     * et [extraAllowedDomains] sont autorisées. **Désactivé par défaut** — mode ouvert
+     * (style navigateur TV) avec filtrage soft des régies pub connues ; l'utilisateur
+     * active la protection stricte manuellement via l'icône réglages de l'écran.
+     * Voir `com.dpflix.android.filmsseries.FilmsSeriesScreen`.
+     */
+    val strictDomainLock: Boolean = false,
+
+    /**
      * Dernière [CompanionStatus.infosVersion] consultée via la cloche (site compagnon).
      * Badge rouge sur l'accueil tant que status.infosVersion > cette valeur.
      */
