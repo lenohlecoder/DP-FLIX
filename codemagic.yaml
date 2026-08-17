@@ -2,7 +2,7 @@ workflows:
   android-workflow:
     name: TvFlix Host - Android Build
     max_build_duration: 60
-    instance_type: linux_x2
+    instance_type: mac_mini_m2
     working_directory: tvflix-host
     environment:
       vars:
