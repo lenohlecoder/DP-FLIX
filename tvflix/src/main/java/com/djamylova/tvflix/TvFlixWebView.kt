@@ -94,24 +94,14 @@ class TvFlixWebView @JvmOverloads constructor(
                     .setMobile(false)
                     .setBitness(64)
                     .setFullVersion("126.0.0.0")
-                    .setBrands(
+                    .setBrandVersionList(
                         listOf(
                             UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Chromium").setVersion("126").build(),
+                                .setBrand("Chromium").setMajorVersion("126").setFullVersion("126.0.0.0").build(),
                             UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Google Chrome").setVersion("126").build(),
+                                .setBrand("Google Chrome").setMajorVersion("126").setFullVersion("126.0.0.0").build(),
                             UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Not-A.Brand").setVersion("8").build()
-                        )
-                    )
-                    .setFullVersionList(
-                        listOf(
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Chromium").setVersion("126.0.0.0").build(),
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Google Chrome").setVersion("126.0.0.0").build(),
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Not-A.Brand").setVersion("8.0.0.0").build()
+                                .setBrand("Not-A.Brand").setMajorVersion("8").setFullVersion("8.0.0.0").build()
                         )
                     )
                     .build()
