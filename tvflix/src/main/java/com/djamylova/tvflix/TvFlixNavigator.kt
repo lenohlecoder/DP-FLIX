@@ -299,11 +299,11 @@ class TvFlixNavigator private constructor(
 
     private fun resolveWebView(): TvFlixWebView? {
         webView?.let { return it }
-        fragment?.getWebView()?.let {
-            webView = it
+        fragment?.getWebView()?.let { wv ->
+            webView = wv
             // Rebranche le callback si nécessaire
-            callback?.let { wireCallback(it) }
-            return webView
+            callback?.let { wireCallback(wv) }
+            return wv
         }
         return null
     }
