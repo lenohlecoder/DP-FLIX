@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.os.Build
 import android.util.AttributeSet
 import android.util.Log
+import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -33,9 +34,21 @@ class TvFlixWebView @JvmOverloads constructor(
     var desktopSpoofEnabled: Boolean = true
 
     init {
+        applyCookies()
         applyDesktopConfig()
         applyClientHintsDesktop()
         installDesktopSpoofClient()
+    }
+
+    /**
+     * Active les cookies (1st et 3rd party). Sans ça, beaucoup de sites de streaming
+     * posent un cookie de session au premier chargement et attendent son renvoi avant
+     * d'afficher quoi que ce soit — la page reste alors bloquée indéfiniment.
+     */
+    private fun applyCookies() {
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(this, true)
     }
 
     private fun applyDesktopConfig() {
@@ -55,7 +68,11 @@ class TvFlixWebView @JvmOverloads constructor(
             userAgentString = DESKTOP_USER_AGENT
 
             mediaPlaybackRequiresUserGesture = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+            // Beaucoup de sites (dont ceux testés) posent un cookie de session dès le
+            // premier chargement et attendent qu'il soit renvoyé avant d'afficher quoi
+            // que ce soit (vérif anti-bot basique). Sans cookies, la page reste bloquée
+            // indéfiniment sur un écran vide/uni — c'est le "Bug 1" observé en test.
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode = WebSettings.LOAD_DEFAULT
 
             // Évite le mode « mobile » lié à la taille de police système
@@ -94,14 +111,24 @@ class TvFlixWebView @JvmOverloads constructor(
                     .setMobile(false)
                     .setBitness(64)
                     .setFullVersion("126.0.0.0")
-                    .setBrandVersionList(
+                    .setBrands(
                         listOf(
                             UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Chromium").setMajorVersion("126").setFullVersion("126.0.0.0").build(),
+                                .setBrand("Chromium").setVersion("126").build(),
                             UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Google Chrome").setMajorVersion("126").setFullVersion("126.0.0.0").build(),
+                                .setBrand("Google Chrome").setVersion("126").build(),
                             UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Not-A.Brand").setMajorVersion("8").setFullVersion("8.0.0.0").build()
+                                .setBrand("Not-A.Brand").setVersion("8").build()
+                        )
+                    )
+                    .setFullVersionList(
+                        listOf(
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Chromium").setVersion("126.0.0.0").build(),
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Google Chrome").setVersion("126.0.0.0").build(),
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Not-A.Brand").setVersion("8.0.0.0").build()
                         )
                     )
                     .build()
