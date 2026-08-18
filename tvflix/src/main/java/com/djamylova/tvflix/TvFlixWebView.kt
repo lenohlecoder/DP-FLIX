@@ -111,26 +111,12 @@ class TvFlixWebView @JvmOverloads constructor(
                     .setMobile(false)
                     .setBitness(64)
                     .setFullVersion("126.0.0.0")
-                    .setBrands(
-                        listOf(
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Chromium").setVersion("126").build(),
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Google Chrome").setVersion("126").build(),
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Not-A.Brand").setVersion("8").build()
-                        )
-                    )
-                    .setFullVersionList(
-                        listOf(
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Chromium").setVersion("126.0.0.0").build(),
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Google Chrome").setVersion("126.0.0.0").build(),
-                            UserAgentMetadata.BrandVersion.Builder()
-                                .setBrand("Not-A.Brand").setVersion("8.0.0.0").build()
-                        )
-                    )
+                    // Note : la liste de marques (Sec-CH-UA "brands") est retirée ici —
+                    // l'API UserAgentMetadata.Builder.setBrands()/BrandVersion.Builder
+                    // a changé de signature entre versions d'androidx.webkit et ne
+                    // compile pas avec la version 1.11.0 utilisée ici. Le champ
+                    // setMobile(false) + le User-Agent complet suffisent pour la
+                    // grande majorité des sites ; à revoir si un site en a besoin.
                     .build()
                 WebSettingsCompat.setUserAgentMetadata(settings, metadata)
                 Log.d(TAG, "USER_AGENT_METADATA desktop applied (mobile=false)")
