@@ -19,6 +19,8 @@ import com.djamylova.tvflix.TvFlixNavigator
  * - Menu / Info : dialogue À propos
  * - Channel+ / Channel− (si dispo) : zoom in / out
  * - Back : historique WebView, sinon quitter
+ *
+ * URL de test par défaut : purstream.store
  */
 class MainActivity : AppCompatActivity() {
 
@@ -107,6 +109,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "TvFlixHost"
-        private const val START_URL = "https://www.youtube.com/tv"
+        private const val START_URL = "https://purstream.store/"
     }
 }

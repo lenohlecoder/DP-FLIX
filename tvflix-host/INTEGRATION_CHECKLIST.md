@@ -41,6 +41,6 @@
 
 ## Notes
 
-- URL de test suggérée : `https://www.youtube.com/tv` ou `https://example.com`
+- URL de test suggérée : `https://purstream.store/` ou `https://example.com`
 - Logs : filtre `TvFlix` / `CursorLayout` / `CursorDrawer` / `TvFlixHost`
 - WebView système trop ancien : certains sites modernes peuvent échouer (hors scope module)

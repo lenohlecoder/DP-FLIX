@@ -5,17 +5,23 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
 import android.util.AttributeSet
+import android.util.Log
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 
 /**
- * Wrapper around [android.webkit.WebView] configured for desktop-like browsing
- * on Android TV / set-top boxes.
+ * WebView configuré « desktop » pour Android TV.
  *
- * Étape 1b – Config WebView « desktop »
- * Étape 7  – Masquage des capacités tactiles côté JS
+ * YouTube et d’autres sites combinent :
+ * - User-Agent
+ * - Client Hints (Sec-CH-UA-Mobile)
+ * - largeur viewport / matchMedia
+ * - maxTouchPoints / ontouchstart
  */
 @SuppressLint("SetJavaScriptEnabled")
 class TvFlixWebView @JvmOverloads constructor(
@@ -24,11 +30,11 @@ class TvFlixWebView @JvmOverloads constructor(
     defStyleAttr: Int = 0
 ) : WebView(context, attrs, defStyleAttr) {
 
-    /** Active / désactive l’injection du script anti-tactile (défaut = true) */
     var desktopSpoofEnabled: Boolean = true
 
     init {
         applyDesktopConfig()
+        applyClientHintsDesktop()
         installDesktopSpoofClient()
     }
 
@@ -52,26 +58,73 @@ class TvFlixWebView @JvmOverloads constructor(
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             cacheMode = WebSettings.LOAD_DEFAULT
 
-            // Étape 9 : sur bas de gamme on évite certains extras coûteux
+            // Évite le mode « mobile » lié à la taille de police système
+            textZoom = 100
+
             if (TvFlixCompat.isLowEndDevice(context)) {
-                // Moins de travail GPU / CPU
                 @Suppress("DEPRECATION")
                 setRenderPriority(WebSettings.RenderPriority.LOW)
-                // Garde le zoom mais certains vieux WebView gèrent mal TEXT_AUTOSIZING
                 try {
                     layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
                 } catch (e: Exception) { /* ignore */ }
             }
         }
 
+        // Force une densité « desktop-like » pour le layout initial si possible
+        try {
+            setInitialScale(100)
+        } catch (e: Exception) { /* ignore */ }
+
         isFocusable = true
         isFocusableInTouchMode = true
     }
 
     /**
-     * Installe un WebViewClient qui injecte le script de spoof desktop
-     * dès que possible (onPageStarted + onPageFinished pour plus de robustesse).
+     * Client Hints : Sec-CH-UA-Mobile = ?0 (desktop).
+     * Sans ça, Chromium WebView annonce encore « mobile » malgré l’UA Windows.
      */
+    private fun applyClientHintsDesktop() {
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+                val metadata = UserAgentMetadata.Builder()
+                    .setPlatform("Windows")
+                    .setPlatformVersion("15.0.0")
+                    .setArchitecture("x86")
+                    .setModel("")
+                    .setMobile(false)
+                    .setBitness(64)
+                    .setFullVersion("126.0.0.0")
+                    .setBrands(
+                        listOf(
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Chromium").setVersion("126").build(),
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Google Chrome").setVersion("126").build(),
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Not-A.Brand").setVersion("8").build()
+                        )
+                    )
+                    .setFullVersionList(
+                        listOf(
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Chromium").setVersion("126.0.0.0").build(),
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Google Chrome").setVersion("126.0.0.0").build(),
+                            UserAgentMetadata.BrandVersion.Builder()
+                                .setBrand("Not-A.Brand").setVersion("8.0.0.0").build()
+                        )
+                    )
+                    .build()
+                WebSettingsCompat.setUserAgentMetadata(settings, metadata)
+                Log.d(TAG, "USER_AGENT_METADATA desktop applied (mobile=false)")
+            } else {
+                Log.w(TAG, "USER_AGENT_METADATA not supported on this WebView")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to set UserAgentMetadata", e)
+        }
+    }
+
     private fun installDesktopSpoofClient() {
         webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -81,39 +134,24 @@ class TvFlixWebView @JvmOverloads constructor(
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
-                // Seconde injection au cas où des scripts de la page
-                // auraient réécrit les propriétés entre-temps
                 injectDesktopSpoof()
             }
 
-            // Compat API < 24
             @Deprecated("Deprecated in Java")
-            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean {
-                return false
-            }
+            override fun shouldOverrideUrlLoading(view: WebView?, url: String?): Boolean = false
 
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
                 request: WebResourceRequest?
-            ): Boolean {
-                return false
-            }
+            ): Boolean = false
         }
     }
 
-    /**
-     * Injecte le script de masquage tactile.
-     * Peut être appelée manuellement si le host change le WebViewClient.
-     */
     fun injectDesktopSpoof() {
         if (!desktopSpoofEnabled) return
         evaluateJavascript(DesktopSpoofJs.SCRIPT, null)
     }
 
-    /**
-     * Permet au host de fournir son propre WebViewClient tout en gardant
-     * l’injection automatique du spoof.
-     */
     fun setWebViewClientWithSpoof(client: WebViewClient?) {
         if (client == null) {
             installDesktopSpoofClient()
@@ -147,7 +185,7 @@ class TvFlixWebView @JvmOverloads constructor(
                 }
             }
 
-            // Délègue le reste au client fourni
+            @Deprecated("Deprecated in Java")
             override fun onReceivedError(
                 view: WebView?,
                 errorCode: Int,
@@ -164,11 +202,30 @@ class TvFlixWebView @JvmOverloads constructor(
         settings.userAgentString = userAgent
     }
 
+    /**
+     * Charge YouTube en forçant au mieux l’expérience non-mobile.
+     * - mode "tv" → interface YouTube TV (recommandé sur box)
+     * - mode "desktop" → www.youtube.com avec paramètre app=desktop
+     */
+    fun loadYoutube(mode: YoutubeMode = YoutubeMode.TV) {
+        when (mode) {
+            YoutubeMode.TV -> loadUrl(YOUTUBE_TV)
+            YoutubeMode.DESKTOP -> loadUrl(YOUTUBE_DESKTOP)
+        }
+    }
+
+    enum class YoutubeMode { TV, DESKTOP }
+
     companion object {
+        private const val TAG = "TvFlixWebView"
+
         const val DESKTOP_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
                     "AppleWebKit/537.36 (KHTML, like Gecko) " +
                     "Chrome/126.0.0.0 Safari/537.36"
+
+        const val YOUTUBE_TV = "https://www.youtube.com/tv"
+        const val YOUTUBE_DESKTOP = "https://www.youtube.com/?app=desktop&persist_app=1"
 
         fun create(context: Context): TvFlixWebView = TvFlixWebView(context)
     }
