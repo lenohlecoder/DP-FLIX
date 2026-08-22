@@ -194,8 +194,13 @@ class AccessRepository(
                     return RedeemResult.NetworkError(response.reason ?: "unknown")
                 }
                 val until = parseIsoToEpochMs(response.expireLe)
-                if (until == null || until <= estimatedNowMs()) {
-                    // Serveur actif mais date illisible → refuser plutôt qu'ouvrir sans borne
+                if (until == null) {
+                    // Serveur actif mais date illisible → refuser plutôt qu'ouvrir sans borne.
+                    // On ne compare PAS `until` à estimatedNowMs() ici : le serveur vient de
+                    // confirmer l'activation à l'instant, un léger écart d'horloge locale ne
+                    // doit pas nous faire ignorer un sessionId que le serveur a déjà attribué
+                    // (sinon la session reste "active" côté serveur mais orpheline côté app,
+                    // et tout appareil suivant se voit refusé comme "déjà utilisé ailleurs").
                     Log.w(TAG, "actif without parseable expireLe: ${response.expireLe}")
                     return RedeemResult.NetworkError("missing_expireLe")
                 }
