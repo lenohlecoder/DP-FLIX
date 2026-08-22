@@ -41,6 +41,7 @@ class AccessRepository(
         private const val PREFS_NAME = "dpflix_local_unlock"
         private const val KEY_UNLOCK_UNTIL_MS = "unlock_until_ms"
         private const val KEY_COMPANION_CODE = "companion_code"
+        private const val KEY_SESSION_ID = "companion_session_id"
         private const val KEY_LAST_REMOTE_OK_MS = "last_remote_ok_ms"
         private const val KEY_LAST_CODE = "last_code"
 
@@ -73,18 +74,21 @@ class AccessRepository(
 
     private fun loadFromPrefs(): UserAccess {
         val companionCode = prefs.getString(KEY_COMPANION_CODE, null)
+        val sessionId = prefs.getString(KEY_SESSION_ID, null)
         val until = prefs.getLong(KEY_UNLOCK_UNTIL_MS, 0L)
         return if (until > estimatedNowMs()) {
             UserAccess(
                 status = AccessStatus.ACTIVE,
                 unlockUntilMs = until,
-                companionCode = companionCode
+                companionCode = companionCode,
+                sessionId = sessionId
             )
         } else {
             UserAccess(
                 status = AccessStatus.LOCKED,
                 unlockUntilMs = null,
-                companionCode = companionCode
+                companionCode = companionCode,
+                sessionId = sessionId
             )
         }
     }
@@ -106,12 +110,22 @@ class AccessRepository(
             return false
         }
 
-        val status = codesApi.codeStatus(code)
+        val sessionId = local.sessionId
+        val status = codesApi.codeStatus(code, sessionId)
         if (status.error == null && status.ok) {
+            // Un autre appareil a pris la session (ex. réactivation ailleurs,
+            // ou libération par l'admin puis reprise par un tiers) : on ne
+            // devine pas, on verrouille même si le code reste "actif" côté serveur.
+            if (status.sessionActive && status.sessionAuthorized == false) {
+                Log.w(TAG, "Session reprise par un autre appareil → verrouillage")
+                clearUnlockKeepingCode(code)
+                _currentUser.value = loadFromPrefs()
+                return false
+            }
             when (status.statut) {
                 "actif" -> {
                     val until = parseIsoToEpochMs(status.expireLe)
-                    saveCompanionUnlock(code, until)
+                    saveCompanionUnlock(code, until, sessionId)
                     markRemoteOk()
                     _currentUser.value = loadFromPrefs()
                     return hasValidSession()
@@ -156,20 +170,36 @@ class AccessRepository(
             "@${trimmed.uppercase()}"
         }
 
-        val response = codesApi.redeemCode(normalized)
+        // Si ce même code était déjà enregistré sur cet appareil, on renvoie
+        // son sessionId : permet de "rejouer" sa propre activation (ex. après
+        // un redémarrage) sans se faire refuser par sa propre session.
+        val existingSessionId = loadFromPrefs()
+            .takeIf { it.companionCode == normalized }
+            ?.sessionId
+
+        val response = codesApi.redeemCode(normalized, existingSessionId)
         if (response.error == "rate_limited") return RedeemResult.RateLimited
+        if (!response.ok && response.reason == "SESSION_ACTIVE") {
+            // Code valide mais déjà utilisé par un autre appareil.
+            return RedeemResult.SessionTaken
+        }
         if (response.error != null && !response.ok) {
             return RedeemResult.NetworkError(response.error)
         }
         return when (response.statut) {
             "actif" -> {
+                if (!response.ok) {
+                    // Sécurité : "actif" sans ok=true et sans reason connue ne
+                    // doit jamais être traité comme un succès.
+                    return RedeemResult.NetworkError(response.reason ?: "unknown")
+                }
                 val until = parseIsoToEpochMs(response.expireLe)
                 if (until == null || until <= estimatedNowMs()) {
                     // Serveur actif mais date illisible → refuser plutôt qu'ouvrir sans borne
                     Log.w(TAG, "actif without parseable expireLe: ${response.expireLe}")
                     return RedeemResult.NetworkError("missing_expireLe")
                 }
-                saveCompanionUnlock(normalized, until)
+                saveCompanionUnlock(normalized, until, response.sessionId)
                 markRemoteOk()
                 RedeemResult.Success
             }
@@ -186,6 +216,7 @@ class AccessRepository(
         prefs.edit()
             .remove(KEY_UNLOCK_UNTIL_MS)
             .remove(KEY_COMPANION_CODE)
+            .remove(KEY_SESSION_ID)
             .remove(KEY_LAST_CODE)
             .apply()
         _currentUser.value = loadFromPrefs()
@@ -220,10 +251,11 @@ class AccessRepository(
         return candidate
     }
 
-    private fun saveCompanionUnlock(code: String, untilMs: Long?) {
+    private fun saveCompanionUnlock(code: String, untilMs: Long?, sessionId: String? = null) {
         prefs.edit().apply {
             putString(KEY_COMPANION_CODE, code)
             putString(KEY_LAST_CODE, code)
+            if (!sessionId.isNullOrBlank()) putString(KEY_SESSION_ID, sessionId)
             if (untilMs != null && untilMs > 0L) {
                 putLong(KEY_UNLOCK_UNTIL_MS, untilMs)
             } else {
@@ -238,6 +270,7 @@ class AccessRepository(
     private fun clearUnlockKeepingCode(code: String?) {
         prefs.edit().apply {
             remove(KEY_UNLOCK_UNTIL_MS)
+            remove(KEY_SESSION_ID)
             if (code != null) putString(KEY_COMPANION_CODE, code) else remove(KEY_COMPANION_CODE)
             apply()
         }

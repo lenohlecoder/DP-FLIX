@@ -22,7 +22,9 @@ data class UserAccess(
      */
     val unlockUntilMs: Long? = null,
     /** Code compagnon actif (format @XXXXY). */
-    val companionCode: String? = null
+    val companionCode: String? = null,
+    /** Identifiant de session attribué à CET appareil par le serveur. */
+    val sessionId: String? = null
 ) {
     val isAccessValid: Boolean
         get() = status == AccessStatus.ACTIVE
@@ -38,6 +40,8 @@ sealed class RedeemResult {
     data object Success : RedeemResult()
     data object InvalidCode : RedeemResult()
     data object Expired : RedeemResult()
+    /** Code déjà actif sur un autre appareil (une seule session à la fois). */
+    data object SessionTaken : RedeemResult()
     data object RateLimited : RedeemResult()
     data class NetworkError(val detail: String? = null) : RedeemResult()
 }

@@ -27,9 +27,11 @@ class CompanionCodesApi(
 ) {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
-    suspend fun redeemCode(code: String): RedeemCodeResponse = withContext(Dispatchers.IO) {
-        val body = JSONObject().put("code", code).toString()
-            .toRequestBody(jsonMedia)
+    suspend fun redeemCode(code: String, sessionId: String? = null): RedeemCodeResponse =
+        withContext(Dispatchers.IO) {
+        val payload = JSONObject().put("code", code)
+        if (!sessionId.isNullOrBlank()) payload.put("sessionId", sessionId)
+        val body = payload.toString().toRequestBody(jsonMedia)
         val request = Request.Builder()
             .url(CompanionConfig.REDEEM_CODE_URL)
             .post(body)
@@ -38,8 +40,8 @@ class CompanionCodesApi(
         executeRedeemLike(request)
     }
 
-    suspend fun codeStatus(code: String): CodeStatusResponse = withContext(Dispatchers.IO) {
-        val url = CompanionConfig.codeStatusUrl(code)
+    suspend fun codeStatus(code: String, sessionId: String? = null): CodeStatusResponse = withContext(Dispatchers.IO) {
+        val url = CompanionConfig.codeStatusUrl(code, sessionId)
         val request = Request.Builder()
             .url(url)
             .get()
@@ -151,6 +153,8 @@ class CompanionCodesApi(
                     statut = o.optString("statut").takeIf { it.isNotBlank() },
                     expireLe = o.optString("expireLe").takeIf { it.isNotBlank() },
                     dureeJours = if (o.has("dureeJours") && !o.isNull("dureeJours")) o.optInt("dureeJours") else null,
+                    sessionId = o.optString("sessionId").takeIf { it.isNotBlank() },
+                    reason = o.optString("reason").takeIf { it.isNotBlank() },
                     error = o.optString("error").takeIf { it.isNotBlank() }
                 )
             }
@@ -166,6 +170,9 @@ class CompanionCodesApi(
             statut = o.optString("statut").takeIf { it.isNotBlank() },
             expireLe = o.optString("expireLe").takeIf { it.isNotBlank() },
             dureeJours = if (o.has("dureeJours") && !o.isNull("dureeJours")) o.optInt("dureeJours") else null,
+            sessionActive = o.optBoolean("sessionActive", false),
+            sessionAuthorized = if (o.has("sessionAuthorized") && !o.isNull("sessionAuthorized"))
+                o.optBoolean("sessionAuthorized") else null,
             error = o.optString("error").takeIf { it.isNotBlank() }
         )
     }

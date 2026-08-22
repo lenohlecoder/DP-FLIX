@@ -10,6 +10,8 @@ data class RedeemCodeResponse(
     val statut: String? = null,       // actif | expire | inconnu
     val expireLe: String? = null,     // ISO-8601
     val dureeJours: Int? = null,
+    val sessionId: String? = null,    // identifiant de session attribué à cet appareil
+    val reason: String? = null,       // ex. "SESSION_ACTIVE" : code déjà utilisé ailleurs
     val error: String? = null         // rate_limited, store_error, …
 )
 
@@ -18,6 +20,8 @@ data class CodeStatusResponse(
     val statut: String? = null,
     val expireLe: String? = null,
     val dureeJours: Int? = null,
+    val sessionActive: Boolean = false,
+    val sessionAuthorized: Boolean? = null, // null = sans objet, true/false = cet appareil est/n'est plus le titulaire
     val error: String? = null
 )
 

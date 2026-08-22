@@ -84,6 +84,8 @@ fun LockScreen(
                         RedeemResult.InvalidCode -> error = "Code invalide."
                         RedeemResult.Expired ->
                             error = "Votre accès a expiré. Contactez l'administrateur."
+                        RedeemResult.SessionTaken ->
+                            error = "Ce code est déjà utilisé sur un autre appareil."
                         RedeemResult.RateLimited ->
                             error = "Trop de tentatives. Réessayez dans quelques minutes."
                         is RedeemResult.NetworkError ->

@@ -25,9 +25,18 @@ object CompanionConfig {
     const val LIST_INFOS_URL = "$BASE_URL/.netlify/functions/list-infos"
     const val GET_IMAGE_PATH = "$BASE_URL/.netlify/functions/get-image"
 
-    fun codeStatusUrl(code: String): String {
-        val encoded = java.net.URLEncoder.encode(code.trim(), Charsets.UTF_8.name())
-        return "$CODE_STATUS_PATH?code=$encoded"
+    /**
+     * codeStatus prend maintenant un sessionId optionnel : permet à l'appareil
+     * de vérifier qu'il est TOUJOURS le titulaire de la session (voir
+     * CodeStatusResponse.sessionAuthorized), sans jamais exposer le sessionId
+     * d'un autre appareil.
+     */
+    fun codeStatusUrl(code: String, sessionId: String? = null): String {
+        val encodedCode = java.net.URLEncoder.encode(code.trim(), Charsets.UTF_8.name())
+        val base = "$CODE_STATUS_PATH?code=$encodedCode"
+        if (sessionId.isNullOrBlank()) return base
+        val encodedSession = java.net.URLEncoder.encode(sessionId.trim(), Charsets.UTF_8.name())
+        return "$base&sessionId=$encodedSession"
     }
 
     fun imageUrl(key: String): String {
