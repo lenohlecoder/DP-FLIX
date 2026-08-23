@@ -42,6 +42,7 @@ class AccessRepository(
         private const val KEY_UNLOCK_UNTIL_MS = "unlock_until_ms"
         private const val KEY_COMPANION_CODE = "companion_code"
         private const val KEY_SESSION_ID = "companion_session_id"
+        private const val KEY_INSTALLATION_ID = "companion_installation_id"
         private const val KEY_LAST_REMOTE_OK_MS = "last_remote_ok_ms"
         private const val KEY_LAST_CODE = "last_code"
 
@@ -52,6 +53,20 @@ class AccessRepository(
 
     private val prefs: SharedPreferences =
         appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+
+    /**
+     * Identifiant stable de cette installation. Il est généré une seule fois
+     * puis envoyé au serveur avec chaque activation afin que le serveur puisse
+     * reconnaître une reprise après une réponse réseau perdue.
+     */
+    private fun installationId(): String {
+        val existing = prefs.getString(KEY_INSTALLATION_ID, null)
+        if (!existing.isNullOrBlank()) return existing
+        val generated = java.util.UUID.randomUUID().toString()
+        // commit() garantit que le même identifiant existe avant le premier appel réseau.
+        prefs.edit().putString(KEY_INSTALLATION_ID, generated).commit()
+        return generated
+    }
 
     private val _currentUser = MutableStateFlow(loadFromPrefs())
     val currentUser: StateFlow<UserAccess> = _currentUser.asStateFlow()
@@ -111,7 +126,7 @@ class AccessRepository(
         }
 
         val sessionId = local.sessionId
-        val status = codesApi.codeStatus(code, sessionId)
+        val status = codesApi.codeStatus(code, sessionId, installationId())
         if (status.error == null && status.ok) {
             // Un autre appareil a pris la session (ex. réactivation ailleurs,
             // ou libération par l'admin puis reprise par un tiers) : on ne
@@ -177,7 +192,7 @@ class AccessRepository(
             .takeIf { it.companionCode == normalized }
             ?.sessionId
 
-        val response = codesApi.redeemCode(normalized, existingSessionId)
+        val response = codesApi.redeemCode(normalized, existingSessionId, installationId())
         if (response.error == "rate_limited") return RedeemResult.RateLimited
         if (!response.ok && response.reason == "SESSION_ACTIVE") {
             // Code valide mais déjà utilisé par un autre appareil.

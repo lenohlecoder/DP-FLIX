@@ -31,12 +31,23 @@ object CompanionConfig {
      * CodeStatusResponse.sessionAuthorized), sans jamais exposer le sessionId
      * d'un autre appareil.
      */
-    fun codeStatusUrl(code: String, sessionId: String? = null): String {
+    fun codeStatusUrl(
+        code: String,
+        sessionId: String? = null,
+        installationId: String? = null
+    ): String {
         val encodedCode = java.net.URLEncoder.encode(code.trim(), Charsets.UTF_8.name())
         val base = "$CODE_STATUS_PATH?code=$encodedCode"
-        if (sessionId.isNullOrBlank()) return base
-        val encodedSession = java.net.URLEncoder.encode(sessionId.trim(), Charsets.UTF_8.name())
-        return "$base&sessionId=$encodedSession"
+        val params = mutableListOf<String>()
+        if (!sessionId.isNullOrBlank()) {
+            val encodedSession = java.net.URLEncoder.encode(sessionId.trim(), Charsets.UTF_8.name())
+            params += "sessionId=$encodedSession"
+        }
+        if (!installationId.isNullOrBlank()) {
+            val encodedInstallation = java.net.URLEncoder.encode(installationId.trim(), Charsets.UTF_8.name())
+            params += "installationId=$encodedInstallation"
+        }
+        return if (params.isEmpty()) base else "$base&${params.joinToString("&")}" 
     }
 
     fun imageUrl(key: String): String {
