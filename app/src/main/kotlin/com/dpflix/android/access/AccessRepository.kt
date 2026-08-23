@@ -12,6 +12,7 @@ import java.util.TimeZone
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,6 +50,11 @@ class AccessRepository(
         private const val KEY_TRUSTED_TIME_MS = "trusted_time_ms"
         private const val KEY_TRUSTED_TIME_ANCHOR_ELAPSED_MS = "trusted_time_anchor_elapsed_ms"
         private const val KEY_MAX_OBSERVED_NOW_MS = "max_observed_now_ms"
+
+        // Revérification périodique pendant que l'app reste au premier plan, en plus
+        // du réveil ciblé sur unlockUntilMs (AccessSessionGuards) : filet supplémentaire
+        // au cas où ce réveil raterait l'échéance (ex. unlockUntilMs recalculé entre-temps).
+        private const val PERIODIC_CHECK_INTERVAL_MS = 10 * 60 * 1000L
     }
 
     private val prefs: SharedPreferences =
@@ -73,6 +79,20 @@ class AccessRepository(
 
     /** Scope propre au repository, vit tant que l'instance vit (singleton applicatif attendu). */
     private val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    init {
+        // Filet indépendant de AccessSessionGuards : revérifie le statut auprès du
+        // serveur toutes les PERIODIC_CHECK_INTERVAL_MS tant que le process vit,
+        // même si l'app reste au premier plan en continu sans jamais passer par
+        // ON_START. ensureAccessAtStartup() met à jour currentUser lui-même ; c'est
+        // ensuite AccessSessionGuards qui observe currentUser et navigue vers Lock.
+        repositoryScope.launch {
+            while (true) {
+                delay(PERIODIC_CHECK_INTERVAL_MS)
+                ensureAccessAtStartup()
+            }
+        }
+    }
 
     /**
      * Relit l'état et le confirme via le réseau si possible, sans jamais naviguer

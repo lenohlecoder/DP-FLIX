@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -65,6 +66,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -74,6 +76,7 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
@@ -86,6 +89,7 @@ import com.dpflix.android.filmsseries.stream.DetectedStream
 import com.dpflix.android.filmsseries.stream.StreamSniffer
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.settings.GeneralSettings
+import com.dpflix.android.settings.DiagnosticSystemMonitor
 import com.dpflix.android.ui.theme.DpFlixColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -173,6 +177,8 @@ fun FilmsSeriesScreen(
     val url = when (streamIndex) {
         2 -> generalSettings?.filmsSeriesUrl2 ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL_2
         3 -> generalSettings?.filmsSeriesUrl3 ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL_3
+        4 -> GeneralSettings.DEFAULT_FILMS_SERIES_URL_4
+        5 -> GeneralSettings.DEFAULT_FILMS_SERIES_URL_5
         else -> generalSettings?.filmsSeriesUrl ?: GeneralSettings.DEFAULT_FILMS_SERIES_URL
     }
 
@@ -209,6 +215,8 @@ fun FilmsSeriesScreen(
     var isPageFullscreen by remember { mutableStateOf(false) }
     var showStreamsDialog by remember { mutableStateOf(false) }
     var showExceptionDomainsDialog by remember { mutableStateOf(false) }
+    var showDpFlixMenu by remember { mutableStateOf(false) }
+    val dpFlixMenuFocusRequester = remember { FocusRequester() }
     // Titre de la page WebView courante, pour nommer le téléchargement à l'enqueue.
     var pageTitle by remember { mutableStateOf<String?>(null) }
 
@@ -233,6 +241,15 @@ fun FilmsSeriesScreen(
         LaunchedEffect(Unit) { focusRequester.requestFocus() }
     }
 
+    LaunchedEffect(showDpFlixMenu) {
+        if (showDpFlixMenu && showVirtualCursor) {
+            // Le menu DP-Flix devient le point de focus D-pad pendant son ouverture.
+            // Les flèches peuvent ensuite circuler entre les actions, tandis que
+            // Retour referme simplement le menu.
+            dpFlixMenuFocusRequester.requestFocus()
+        }
+    }
+
     LaunchedEffect(awaitingSecondBackPress) {
         if (awaitingSecondBackPress) {
             delay(DOUBLE_BACK_WINDOW_MS)
@@ -252,6 +269,7 @@ fun FilmsSeriesScreen(
         val webView = webViewRef.value
         when {
             showStreamsDialog -> showStreamsDialog = false
+            showDpFlixMenu -> showDpFlixMenu = false
             webView != null && webView.canGoBack() -> webView.goBack()
             awaitingSecondBackPress -> {
                 awaitingSecondBackPress = false
@@ -381,45 +399,50 @@ fun FilmsSeriesScreen(
             VirtualCursorOverlay(offsetPx = offset)
         }
 
-        // Réglages (domaines d'exception) + flèche téléchargement + raccourci bibliothèque
-        // — hors plein écran uniquement.
+        // Barre DP-Flix compacte : une seule icône discrète regroupe les actions
+        // Réglages / Téléchargements / Détection. Le badge rouge reste visible même
+        // lorsque le menu est fermé afin de signaler immédiatement les flux captés.
+        //
+        // Fix (21 août 2026) : positionnée en haut-CENTRE, l'icône pouvait recouvrir un
+        // logo de site lui-même centré (aucun moyen fiable de connaître la mise en page
+        // exacte de chaque site sans injecter du JS fragile pour mesurer son DOM). Le
+        // coin haut-droit, en léger retrait du bord, est la zone la plus sûre quel que
+        // soit le site : les logos sont presque toujours calés à gauche, et ce retrait
+        // (12dp) laisse aussi de la marge avec un éventuel ☰ du site tout au bord.
         if (!isPageFullscreen) {
-            Row(
+            Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    .padding(top = 4.dp, end = 12.dp)
             ) {
-                Surface(
-                    shape = CircleShape,
-                    color = Color.Black.copy(alpha = 0.65f),
-                    contentColor = Color.White,
-                    shadowElevation = 4.dp
-                ) {
-                    IconButton(onClick = { showExceptionDomainsDialog = true }) {
-                        Icon(
-                            imageVector = Icons.Filled.Settings,
-                            contentDescription = "Domaines d'exception",
-                            tint = Color.White
-                        )
-                    }
-                }
-                if (onOpenDownloads != null) {
-                    Surface(
-                        shape = CircleShape,
-                        color = Color.Black.copy(alpha = 0.65f),
-                        contentColor = Color.White,
-                        shadowElevation = 4.dp
-                    ) {
-                        TextButton(onClick = onOpenDownloads) {
-                            Text("Téléch.", color = Color.White)
-                        }
-                    }
-                }
-                if (detectedStreams.isNotEmpty()) {
-                    DownloadArrowButton(
+                CompactDpFlixMenuButton(
+                    streamCount = detectedStreams.size,
+                    expanded = showDpFlixMenu,
+                    focusRequester = dpFlixMenuFocusRequester,
+                    onClick = { showDpFlixMenu = !showDpFlixMenu },
+                    modifier = Modifier.align(Alignment.TopEnd)
+                )
+
+                if (showDpFlixMenu) {
+                    DpFlixActionMenu(
+                        hasDetectedStreams = detectedStreams.isNotEmpty(),
                         streamCount = detectedStreams.size,
-                        onClick = { showStreamsDialog = true }
+                        hasDownloadsShortcut = onOpenDownloads != null,
+                        onSettings = {
+                            showDpFlixMenu = false
+                            showExceptionDomainsDialog = true
+                        },
+                        onDownloads = {
+                            showDpFlixMenu = false
+                            onOpenDownloads?.invoke()
+                        },
+                        onDetectedStreams = {
+                            showDpFlixMenu = false
+                            showStreamsDialog = true
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 48.dp)
                     )
                 }
             }
@@ -512,34 +535,139 @@ fun FilmsSeriesScreen(
     }
 }
 
-/** Bouton flèche téléchargement — coin supérieur droit, badge = nombre de flux détectés. */
+/**
+ * Icône DP-Flix compacte : visuellement petite, mais avec une zone de focus/toucher
+ * confortable. Le badge rouge reprend le compteur du détecteur sans ouvrir le menu.
+ */
 @Composable
-private fun DownloadArrowButton(
+private fun CompactDpFlixMenuButton(
     streamCount: Int,
+    expanded: Boolean,
+    focusRequester: FocusRequester,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Surface(
-        modifier = modifier,
-        shape = CircleShape,
-        color = Color.Black.copy(alpha = 0.65f),
-        contentColor = Color.White,
-        shadowElevation = 4.dp
+    var hasFocus by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = modifier
+            .size(52.dp)
+            .focusRequester(focusRequester)
+            .onFocusChanged { hasFocus = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick)
+            // Fond translucide permanent, très discret (pas le "gros cercle noir" visé par
+            // le retour) : juste assez pour que l'icône se lise comme un élément DP-Flix
+            // par-dessus le site, même sans focus, plutôt que de sembler faire partie de
+            // la page en dessous.
+            .background(Color.Black.copy(alpha = 0.28f), RoundedCornerShape(12.dp))
+            .then(
+                if (hasFocus || expanded) {
+                    Modifier.border(2.dp, Color.White.copy(alpha = 0.9f), RoundedCornerShape(12.dp))
+                } else Modifier
+            ),
+        contentAlignment = Alignment.Center
     ) {
-        IconButton(onClick = onClick) {
-            BadgedBox(
-                badge = {
-                    if (streamCount > 0) {
-                        Badge { Text(text = streamCount.coerceAtMost(99).toString()) }
-                    }
-                }
+        Icon(
+            imageVector = Icons.Filled.Menu,
+            contentDescription = if (expanded) "Fermer le menu DP-Flix" else "Ouvrir le menu DP-Flix",
+            tint = Color.White,
+            modifier = Modifier.size(23.dp)
+        )
+        if (streamCount > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 2.dp, end = 2.dp)
+                    .size(20.dp)
+                    .background(Color(0xFFE53935), CircleShape),
+                contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Download,
-                    contentDescription = "Flux vidéo détectés"
+                Text(
+                    text = streamCount.coerceAtMost(99).toString(),
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall
                 )
             }
         }
+    }
+}
+
+/** Menu contextuel DP-Flix. Les actions restent petites et lisibles sur TV/mobile. */
+@Composable
+private fun DpFlixActionMenu(
+    hasDetectedStreams: Boolean,
+    streamCount: Int,
+    hasDownloadsShortcut: Boolean,
+    onSettings: () -> Unit,
+    onDownloads: () -> Unit,
+    onDetectedStreams: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        modifier = modifier
+            .widthIn(min = 190.dp, max = 260.dp),
+        shape = RoundedCornerShape(14.dp),
+        color = Color.Black.copy(alpha = 0.88f),
+        contentColor = Color.White,
+        shadowElevation = 8.dp
+    ) {
+        Column(modifier = Modifier.padding(6.dp)) {
+            DpFlixMenuAction(
+                icon = Icons.Filled.Settings,
+                label = "Réglages",
+                onClick = onSettings
+            )
+            if (hasDownloadsShortcut) {
+                DpFlixMenuAction(
+                    icon = Icons.Filled.Download,
+                    label = "Mes téléchargements",
+                    onClick = onDownloads
+                )
+            }
+            if (hasDetectedStreams) {
+                DpFlixMenuAction(
+                    icon = Icons.Filled.Download,
+                    label = if (streamCount == 1) "Télécharger" else "Télécharger ($streamCount)",
+                    onClick = onDetectedStreams
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DpFlixMenuAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit
+) {
+    var hasFocus by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .onFocusChanged { hasFocus = it.isFocused }
+            .focusable()
+            .clickable(onClick = onClick)
+            .then(
+                if (hasFocus) {
+                    Modifier
+                        .background(Color.White.copy(alpha = 0.16f), RoundedCornerShape(10.dp))
+                        .border(2.dp, Color.White, RoundedCornerShape(10.dp))
+                } else Modifier
+            )
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(21.dp))
+        Text(
+            text = label,
+            color = Color.White,
+            modifier = Modifier.padding(start = 12.dp),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -1025,6 +1153,18 @@ private val STREAM_INFRASTRUCTURE_HOSTS: Map<Int, Set<String>> = mapOf(
         "downloadmoviebox.com",
         "downloader2.com",
     ),
+    4 to setOf(
+        "youtube.com",
+        "m.youtube.com",
+        "googlevideo.com",
+        "youtube-nocookie.com",
+        "ytimg.com",
+        "ggpht.com",
+    ),
+    5 to setOf(
+        "xnxx.com",
+        "www.xnxx.com",
+    ),
 )
 
 private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<String> {
@@ -1247,11 +1387,60 @@ private fun LockedWebView(
                         // Nouvelle page dans l'historique du site → les flux capturés pour
                         // l'ancienne page n'ont plus cours (module téléchargement).
                         snifferState.value.resetForNewPage(pageUrl)
+                        DiagnosticSystemMonitor.record(
+                            area = "Films & Séries",
+                            action = "Chargement de page",
+                            status = DiagnosticSystemMonitor.Status.WARNING,
+                            detail = "Navigation WebView démarrée${pageUrl?.let { " · ${it.substringBefore('?').takeLast(120)}" } ?: ""}"
+                        )
                         // Évite de renvoyer mouseout vers un élément de la page précédente.
                         view?.evaluateJavascript(
                             "window.__dpflixLastHoverEl = null;",
                             null
                         )
+                    }
+
+                    override fun onPageFinished(view: WebView?, pageUrl: String?) {
+                        DiagnosticSystemMonitor.record(
+                            area = "Films & Séries",
+                            action = "Chargement de page terminé",
+                            status = DiagnosticSystemMonitor.Status.SUCCESS,
+                            detail = "WebView a signalé la fin du chargement"
+                        )
+                    }
+
+                    override fun onReceivedError(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                        error: WebResourceError?
+                    ) {
+                        if (request?.isForMainFrame == true) {
+                            DiagnosticSystemMonitor.record(
+                                area = "Films & Séries",
+                                action = "Erreur WebView",
+                                status = DiagnosticSystemMonitor.Status.ERROR,
+                                detail = "${error?.errorCode ?: -1} · ${error?.description ?: "erreur inconnue"}",
+                                cause = "La page principale n'a pas pu être chargée correctement."
+                            )
+                        }
+                    }
+
+                    override fun onReceivedHttpError(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                        errorResponse: android.webkit.WebResourceResponse?
+                    ) {
+                        if (request?.isForMainFrame == true) {
+                            DiagnosticSystemMonitor.recordHttp(
+                                area = "Films & Séries",
+                                action = "Réponse HTTP WebView",
+                                code = errorResponse?.statusCode ?: -1,
+                                url = request.url.toString(),
+                                userAgentPresent = true,
+                                cookiesPresent = null,
+                                contentType = errorResponse?.mimeType
+                            )
+                        }
                     }
 
                     /**

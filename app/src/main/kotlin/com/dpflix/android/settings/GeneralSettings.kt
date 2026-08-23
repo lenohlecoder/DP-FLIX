@@ -84,6 +84,15 @@ data class GeneralSettings(
          *  [DEFAULT_FILMS_SERIES_URL] pour "Stream 1". */
         const val DEFAULT_FILMS_SERIES_URL_3 = "https://themoviebox.org/"
 
+        /** Stream 4 : YouTube mobile, URL fixe dans l'application. */
+        const val DEFAULT_FILMS_SERIES_URL_4 = "https://m.youtube.com/"
+
+        /** Stream 5 : URL fixe protégée par un code local demandé avant ouverture. */
+        const val DEFAULT_FILMS_SERIES_URL_5 = "https://www.xnxx.com/"
+
+        /** Code local du Stream 5. Ce n'est pas un secret cryptographique. */
+        const val STREAM_5_LOCAL_CODE = "9919"
+
         /** CDN / pages de téléchargement vers lesquels les sites Films et Séries
          *  redirigent eux-mêmes (lien "Télécharger") — sans ces exceptions, ces liens
          *  seraient bloqués par le verrouillage de domaine avant d'atteindre le vrai flux.
