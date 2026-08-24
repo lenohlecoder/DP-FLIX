@@ -53,6 +53,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.dpflix.android.access.AccessRepository
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.Playlist
 import com.dpflix.android.model.PlaylistType
@@ -106,6 +107,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun SettingsScreenTv(
     appRepository: AppRepository,
+    accessRepository: AccessRepository,
     onBack: () -> Unit,
     onResetComplete: () -> Unit,
     modifier: Modifier = Modifier
@@ -144,6 +146,7 @@ fun SettingsScreenTv(
 
                 when (val current = section) {
                     SettingsSection.List -> SectionListBodyTv(
+                        accessRepository = accessRepository,
                         firstItemFocusRequester = firstItemFocusRequester,
                         onSelect = { section = it }
                     )
@@ -227,7 +230,11 @@ fun SettingsScreenTv(
 private fun SettingsSection.pendingStepLabelTv(): String = ""
 
 @Composable
-private fun SectionListBodyTv(firstItemFocusRequester: FocusRequester, onSelect: (SettingsSection) -> Unit) {
+private fun SectionListBodyTv(
+    accessRepository: AccessRepository,
+    firstItemFocusRequester: FocusRequester,
+    onSelect: (SettingsSection) -> Unit
+) {
     val sections = listOf(
         SettingsSection.General,
         SettingsSection.Player,
@@ -240,6 +247,9 @@ private fun SectionListBodyTv(firstItemFocusRequester: FocusRequester, onSelect:
         contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item(key = "access_status_banner") {
+            AccessStatusBannerTv(accessRepository = accessRepository)
+        }
         items(sections, key = { it.title }) { item ->
             Button(
                 onClick = { onSelect(item) },
@@ -1235,5 +1245,39 @@ private fun formatBytesTv(bytes: Long): String {
         String.format(java.util.Locale.FRANCE, "%.2f Go", mb / 1024.0)
     } else {
         String.format(java.util.Locale.FRANCE, "%.1f Mo", mb)
+    }
+}
+
+/** Équivalent TV de `AccessStatusBanner` (mobile, `SettingsScreen.kt`) — même bandeau de
+ *  suivi permanent de l'accès, en tête de `SectionListBodyTv`, purement informatif. */
+@Composable
+private fun AccessStatusBannerTv(accessRepository: AccessRepository) {
+    val userAccess by accessRepository.currentUser.collectAsState()
+
+    val (label, valueColor) = when {
+        !userAccess.isAccessValid -> "Verrouillé" to DpFlixColors.Red
+        else -> {
+            val days = userAccess.daysRemaining(accessRepository.estimatedNowMs())
+            when {
+                days == null || days >= 36_500L -> "Illimité" to DpFlixColors.OnBackground
+                days <= 0L -> "Expire aujourd'hui" to DpFlixColors.Red
+                days <= 7L -> "Expire dans $days j" to DpFlixColors.Red
+                else -> "Expire dans $days j" to DpFlixColors.OnBackgroundMuted
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(text = "Accès", color = DpFlixColors.OnBackgroundMuted, fontSize = 20.sp)
+            Text(text = label, color = valueColor, fontSize = 20.sp)
+        }
+        androidx.compose.material3.HorizontalDivider()
     }
 }

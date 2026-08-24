@@ -291,6 +291,7 @@ fun DpFlixTvNavHost(
         composable(DpFlixDestination.Settings.route) {
             SettingsScreenTv(
                 appRepository = appRepository,
+                accessRepository = accessRepository,
                 onBack = { navController.popBackStack() },
                 onResetComplete = {
                     navController.navigate(DpFlixDestination.Onboarding.route) {
@@ -307,6 +308,7 @@ fun DpFlixTvNavHost(
             val channelId = backStackEntry.arguments?.getString(DpFlixDestination.ARG_CHANNEL_ID).orEmpty()
             ResolvedChannelPlayerTv(
                 appRepository = appRepository,
+                accessRepository = accessRepository,
                 channelId = channelId,
                 onBack = { navController.popBackStack() },
                 onNavigateToReplay = { fromChannelId ->
@@ -340,6 +342,7 @@ fun DpFlixTvNavHost(
             )
             ResolvedChannelReplayPlayerTv(
                 appRepository = appRepository,
+                accessRepository = accessRepository,
                 channelId = channelId,
                 program = program,
                 onBack = { navController.popBackStack() },
@@ -376,6 +379,7 @@ private const val TV_POST_STARTUP_VIDEO_ROUTE = "tv_post_startup_video_routing"
 @Composable
 private fun ResolvedChannelPlayerTv(
     appRepository: AppRepository,
+    accessRepository: AccessRepository,
     channelId: String,
     onBack: () -> Unit,
     onNavigateToReplay: (channelId: String) -> Unit,
@@ -395,6 +399,7 @@ private fun ResolvedChannelPlayerTv(
             channel = currentChannel,
             modifier = Modifier.fillMaxSize(),
             appRepository = appRepository,
+            accessRepository = accessRepository,
             onNavigateToReplay = onNavigateToReplay,
             onRequestFullReset = onRequestFullReset
         )
@@ -413,6 +418,7 @@ private fun ResolvedChannelPlayerTv(
 @Composable
 private fun ResolvedChannelReplayPlayerTv(
     appRepository: AppRepository,
+    accessRepository: AccessRepository,
     channelId: String,
     program: ReplayProgram,
     onBack: () -> Unit,
@@ -433,6 +439,7 @@ private fun ResolvedChannelReplayPlayerTv(
             initialReplayProgram = program,
             modifier = Modifier.fillMaxSize(),
             appRepository = appRepository,
+            accessRepository = accessRepository,
             onRequestFullReset = onRequestFullReset
         )
         notFound -> TvPlaceholderScreen(title = "Chaîne introuvable", actions = listOf("Retour" to onBack))

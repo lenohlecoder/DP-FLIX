@@ -330,6 +330,7 @@ fun DpFlixNavHost(
         composable(DpFlixDestination.Settings.route) {
             SettingsScreen(
                 appRepository = appRepository,
+                accessRepository = accessRepository,
                 onBack = { navController.popBackStack() },
                 onResetComplete = {
                     navController.navigate(DpFlixDestination.Onboarding.route) {
@@ -346,6 +347,7 @@ fun DpFlixNavHost(
             val channelId = backStackEntry.arguments?.getString(DpFlixDestination.ARG_CHANNEL_ID).orEmpty()
             ResolvedChannelPlayer(
                 appRepository = appRepository,
+                accessRepository = accessRepository,
                 channelId = channelId,
                 onBack = { navController.popBackStack() },
                 onNavigateToReplay = { fromChannelId ->
@@ -381,6 +383,7 @@ fun DpFlixNavHost(
             )
             ResolvedChannelReplayPlayer(
                 appRepository = appRepository,
+                accessRepository = accessRepository,
                 channelId = channelId,
                 program = program,
                 onBack = { navController.popBackStack() },
@@ -412,6 +415,7 @@ private const val POST_STARTUP_VIDEO_ROUTE = "post_startup_video_routing"
 @Composable
 private fun ResolvedChannelPlayer(
     appRepository: AppRepository,
+    accessRepository: AccessRepository,
     channelId: String,
     onBack: () -> Unit,
     onNavigateToReplay: (channelId: String) -> Unit,
@@ -431,6 +435,7 @@ private fun ResolvedChannelPlayer(
             channel = currentChannel,
             modifier = Modifier.fillMaxSize(),
             appRepository = appRepository,
+            accessRepository = accessRepository,
             onNavigateToReplay = onNavigateToReplay,
             onRequestFullReset = onRequestFullReset
         )
@@ -461,6 +466,7 @@ private fun ResolvedChannelPlayer(
 @Composable
 private fun ResolvedChannelReplayPlayer(
     appRepository: AppRepository,
+    accessRepository: AccessRepository,
     channelId: String,
     program: ReplayProgram,
     onBack: () -> Unit,
@@ -481,6 +487,7 @@ private fun ResolvedChannelReplayPlayer(
             initialReplayProgram = program,
             modifier = Modifier.fillMaxSize(),
             appRepository = appRepository,
+            accessRepository = accessRepository,
             onRequestFullReset = onRequestFullReset
         )
         notFound -> PlaceholderScreen(

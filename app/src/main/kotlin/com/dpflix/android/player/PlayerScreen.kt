@@ -46,6 +46,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.ui.PlayerView
 import androidx.media3.ui.AspectRatioFrameLayout
+import com.dpflix.android.access.AccessRepository
 import com.dpflix.android.settings.SettingsScreen
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ReplayProgram
@@ -216,6 +217,7 @@ fun PlayerScreen(
     modifier: Modifier = Modifier,
     osdEnabled: Boolean = true,
     appRepository: AppRepository? = null,
+    accessRepository: AccessRepository? = null,
     initialReplayProgram: ReplayProgram? = null,
     onNavigateToReplay: ((channelId: String) -> Unit)? = null,
     onRequestFullReset: () -> Unit = {}
@@ -941,10 +943,16 @@ fun PlayerScreen(
         // plus haut. Rendue en dernier dans ce Box pour passer au-dessus de tout le reste
         // (vidéo, OSD, indicateurs d'état) ; appRepository != null est garanti ici
         // puisque c'est la seule condition sous laquelle onOpenSettings existe (voir
-        // l'appel à PlayerOsd ci-dessus).
-        if (settingsOverlayVisible && appRepository != null) {
+        // l'appel à PlayerOsd ci-dessus). accessRepository != null : condition
+        // supplémentaire pour le bandeau de suivi d'accès (AccessStatusBanner) — sur les
+        // deux appelants plein écran qui le fournissent (voir DpFlixNavHost), ce bandeau
+        // s'affiche donc aussi depuis Réglages ouvert en incrustation ; sur les
+        // mini-lecteurs sans réglages (HomeScreen, osdEnabled = false) il reste absent,
+        // sans conséquence puisque cette incrustation n'y est de toute façon jamais ouverte.
+        if (settingsOverlayVisible && appRepository != null && accessRepository != null) {
             SettingsScreen(
                 appRepository = appRepository,
+                accessRepository = accessRepository,
                 onBack = { settingsOverlayVisible = false },
                 onResetComplete = {
                     settingsOverlayVisible = false

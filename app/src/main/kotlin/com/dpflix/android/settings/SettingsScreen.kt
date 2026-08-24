@@ -61,6 +61,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.dpflix.android.access.AccessRepository
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.Playlist
 import com.dpflix.android.model.PlaylistType
@@ -96,6 +97,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun SettingsScreen(
     appRepository: AppRepository,
+    accessRepository: AccessRepository,
     onBack: () -> Unit,
     onResetComplete: () -> Unit,
     modifier: Modifier = Modifier
@@ -137,7 +139,10 @@ fun SettingsScreen(
                 }
 
                 when (val current = section) {
-                    SettingsSection.List -> SectionListBody(onSelect = { section = it })
+                    SettingsSection.List -> SectionListBody(
+                        accessRepository = accessRepository,
+                        onSelect = { section = it }
+                    )
                     SettingsSection.General -> GeneralSectionBody(
                         uiState = uiState,
                         onQualityCapSelected = viewModel::setDefaultVideoQualityCap,
@@ -199,7 +204,10 @@ fun SettingsScreen(
 private fun SettingsSection.pendingStepLabel(): String = ""
 
 @Composable
-private fun SectionListBody(onSelect: (SettingsSection) -> Unit) {
+private fun SectionListBody(
+    accessRepository: AccessRepository,
+    onSelect: (SettingsSection) -> Unit
+) {
     val sections = listOf(
         SettingsSection.General,
         SettingsSection.Player,
@@ -209,6 +217,9 @@ private fun SectionListBody(onSelect: (SettingsSection) -> Unit) {
         SettingsSection.UserGuide
     )
     LazyColumn(modifier = Modifier.fillMaxSize()) {
+        item(key = "access_status_banner") {
+            AccessStatusBanner(accessRepository = accessRepository)
+        }
         items(sections, key = { it.title }) { item ->
             Row(
                 modifier = Modifier
@@ -1561,4 +1572,55 @@ private fun ResetConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit
             }
         }
     )
+}
+
+/**
+ * Bandeau de suivi permanent de l'accès, en tête de la liste des sections Paramètres.
+ * Choix de l'écran Paramètres (et non l'écran de lecture ni Lock) : c'est le seul
+ * endroit consulté volontairement et régulièrement, sans être intrusif — contrairement
+ * à un bandeau sur l'écran de lecture (gênant) ou sur Lock (invisible tant que l'accès
+ * est valide, donc inutile pour "suivre").
+ *
+ * Purement informatif : ne navigue jamais vers Lock lui-même — c'est le rôle
+ * d'AccessSessionGuards, qui observe [AccessRepository.currentUser] indépendamment.
+ */
+@Composable
+private fun AccessStatusBanner(accessRepository: AccessRepository) {
+    val userAccess by accessRepository.currentUser.collectAsState()
+
+    val (label, valueColor) = when {
+        !userAccess.isAccessValid -> "Verrouillé" to DpFlixColors.Red
+        else -> {
+            val days = userAccess.daysRemaining(accessRepository.estimatedNowMs())
+            when {
+                days == null || days >= 36_500L -> "Illimité" to DpFlixColors.OnBackground
+                days <= 0L -> "Expire aujourd'hui" to DpFlixColors.Red
+                days <= 7L -> "Expire dans $days j" to DpFlixColors.Red
+                else -> "Expire dans $days j" to DpFlixColors.OnBackgroundMuted
+            }
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Accès",
+                color = DpFlixColors.OnBackgroundMuted,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            Text(
+                text = label,
+                color = valueColor,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        HorizontalDivider(color = DpFlixColors.OnBackgroundMuted.copy(alpha = 0.2f))
+    }
 }
