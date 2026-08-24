@@ -28,10 +28,11 @@ class CompanionCodesApi(
 ) {
     private val jsonMedia = "application/json; charset=utf-8".toMediaType()
 
-    suspend fun redeemCode(code: String, sessionId: String? = null): RedeemCodeResponse =
+    suspend fun redeemCode(code: String, sessionId: String? = null, installationId: String? = null): RedeemCodeResponse =
         withContext(Dispatchers.IO) {
         val payload = JSONObject().put("code", code)
         if (!sessionId.isNullOrBlank()) payload.put("sessionId", sessionId)
+        if (!installationId.isNullOrBlank()) payload.put("installationId", installationId)
         val body = payload.toString().toRequestBody(jsonMedia)
         val request = Request.Builder()
             .url(CompanionConfig.REDEEM_CODE_URL)
@@ -41,8 +42,8 @@ class CompanionCodesApi(
         executeRedeemLike(request)
     }
 
-    suspend fun codeStatus(code: String, sessionId: String? = null): CodeStatusResponse = withContext(Dispatchers.IO) {
-        val url = CompanionConfig.codeStatusUrl(code, sessionId)
+    suspend fun codeStatus(code: String, sessionId: String? = null, installationId: String? = null): CodeStatusResponse = withContext(Dispatchers.IO) {
+        val url = CompanionConfig.codeStatusUrl(code, sessionId, installationId)
         val request = Request.Builder()
             .url(url)
             .get()
