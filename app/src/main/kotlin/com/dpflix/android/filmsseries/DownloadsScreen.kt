@@ -1,5 +1,6 @@
 package com.dpflix.android.filmsseries
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -139,6 +140,11 @@ fun DownloadsScreen(
     }
 
     fun showError(message: String) = Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+
+    // Le geste/bouton retour système ne doit jamais quitter l'écran ni "fuiter" vers une
+    // autre redirection tant qu'une sélection multiple est active : il doit d'abord
+    // annuler la sélection, exactement comme la flèche retour de la TopAppBar.
+    BackHandler(enabled = selectionMode) { clearSelection() }
 
     Box(modifier = modifier.fillMaxSize()) {
         Image(
