@@ -26,6 +26,7 @@ class CompanionRepository(
         .readTimeout(CompanionConfig.STATUS_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .callTimeout(CompanionConfig.STATUS_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .followRedirects(true)
+        .addInterceptor(com.dpflix.android.settings.DiagnosticSystemMonitor.okHttpInterceptor)
         .build()
 ) {
     private data class CachedStatus(val status: CompanionStatus, val atMs: Long)

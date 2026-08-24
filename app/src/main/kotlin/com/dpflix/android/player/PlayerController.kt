@@ -1200,6 +1200,21 @@ class PlayerController(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
+                    com.dpflix.android.settings.DiagnosticSystemMonitor.recordPlayback(
+                        "Erreur du lecteur",
+                        com.dpflix.android.settings.DiagnosticSystemMonitor.Status.ERROR,
+                        "${error.errorCodeName} · ${error.message ?: "aucun message"}",
+                        cause = when (error.errorCode) {
+                            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+                            PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED,
+                            PlaybackException.ERROR_CODE_PARSING_MANIFEST_MALFORMED,
+                            PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED -> "Format/conteneur du flux incompatible avec le lecteur."
+                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+                            PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT,
+                            PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS -> "Échec de connexion ou réponse HTTP du serveur."
+                            else -> null
+                        }
+                    )
                     // Fix (2026-07-22, second passage ; generalise 2026-07-23,
                     // quatrieme passage) : PARSING_CONTAINER_UNSUPPORTED signifie que
                     // l'extension/mimeType utilise pour cette URL ne correspond pas a ce
@@ -1493,6 +1508,11 @@ class PlayerController(
         // effet si on était déjà en LIVE (currentLoadControlMode déjà LIVE, no-op).
         rebuildExoPlayerIfModeChanged(PlaybackMode.LIVE)
         _playbackMode.value = PlaybackMode.LIVE
+        com.dpflix.android.settings.DiagnosticSystemMonitor.recordPlayback(
+            "Passage en Direct",
+            com.dpflix.android.settings.DiagnosticSystemMonitor.Status.SUCCESS,
+            "Lecture LIVE demandée · retard volontaire désactivé lorsque le mode Direct est actif."
+        )
         _replayProgram.value = null
         cancelWatchdog()
         // Zap LIVE = arrêt immédiat du pipeline de l'ancienne chaîne + purge disque

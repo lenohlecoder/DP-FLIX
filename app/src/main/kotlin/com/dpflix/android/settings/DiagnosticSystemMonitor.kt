@@ -1,7 +1,17 @@
 package com.dpflix.android.settings
 
 import android.content.Context
-import android.os.SystemClock
+import android.webkit.WebResourceRequest
+import java.io.File
+import java.net.SocketTimeoutException
+import java.net.URI
+import java.net.UnknownHostException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -12,42 +22,20 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import okhttp3.Interceptor
-import java.io.File
-import java.io.IOException
-import java.net.SocketTimeoutException
-import java.net.URI
-import java.net.UnknownHostException
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.max
 
 /**
- * Diagnostic système global temporaire de DP-FLIX.
+ * Diagnostic système temporaire DP-FLIX.
  *
- * IMPORTANT :
- * - désactivé par défaut ;
- * - aucune collecte hors session ;
- * - une session dure au maximum 10 minutes ;
- * - à 00:00 la session s'arrête automatiquement et un rapport est généré ;
- * - l'utilisateur peut arrêter la session avant la fin ;
- * - les cookies, tokens, mots de passe, clés API et query strings ne sont jamais écrits.
+ * - Désactivé par défaut.
+ * - Une session dure au maximum 10 minutes.
+ * - Aucune collecte n'est faite hors session.
+ * - À la fin, la surveillance s'arrête automatiquement et un rapport est écrit localement.
+ * - Les cookies/tokens/mots de passe/Authorization et query strings ne sont jamais stockés.
  *
- * Ce fichier fournit le moteur de diagnostic. Pour obtenir une surveillance réellement
- * globale, les différents points d'exécution de l'application doivent appeler les méthodes
- * record*/recordHttp*/recordWebView*/recordDownload*/recordPlayback* ci-dessous.
- *
- * Le DiagnosticOkHttpInterceptor peut être ajouté aux clients OkHttp utilisés par l'app :
- *
- *   .addInterceptor(DiagnosticSystemMonitor.okHttpInterceptor)
- *
- * Il ne modifie jamais la requête réelle et ne fait aucune collecte lorsque le diagnostic
- * est désactivé.
+ * Le moteur est volontairement générique : les couches WebView, téléchargement, lecteur et
+ * réseau appellent les méthodes record* lorsqu'une session est active.
  */
 object DiagnosticSystemMonitor {
-
     private const val SESSION_DURATION_MS = 10 * 60 * 1000L
     private const val TICK_MS = 1_000L
     private const val MAX_EVENTS = 2_000
@@ -84,98 +72,49 @@ object DiagnosticSystemMonitor {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val events = CopyOnWriteArrayList<Event>()
     private val running = AtomicBoolean(false)
-
     private var timerJob: Job? = null
     private var appContext: Context? = null
-    private var endAtElapsedRealtime: Long = 0L
-
+    private var endAtElapsedRealtime = 0L
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
-    /**
-     * À appeler une fois depuis Application.onCreate().
-     * Ne démarre aucune surveillance.
-     */
     @Synchronized
     fun initialize(context: Context) {
-        appContext = context.applicationContext
+        if (appContext == null) appContext = context.applicationContext
         if (_state.value.report == null) {
             _state.value = _state.value.copy(report = readReport())
         }
     }
 
-    fun isActive(): Boolean = running.get()
-
-    /**
-     * Lance une nouvelle session de 10 minutes.
-     * Retourne false si une session est déjà active.
-     */
-    @Synchronized
     fun start(): Boolean {
         if (!running.compareAndSet(false, true)) return false
-
         events.clear()
-        endAtElapsedRealtime = SystemClock.elapsedRealtime() + SESSION_DURATION_MS
-
-        _state.value = State(
-            active = true,
-            remainingMillis = SESSION_DURATION_MS
-        )
-
-        record(
-            area = "Diagnostic système",
-            action = "Démarrage de la session",
-            status = Status.SUCCESS,
-            detail = "Analyse globale activée pour 10 minutes."
-        )
-
+        endAtElapsedRealtime = android.os.SystemClock.elapsedRealtime() + SESSION_DURATION_MS
+        _state.value = State(active = true, remainingMillis = SESSION_DURATION_MS)
+        record("Diagnostic système", "Démarrage", Status.SUCCESS, "Analyse de 10 minutes activée")
         timerJob?.cancel()
         timerJob = scope.launch {
             while (running.get()) {
-                val remaining =
-                    max(0L, endAtElapsedRealtime - SystemClock.elapsedRealtime())
-
-                _state.value = buildState(
-                    active = true,
-                    remainingMillis = remaining
-                )
-
-                if (remaining <= 0L) {
-                    finalizeSession("Fin automatique après 10 minutes")
+                val remaining = (endAtElapsedRealtime - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+                _state.value = buildState(remaining)
+                if (remaining == 0L) {
+                    stopInternal("Fin automatique après 10 minutes")
                     break
                 }
-
                 delay(TICK_MS)
             }
         }
-
         return true
     }
 
-    /**
-     * Arrêt manuel. Le rapport est généré immédiatement.
-     */
-    @Synchronized
     fun stop() {
         if (!running.compareAndSet(true, false)) return
-
         timerJob?.cancel()
         timerJob = null
-        finalizeSession("Arrêt manuel de l'analyse")
+        finalizeSession("Analyse arrêtée manuellement")
     }
 
-    /**
-     * Enregistre une action générale.
-     *
-     * Exemple :
-     * record(
-     *   area = "Films & Séries",
-     *   action = "Chargement de la page",
-     *   status = Status.ERROR,
-     *   detail = "La page n'a pas fourni le contenu attendu.",
-     *   cause = "Ressources principales absentes."
-     * )
-     */
+    /** Enregistre une action uniquement pendant la session active. */
     fun record(
         area: String,
         action: String,
@@ -189,7 +128,6 @@ object DiagnosticSystemMonitor {
         }
     ) {
         if (!running.get()) return
-
         val event = Event(
             timestampMillis = System.currentTimeMillis(),
             area = sanitizeText(area),
@@ -199,29 +137,17 @@ object DiagnosticSystemMonitor {
             cause = cause?.let(::sanitizeText),
             severity = severity
         )
-
-        synchronized(events) {
-            if (events.size >= MAX_EVENTS) {
-                events.removeAt(0)
-            }
-            events.add(event)
+        if (events.size >= MAX_EVENTS) {
+            val firstNonError = events.indexOfFirst { it.status == Status.SUCCESS }
+            events.removeAt(if (firstNonError >= 0) firstNonError else 0)
         }
-
+        events.add(event)
         _state.value = buildState(
-            active = true,
-            remainingMillis = max(
-                0L,
-                endAtElapsedRealtime - SystemClock.elapsedRealtime()
-            ),
-            lastEvent = event
+            remaining = (endAtElapsedRealtime - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0L),
+            last = event
         )
     }
 
-    /**
-     * Analyse une réponse HTTP déjà obtenue par l'application.
-     *
-     * La méthode essaie de distinguer une cause constatée d'une cause seulement probable.
-     */
     fun recordHttp(
         area: String,
         action: String,
@@ -229,421 +155,197 @@ object DiagnosticSystemMonitor {
         url: String,
         userAgentPresent: Boolean? = null,
         cookiesPresent: Boolean? = null,
-        contentType: String? = null,
-        expectedMimeType: String? = null,
-        contentLength: Long? = null
+        contentType: String? = null
     ) {
-        if (!running.get()) return
-
         val status = when {
             code in 200..299 -> Status.SUCCESS
             code in 300..399 -> Status.WARNING
             else -> Status.ERROR
         }
-
-        val causes = mutableListOf<String>()
-
-        when (code) {
-            401 -> causes += "Authentification ou session requise/refusée."
-            403 -> causes += "Serveur ayant refusé la requête (HTTP 403)."
-            404 -> causes += "Ressource introuvable (HTTP 404)."
-            408, 504 -> causes += "Délai d'attente réseau dépassé."
-            in 500..599 -> causes += "Erreur côté serveur (HTTP $code)."
+        val cause = when (code) {
+            401 -> "Authentification ou session requise/refusée."
+            403 -> "Page/requête refusée par le serveur (HTTP 403)."
+            404 -> "Ressource introuvable (HTTP 404)."
+            408, 504 -> "Délai d'attente réseau dépassé."
+            in 500..599 -> "Erreur côté serveur (HTTP $code)."
+            else -> null
         }
-
-        if (userAgentPresent == false) {
-            causes += "User-Agent absent."
-        }
-
-        if (cookiesPresent == false) {
-            causes += "Cookies absents."
-        }
-
-        if (
-            expectedMimeType != null &&
-            contentType != null &&
-            !contentType.contains(expectedMimeType, ignoreCase = true)
-        ) {
-            causes += "Type de contenu incompatible : reçu '$contentType', attendu '$expectedMimeType'."
-        }
-
-        if (contentLength == 0L) {
-            causes += "Réponse vide."
-        }
-
-        val detail = buildString {
+        val details = buildString {
             append("HTTP $code · ${sanitizeUrl(url)}")
             contentType?.let { append(" · Content-Type=$it") }
-            contentLength?.let { append(" · taille=${if (it >= 0) it else "inconnue"} octets") }
-            userAgentPresent?.let {
-                append(if (it) " · User-Agent présent" else " · User-Agent absent")
-            }
-            cookiesPresent?.let {
-                append(if (it) " · cookies disponibles" else " · cookies absents")
-            }
+            userAgentPresent?.let { append(if (it) " · User-Agent présent" else " · User-Agent absent") }
+            cookiesPresent?.let { append(if (it) " · cookies présents" else " · cookies absents") }
         }
-
-        record(
-            area = area,
-            action = action,
-            status = status,
-            detail = detail,
-            cause = causes.takeIf { it.isNotEmpty() }?.joinToString(" "),
-            severity = when {
-                code >= 500 || code == 403 || code == 401 -> Severity.CRITICAL
-                status == Status.WARNING -> Severity.WARNING
-                else -> Severity.INFO
-            }
-        )
+        record(area, action, status, details, cause)
     }
 
-    /**
-     * Analyse une exception réseau/fichier sans conserver de secret.
-     */
-    fun recordException(
+    fun recordWebViewRequest(
         area: String,
-        action: String,
-        throwable: Throwable
+        request: WebResourceRequest,
+        userAgentPresent: Boolean?,
+        cookieHeaderPresent: Boolean?
     ) {
-        if (!running.get()) return
-
-        val cause = when (throwable) {
-            is SocketTimeoutException ->
-                "Délai d'attente réseau dépassé."
-            is UnknownHostException ->
-                "Hôte ou résolution DNS inaccessible."
-            is IOException ->
-                "Erreur d'entrée/sortie réseau ou fichier."
-            else ->
-                throwable.javaClass.simpleName
-        }
-
         record(
             area = area,
-            action = action,
-            status = Status.ERROR,
-            detail = throwable.message?.takeIf { it.isNotBlank() } ?: cause,
-            cause = cause
+            action = "Requête WebView",
+            status = Status.SUCCESS,
+            detail = "${request.method} ${sanitizeUrl(request.url.toString())}" +
+                " · User-Agent ${if (userAgentPresent == true) "présent" else "absent/non observé"}" +
+                " · cookies ${if (cookieHeaderPresent == true) "présents" else "absents/non observés"}",
+            cause = null
         )
     }
 
-    /**
-     * Action WebView : permet de distinguer page refusée, page chargée mais vide,
-     * ressource manquante ou erreur JavaScript.
-     */
-    fun recordWebView(
-        action: String,
-        url: String,
-        httpCode: Int? = null,
-        pageLoaded: Boolean,
-        expectedContentPresent: Boolean? = null,
-        userAgentPresent: Boolean? = null,
-        cookiesPresent: Boolean? = null,
-        javascriptError: String? = null,
-        missingResources: Int? = null
-    ) {
-        if (!running.get()) return
-
-        val causes = mutableListOf<String>()
-
-        if (httpCode != null && httpCode !in 200..299) {
-            causes += "Réponse HTTP $httpCode."
-        }
-        if (userAgentPresent == false) causes += "User-Agent absent."
-        if (cookiesPresent == false) causes += "Cookies absents."
-        if (expectedContentPresent == false) {
-            causes += "Page chargée mais contenu attendu absent."
-        }
-        if ((missingResources ?: 0) > 0) {
-            causes += "$missingResources ressource(s) de page non chargée(s)."
-        }
-        if (!javascriptError.isNullOrBlank()) {
-            causes += "Erreur JavaScript détectée."
-        }
-
-        val status = when {
-            httpCode != null && httpCode !in 200..299 -> Status.ERROR
-            !pageLoaded -> Status.ERROR
-            expectedContentPresent == false -> Status.ERROR
-            !javascriptError.isNullOrBlank() -> Status.WARNING
-            (missingResources ?: 0) > 0 -> Status.WARNING
-            else -> Status.SUCCESS
-        }
-
-        record(
-            area = "WebView",
-            action = action,
-            status = status,
-            detail = "URL=${sanitizeUrl(url)} · pageChargée=$pageLoaded",
-            cause = causes.takeIf { it.isNotEmpty() }?.joinToString(" ")
-        )
-    }
-
-    /**
-     * Diagnostic du système de téléchargement.
-     */
     fun recordDownload(
         action: String,
-        url: String,
-        success: Boolean,
-        contentType: String? = null,
-        expectedMimeType: String? = null,
-        fileExtension: String? = null,
-        errorMessage: String? = null,
-        userAgentPresent: Boolean? = null,
-        cookiesPresent: Boolean? = null
-    ) {
-        if (!running.get()) return
+        status: Status,
+        detail: String,
+        cause: String? = null
+    ) = record("Téléchargements", action, status, detail, cause)
 
-        val causes = mutableListOf<String>()
-
-        if (userAgentPresent == false) causes += "User-Agent absent."
-        if (cookiesPresent == false) causes += "Cookies absents."
-
-        if (
-            expectedMimeType != null &&
-            contentType != null &&
-            !contentType.contains(expectedMimeType, ignoreCase = true)
-        ) {
-            causes +=
-                "Incompatibilité du type de fichier : reçu '$contentType', attendu '$expectedMimeType'."
-        }
-
-        if (fileExtension.isNullOrBlank()) {
-            causes += "Extension du fichier absente ou inconnue."
-        }
-
-        if (!errorMessage.isNullOrBlank()) {
-            causes += sanitizeText(errorMessage)
-        }
-
-        record(
-            area = "Téléchargements",
-            action = action,
-            status = if (success) Status.SUCCESS else Status.ERROR,
-            detail = buildString {
-                append("URL=${sanitizeUrl(url)}")
-                contentType?.let { append(" · Content-Type=$it") }
-                fileExtension?.let { append(" · extension=$it") }
-            },
-            cause = causes.takeIf { it.isNotEmpty() }?.joinToString(" ")
-        )
-    }
-
-    /**
-     * Diagnostic de lecture : flux, buffer, lecteur, direct, etc.
-     */
     fun recordPlayback(
         action: String,
-        success: Boolean,
+        status: Status,
         detail: String,
-        cause: String? = null,
-        severity: Severity = if (success) Severity.INFO else Severity.CRITICAL
-    ) {
-        record(
-            area = "Lecture",
-            action = action,
-            status = if (success) Status.SUCCESS else Status.ERROR,
-            detail = detail,
-            cause = cause,
-            severity = severity
-        )
-    }
+        cause: String? = null
+    ) = record("Lecture", action, status, detail, cause)
 
-    /**
-     * Efface uniquement le rapport sauvegardé.
-     * Si une session est active, elle continue.
-     */
-    fun clearReport() {
-        appContext?.let {
-            runCatching { File(it.filesDir, REPORT_FILE).delete() }
+    fun recordException(area: String, action: String, throwable: Throwable) {
+        val cause = when (throwable) {
+            is SocketTimeoutException -> "Délai d'attente réseau dépassé."
+            is UnknownHostException -> "Hôte/DNS inaccessible."
+            is java.io.FileNotFoundException -> "Fichier local introuvable."
+            is java.io.IOException -> "Erreur d'entrée/sortie réseau ou fichier."
+            else -> throwable.javaClass.simpleName
         }
-        _state.value = _state.value.copy(report = null)
+        record(area, action, Status.ERROR, throwable.message?.take(500) ?: cause, cause)
     }
 
-    fun snapshot(): List<Event> = synchronized(events) { events.toList() }
-
-    private fun buildState(
-        active: Boolean,
-        remainingMillis: Long,
-        lastEvent: Event? = synchronized(events) { events.lastOrNull() }
-    ): State {
-        val snapshot = snapshot()
-        return State(
-            active = active,
-            remainingMillis = remainingMillis,
-            actions = snapshot.size,
-            successes = snapshot.count { it.status == Status.SUCCESS },
-            warnings = snapshot.count { it.status == Status.WARNING },
-            errors = snapshot.count { it.status == Status.ERROR },
-            report = _state.value.report,
-            lastEvent = lastEvent
-        )
+    /** Intercepteur OkHttp : surveillance passive de tous les clients qui l'ajoutent. */
+    val okHttpInterceptor: Interceptor = Interceptor { chain ->
+        val request = chain.request()
+        val ua = request.header("User-Agent")?.isNotBlank() == true
+        val cookie = request.header("Cookie")?.isNotBlank() == true
+        try {
+            val response = chain.proceed(request)
+            recordHttp(
+                area = "Réseau",
+                action = "Requête HTTP ${request.method}",
+                code = response.code,
+                url = request.url.toString(),
+                userAgentPresent = ua,
+                cookiesPresent = cookie,
+                contentType = response.header("Content-Type")
+            )
+            response
+        } catch (t: Throwable) {
+            recordException("Réseau", "Requête HTTP ${request.method}", t)
+            throw t
+        }
     }
+
+    fun clearReport() {
+        if (running.get()) return
+        events.clear()
+        appContext?.let { runCatching { File(it.filesDir, REPORT_FILE).delete() } }
+        _state.value = State()
+    }
+
+    private fun stopInternal(reason: String) {
+        if (!running.compareAndSet(true, false)) return
+        timerJob = null
+        finalizeSession(reason)
+    }
+
+    private fun buildState(remaining: Long, last: Event? = events.lastOrNull()): State = State(
+        active = running.get(),
+        remainingMillis = remaining,
+        actions = events.size,
+        successes = events.count { it.status == Status.SUCCESS },
+        warnings = events.count { it.status == Status.WARNING },
+        errors = events.count { it.status == Status.ERROR },
+        report = _state.value.report,
+        lastEvent = last
+    )
 
     @Synchronized
     private fun finalizeSession(reason: String) {
-        val snapshot = snapshot()
-        val finalReport = generateReport(reason, snapshot)
-        writeReport(finalReport)
-
+        val marker = Event(
+            timestampMillis = System.currentTimeMillis(),
+            area = "Diagnostic système",
+            action = reason,
+            status = Status.SUCCESS,
+            detail = reason
+        )
+        if (events.size >= MAX_EVENTS) {
+            val firstNonError = events.indexOfFirst { it.status == Status.SUCCESS }
+            events.removeAt(if (firstNonError >= 0) firstNonError else 0)
+        }
+        events.add(marker)
+        val report = generateReport(reason, events.toList())
+        writeReport(report)
         _state.value = State(
             active = false,
             remainingMillis = 0L,
-            actions = snapshot.size,
-            successes = snapshot.count { it.status == Status.SUCCESS },
-            warnings = snapshot.count { it.status == Status.WARNING },
-            errors = snapshot.count { it.status == Status.ERROR },
-            report = finalReport,
-            lastEvent = snapshot.lastOrNull()
+            actions = events.size,
+            successes = events.count { it.status == Status.SUCCESS },
+            warnings = events.count { it.status == Status.WARNING },
+            errors = events.count { it.status == Status.ERROR },
+            report = report,
+            lastEvent = events.lastOrNull()
         )
     }
 
-    private fun generateReport(
-        reason: String,
-        snapshot: List<Event>
-    ): String {
-        val formatter = SimpleDateFormat(
-            "dd/MM/yyyy HH:mm:ss",
-            Locale.FRANCE
-        )
-
-        val startedAt =
-            snapshot.firstOrNull()?.timestampMillis ?: System.currentTimeMillis()
-
+    private fun generateReport(reason: String, snapshot: List<Event>): String {
+        val formatter = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.FRANCE)
+        val started = snapshot.firstOrNull()?.timestampMillis ?: System.currentTimeMillis()
         return buildString {
             appendLine("DP-FLIX — DIAGNOSTIC SYSTÈME")
             appendLine("Durée maximale : 10 minutes")
-            appendLine("Début : ${formatter.format(Date(startedAt))}")
+            appendLine("Début : ${formatter.format(Date(started))}")
             appendLine("Fin : ${formatter.format(Date())}")
-            appendLine("Arrêt : $reason")
-            appendLine()
+            appendLine("Motif d'arrêt : $reason")
             appendLine("Actions observées : ${snapshot.size}")
             appendLine("Réussites : ${snapshot.count { it.status == Status.SUCCESS }}")
             appendLine("Avertissements : ${snapshot.count { it.status == Status.WARNING }}")
             appendLine("Erreurs : ${snapshot.count { it.status == Status.ERROR }}")
             appendLine()
-
-            if (snapshot.isEmpty()) {
-                appendLine("Aucune action observée pendant la session.")
-            } else {
-                snapshot.forEachIndexed { index, event ->
-                    appendLine(
-                        "${index + 1}. ${formatter.format(Date(event.timestampMillis))}"
-                    )
-                    appendLine("   Section : ${event.area}")
-                    appendLine("   Action : ${event.action}")
-                    appendLine("   État : ${event.status}")
-                    appendLine("   Gravité : ${event.severity}")
-                    appendLine("   Détails : ${event.detail}")
-                    event.cause?.let {
-                        appendLine("   Cause : $it")
-                    }
-                    appendLine()
-                }
+            snapshot.forEachIndexed { index, event ->
+                appendLine("${index + 1}. [${formatter.format(Date(event.timestampMillis))}] ${event.area}")
+                appendLine("   Action : ${event.action}")
+                appendLine("   État : ${event.status}")
+                appendLine("   Gravité : ${event.severity}")
+                appendLine("   Détails : ${event.detail}")
+                event.cause?.let { appendLine("   Cause identifiée/probable : $it") }
+                appendLine()
             }
-
-            appendLine(
-                "Confidentialité : cookies, tokens, mots de passe, clés API " +
-                    "et paramètres de requête ne sont pas conservés."
-            )
+            appendLine("Confidentialité : les valeurs complètes de cookies, tokens, mots de passe, Authorization, clés API et query strings ne sont pas conservées.")
         }
     }
 
     private fun writeReport(report: String) {
-        appContext?.let {
-            runCatching {
-                File(it.filesDir, REPORT_FILE).writeText(report)
-            }
-        }
+        appContext?.let { runCatching { File(it.filesDir, REPORT_FILE).writeText(report) } }
     }
 
-    private fun readReport(): String? =
-        appContext?.let {
-            runCatching {
-                File(it.filesDir, REPORT_FILE)
-                    .takeIf(File::exists)
-                    ?.readText()
-            }.getOrNull()
-        }
-
-    private fun sanitizeUrl(raw: String): String {
-        return runCatching {
-            val uri = URI(raw)
-            buildString {
-                append(uri.scheme ?: "")
-                append("://")
-                append(uri.host ?: "")
-                uri.path
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { append(it.take(200)) }
-            }
-        }.getOrElse { "URL masquée" }
+    private fun readReport(): String? = appContext?.let {
+        runCatching { File(it.filesDir, REPORT_FILE).takeIf(File::exists)?.readText() }.getOrNull()
     }
 
-    private fun sanitizeText(value: String): String {
-        return value
-            .replace(
-                Regex(
-                    "(?i)(authorization|cookie|set-cookie|token|password|passwd|api[_-]?key)" +
-                        "\\s*[:=]\\s*[^;\\s]+"
-                ),
-                "$1=[masqué]"
-            )
-            .replace(
-                Regex("https?://[^\\s?]+\\?[^\\s]+"),
-                "[URL avec paramètres masquée]"
-            )
-            .take(1500)
-    }
-
-    /**
-     * Intercepteur OkHttp optionnel.
-     *
-     * Il observe uniquement les requêtes exécutées pendant une session active.
-     * Il ne bloque, ne réécrit et ne relance aucune requête.
-     *
-     * Il enregistre :
-     * - code HTTP ;
-     * - Content-Type ;
-     * - présence du User-Agent ;
-     * - présence d'un header Cookie ;
-     * - taille de la réponse ;
-     * - causes déductibles (403, 404, timeout, MIME incompatible, etc.).
-     *
-     * Les valeurs des headers sensibles ne sont jamais enregistrées.
-     */
-    val okHttpInterceptor: Interceptor = Interceptor { chain ->
-        if (!isActive()) {
-            return@Interceptor chain.proceed(chain.request())
+    private fun sanitizeUrl(raw: String): String = runCatching {
+        val uri = URI(raw)
+        buildString {
+            append(uri.scheme ?: "")
+            append("://")
+            append(uri.host ?: "")
+            uri.path?.takeIf { it.isNotBlank() }?.let { append(it.take(240)) }
         }
+    }.getOrElse { "URL masquée" }
 
-        val request = chain.request()
-        val userAgentPresent = request.header("User-Agent")?.isNotBlank() == true
-        val cookiesPresent = request.header("Cookie")?.isNotBlank() == true
-
-        try {
-            val response = chain.proceed(request)
-
-            recordHttp(
-                area = "Réseau",
-                action = "${request.method} ${request.url.encodedPath}",
-                code = response.code,
-                url = request.url.toString(),
-                userAgentPresent = userAgentPresent,
-                cookiesPresent = cookiesPresent,
-                contentType = response.header("Content-Type"),
-                contentLength = response.body?.contentLength()
-            )
-
-            response
-        } catch (t: Throwable) {
-            recordException(
-                area = "Réseau",
-                action = "${request.method} ${request.url.encodedPath}",
-                throwable = t
-            )
-            throw t
-        }
-    }
+    private fun sanitizeText(value: String): String = value
+        .replace(
+            Regex("(?i)(authorization|cookie|set-cookie|token|password|passwd|api[_-]?key)\\s*[:=]\\s*[^;\\s]+"),
+            "$1=[masqué]"
+        )
+        .replace(Regex("https?://[^\\s?]+\\?[^\\s]+"), "[URL avec paramètres masquée]")
+        .take(1500)
 }

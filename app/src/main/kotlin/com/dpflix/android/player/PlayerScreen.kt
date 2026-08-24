@@ -45,6 +45,7 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.ui.PlayerView
+import androidx.media3.ui.AspectRatioFrameLayout
 import com.dpflix.android.settings.SettingsScreen
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ReplayProgram
@@ -758,6 +759,12 @@ fun PlayerScreen(
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                     player = activePlayer
+                    // Fix (2026-08-24) : import laissé inutilisé jusqu'ici - sans ce
+                    // resizeMode, la video en direct/streaming s'affichait sans aucune
+                    // adaptation d'echelle explicite au conteneur (comportement par
+                    // defaut de PlayerView), contrairement au lecteur hors-ligne
+                    // (LocalFilmPlayerScreen) qui applique deja RESIZE_MODE_FIT.
+                    resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                     // Controles Media3 integres desactives au profit de PlayerOsd - voir
                     // la doc de la fonction (8a).
                     useController = false

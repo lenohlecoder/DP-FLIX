@@ -281,9 +281,9 @@ fun DpFlixNavHost(
             DownloadsScreen(
                 downloadManager = appRepository.filmDownloads,
                 onBack = { navController.popBackStack() },
-                onPlayLocal = { path, title ->
+                onPlayLocal = { item ->
                     navController.navigate(
-                        DpFlixDestination.LocalFilmPlayer.createRoute(path, title)
+                        DpFlixDestination.LocalFilmPlayer.createRoute(item.id)
                     )
                 }
             )
@@ -292,18 +292,13 @@ fun DpFlixNavHost(
         composable(
             route = DpFlixDestination.LocalFilmPlayer.route,
             arguments = listOf(
-                navArgument(DpFlixDestination.LocalFilmPlayer.ARG_PATH) { type = NavType.StringType },
-                navArgument(DpFlixDestination.LocalFilmPlayer.ARG_TITLE) {
-                    type = NavType.StringType
-                    defaultValue = ""
-                }
+                navArgument(DpFlixDestination.LocalFilmPlayer.ARG_ID) { type = NavType.StringType }
             )
         ) { backStackEntry ->
-            val path = backStackEntry.arguments?.getString(DpFlixDestination.LocalFilmPlayer.ARG_PATH).orEmpty()
-            val title = backStackEntry.arguments?.getString(DpFlixDestination.LocalFilmPlayer.ARG_TITLE).orEmpty()
+            val downloadId = backStackEntry.arguments?.getString(DpFlixDestination.LocalFilmPlayer.ARG_ID).orEmpty()
             LocalFilmPlayerScreen(
-                localPath = path,
-                title = title.ifBlank { "Film" },
+                downloadManager = appRepository.filmDownloads,
+                downloadId = downloadId,
                 onBack = { navController.popBackStack() }
             )
         }

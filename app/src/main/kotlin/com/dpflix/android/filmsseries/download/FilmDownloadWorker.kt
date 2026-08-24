@@ -40,6 +40,7 @@ class FilmDownloadWorker(
         .followRedirects(true)
         .followSslRedirects(true)
         .retryOnConnectionFailure(true)
+        .addInterceptor(com.dpflix.android.settings.DiagnosticSystemMonitor.okHttpInterceptor)
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
@@ -73,6 +74,12 @@ class FilmDownloadWorker(
             setForeground(createForegroundInfo(entity.title, entity.progressPercent))
         }
 
+        com.dpflix.android.settings.DiagnosticSystemMonitor.recordDownload(
+            "Démarrage du téléchargement",
+            com.dpflix.android.settings.DiagnosticSystemMonitor.Status.SUCCESS,
+            "${entity.title} · type=${entity.streamType}"
+        )
+
         return try {
             when (entity.streamType) {
                 StreamType.DASH.name -> {
@@ -87,6 +94,12 @@ class FilmDownloadWorker(
                     runMp4(id, entity)
                     Result.success()
                 }
+            }.also {
+                com.dpflix.android.settings.DiagnosticSystemMonitor.recordDownload(
+                    "Téléchargement terminé",
+                    com.dpflix.android.settings.DiagnosticSystemMonitor.Status.SUCCESS,
+                    "${entity.title} · résultat=${it::class.simpleName}"
+                )
             }
         } catch (_: kotlinx.coroutines.CancellationException) {
             Result.success()
@@ -94,10 +107,18 @@ class FilmDownloadWorker(
             if (isStopped) {
                 Result.success()
             } else {
-                fail(
-                    id,
-                    entity,
-                    e.message?.take(200) ?: "Échec du téléchargement"
+                val message = e.message?.take(200) ?: "Échec du téléchargement"
+                fail(id, entity, message)
+                com.dpflix.android.settings.DiagnosticSystemMonitor.recordDownload(
+                    "Téléchargement refusé/échoué",
+                    com.dpflix.android.settings.DiagnosticSystemMonitor.Status.ERROR,
+                    message,
+                    cause = when {
+                        message.contains("HTTP 401") || message.contains("HTTP 403") -> "Serveur ayant refusé le téléchargement."
+                        message.contains("HTTP 404") -> "Fichier ou ressource introuvable."
+                        message.contains("Content-Type", ignoreCase = true) || message.contains("compatible", ignoreCase = true) -> "Fichier potentiellement incompatible avec le gestionnaire de téléchargement."
+                        else -> null
+                    }
                 )
                 Result.failure()
             }
@@ -140,6 +161,11 @@ class FilmDownloadWorker(
                     throw IllegalStateException("HTTP ${response.code}")
                 }
                 val body = response.body ?: throw IllegalStateException("Réponse vide")
+                val contentType = response.header("Content-Type")?.lowercase().orEmpty()
+                val looksHtml = contentType.contains("text/html") || contentType.contains("application/xhtml")
+                if (looksHtml) {
+                    throw IllegalStateException("Content-Type incompatible avec un téléchargement vidéo : $contentType")
+                }
 
                 // --- Vérification stricte Content-Range (reprise MP4) ---
                 // Si on a demandé Range: bytes=N- on exige un 206 dont le Content-Range
@@ -448,6 +474,11 @@ class FilmDownloadWorker(
             updatedAt = System.currentTimeMillis()
         )
         notifier.notifyCompleted(id, title)
+        com.dpflix.android.settings.DiagnosticSystemMonitor.recordDownload(
+            "Fichier enregistré",
+            com.dpflix.android.settings.DiagnosticSystemMonitor.Status.SUCCESS,
+            "$title · ${file.length()} octets"
+        )
     }
 
     private suspend fun fail(id: String, entity: FilmDownloadEntity, message: String) {
@@ -463,6 +494,18 @@ class FilmDownloadWorker(
             updatedAt = System.currentTimeMillis()
         )
         notifier.notifyFailed(id, entity.title, message)
+        com.dpflix.android.settings.DiagnosticSystemMonitor.recordDownload(
+            "Échec du téléchargement",
+            com.dpflix.android.settings.DiagnosticSystemMonitor.Status.ERROR,
+            message,
+            cause = when {
+                message.contains("HTTP 403") -> "Serveur ayant refusé le téléchargement (403)."
+                message.contains("HTTP 404") -> "Ressource introuvable (404)."
+                message.contains("incompatible", ignoreCase = true) -> "Fichier incompatible avec le gestionnaire de téléchargement."
+                message.contains("cookie", ignoreCase = true) -> "Cookie requis ou session absente."
+                else -> null
+            }
+        )
     }
 
     companion object {

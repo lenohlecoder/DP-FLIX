@@ -89,16 +89,16 @@ sealed class DpFlixDestination(val route: String) {
 
     /**
      * Lecteur offline d'un fichier téléchargé (stockage privé uniquement).
-     * [LocalFilmPlayer.ARG_PATH] et [LocalFilmPlayer.ARG_TITLE] encodés dans la route.
+     * [LocalFilmPlayer.ARG_ID] (identifiant du téléchargement, résolu via
+     * FilmDownloadManager) encodé dans la route.
      */
     object LocalFilmPlayer : DpFlixDestination(
-        "local_film_player?path={path}&title={title}"
+        "local_film_player?id={id}"
     ) {
-        const val ARG_PATH = "path"
-        const val ARG_TITLE = "title"
+        const val ARG_ID = "id"
 
-        fun createRoute(localPath: String, title: String): String =
-            "local_film_player?path=${Uri.encode(localPath)}&title=${Uri.encode(title)}"
+        fun createRoute(downloadId: String): String =
+            "local_film_player?id=${Uri.encode(downloadId)}"
     }
 
     /**

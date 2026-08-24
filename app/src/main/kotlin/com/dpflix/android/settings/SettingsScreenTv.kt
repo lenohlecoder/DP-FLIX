@@ -1058,45 +1058,87 @@ private fun DiagnosticSectionBodyTv(uiState: SettingsUiState, onRefresh: () -> U
     }
 
     val diagnostic = uiState.diagnosticState
+    val systemState by DiagnosticSystemMonitor.state.collectAsState()
+    var showSystemReport by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 48.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(32.dp)
+        verticalArrangement = Arrangement.spacedBy(28.dp)
     ) {
-        DiagnosticMetricSettingTv(
-            title = "Débit réseau",
-            subtitle = "Débit actuellement mesuré sur le flux en cours de lecture.",
-            value = diagnostic.networkThroughputKbps?.let { "$it kbit/s" }
+        Text("Diagnostic lecture", color = DpFlixColors.OnBackground, fontSize = 26.sp)
+        Text("Analyse spécialisée de la lecture, du flux, du tampon et des erreurs.", color = DpFlixColors.OnBackgroundMuted, fontSize = 16.sp)
+        DiagnosticMetricSettingTv("Débit réseau", "Débit du flux en cours.", diagnostic.networkThroughputKbps?.let { "$it kbit/s" })
+        DiagnosticMetricSettingTv("Niveau de tampon", "Vidéo déjà chargée.", formatBufferLevelTv(diagnostic.bufferedSeconds, diagnostic.bufferedBytes))
+        DiagnosticMetricSettingTv("Résolution / bitrate", "Piste vidéo sélectionnée.", formatStreamQualityTv(diagnostic.streamResolution, diagnostic.streamBitrateKbps))
+        DiagnosticMetricSettingTv("Écart au direct", "Retard réel par rapport au direct.", diagnostic.liveEdgeOffsetSeconds?.let { "$it s" })
+        DiagnosticMetricSettingTv("Segments", "Segments réussis / échoués.", formatSegmentCountsTv(diagnostic.segmentsSucceeded, diagnostic.segmentsFailed))
+        DiagnosticDiskCacheSettingTv(diagnostic.diskCacheUsedBytes, diagnostic.diskCacheMaxBytes, uiState.playerSettings.hybridBufferEnabled)
+        DiagnosticRecentErrorsSettingTv(diagnostic.recentErrors)
+
+        androidx.compose.material3.HorizontalDivider()
+
+        Text("Diagnostic système", color = DpFlixColors.OnBackground, fontSize = 26.sp)
+        Text("Analyse temporaire de 10 minutes pour rechercher la cause technique des échecs.", color = DpFlixColors.OnBackgroundMuted, fontSize = 16.sp)
+        DiagnosticSystemBlockTv(
+            state = systemState,
+            onToggle = { enabled -> if (enabled) DiagnosticSystemMonitor.start() else DiagnosticSystemMonitor.stop() },
+            onViewReport = { showSystemReport = true },
+            onClearReport = DiagnosticSystemMonitor::clearReport
         )
-        DiagnosticMetricSettingTv(
-            title = "Niveau de tampon",
-            subtitle = "Vidéo déjà chargée en avance, prête à être lue.",
-            value = formatBufferLevelTv(diagnostic.bufferedSeconds, diagnostic.bufferedBytes)
-        )
-        DiagnosticMetricSettingTv(
-            title = "Résolution / bitrate du flux",
-            subtitle = "Piste vidéo actuellement sélectionnée par l'ABR.",
-            value = formatStreamQualityTv(diagnostic.streamResolution, diagnostic.streamBitrateKbps)
-        )
-        DiagnosticMetricSettingTv(
-            title = "Écart au direct",
-            subtitle = "Retard réel par rapport au direct, comparé au retard ciblé (§6).",
-            value = diagnostic.liveEdgeOffsetSeconds?.let { "$it s" }
-        )
-        DiagnosticMetricSettingTv(
-            title = "Segments",
-            subtitle = "Nombre de segments chargés avec succès / en échec depuis le début de la lecture en cours.",
-            value = formatSegmentCountsTv(diagnostic.segmentsSucceeded, diagnostic.segmentsFailed)
-        )
-        DiagnosticDiskCacheSettingTv(
-            usedBytes = diagnostic.diskCacheUsedBytes,
-            maxBytes = diagnostic.diskCacheMaxBytes,
-            hybridBufferEnabled = uiState.playerSettings.hybridBufferEnabled
-        )
-        DiagnosticRecentErrorsSettingTv(errors = diagnostic.recentErrors)
     }
+
+    if (showSystemReport) {
+        AlertDialog(
+            onDismissRequest = { showSystemReport = false },
+            title = { M3Text("Rapport du diagnostic système") },
+            text = { M3Text(systemState.report ?: "Aucun rapport disponible.") },
+            confirmButton = { TextButton(onClick = { showSystemReport = false }) { M3Text("Fermer") } },
+            dismissButton = { if (systemState.report != null) TextButton(onClick = DiagnosticSystemMonitor::clearReport) { M3Text("Effacer") } }
+        )
+    }
+}
+
+@Composable
+private fun DiagnosticSystemBlockTv(
+    state: DiagnosticSystemMonitor.State,
+    onToggle: (Boolean) -> Unit,
+    onViewReport: () -> Unit,
+    onClearReport: () -> Unit
+) {
+    SettingBlockTv(
+        title = if (state.active) "Analyse système active" else "Analyse système désactivée",
+        subtitle = if (state.active) "Surveillance active — arrêt automatique après 10 minutes." else "Désactivée par défaut pour ne pas surveiller l'application en permanence."
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = state.active, onCheckedChange = onToggle)
+            Text(
+                text = if (state.active) "Temps restant : ${formatDiagnosticDurationTv(state.remainingMillis)}" else "Activer pendant 10 minutes",
+                color = DpFlixColors.OnBackground,
+                fontSize = 18.sp,
+                modifier = Modifier.padding(start = 12.dp)
+            )
+        }
+        Text(
+            "Actions : ${state.actions} · Réussites : ${state.successes} · Avertissements : ${state.warnings} · Erreurs : ${state.errors}",
+            color = DpFlixColors.OnBackground,
+            fontSize = 17.sp
+        )
+        state.lastEvent?.let { event ->
+            Text("Dernier événement : ${event.area} — ${event.action}\n${event.detail}", color = DpFlixColors.OnBackgroundMuted, fontSize = 15.sp)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onViewReport, enabled = state.report != null) { Text("Voir le rapport") }
+            Button(onClick = onClearReport, enabled = state.report != null) { Text("Vider le rapport") }
+        }
+    }
+}
+
+private fun formatDiagnosticDurationTv(millis: Long): String {
+    val totalSeconds = (millis / 1000L).coerceAtLeast(0L)
+    return "%02d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
 }
 
 /** Intervalle du polling Diagnostic (§5.5, 6g-4) : "1-2s" au cahier des charges, même

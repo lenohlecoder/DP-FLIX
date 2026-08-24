@@ -1018,6 +1018,9 @@ private fun DiagnosticSectionBody(uiState: SettingsUiState, onRefresh: () -> Uni
     }
 
     val diagnostic = uiState.diagnosticState
+    val systemState by DiagnosticSystemMonitor.state.collectAsState()
+    var showSystemReport by remember { mutableStateOf(false) }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1025,6 +1028,17 @@ private fun DiagnosticSectionBody(uiState: SettingsUiState, onRefresh: () -> Uni
             .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(28.dp)
     ) {
+        Text(
+            text = "Diagnostic lecture",
+            color = DpFlixColors.OnBackground,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "Analyse spécialisée du lecteur, du flux, du tampon et des erreurs de lecture.",
+            color = DpFlixColors.OnBackgroundMuted,
+            style = MaterialTheme.typography.bodyMedium
+        )
         DiagnosticMetricSetting(
             title = "Débit réseau",
             subtitle = "Débit actuellement mesuré sur le flux en cours de lecture.",
@@ -1042,12 +1056,12 @@ private fun DiagnosticSectionBody(uiState: SettingsUiState, onRefresh: () -> Uni
         )
         DiagnosticMetricSetting(
             title = "Écart au direct",
-            subtitle = "Retard réel par rapport au direct, comparé au retard ciblé (§6).",
+            subtitle = "Retard réel par rapport au direct.",
             value = diagnostic.liveEdgeOffsetSeconds?.let { "${it} s" }
         )
         DiagnosticMetricSetting(
             title = "Segments",
-            subtitle = "Nombre de segments chargés avec succès / en échec depuis le début de la lecture en cours.",
+            subtitle = "Segments chargés avec succès / en échec pendant la lecture.",
             value = formatSegmentCounts(diagnostic.segmentsSucceeded, diagnostic.segmentsFailed)
         )
         DiagnosticDiskCacheSetting(
@@ -1056,7 +1070,88 @@ private fun DiagnosticSectionBody(uiState: SettingsUiState, onRefresh: () -> Uni
             hybridBufferEnabled = uiState.playerSettings.hybridBufferEnabled
         )
         DiagnosticRecentErrorsSetting(errors = diagnostic.recentErrors)
+
+        HorizontalDivider()
+
+        Text(
+            text = "Diagnostic système",
+            color = DpFlixColors.OnBackground,
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "Surveille les actions et le trafic de l'application pendant 10 minutes afin d'identifier la cause technique des échecs.",
+            color = DpFlixColors.OnBackgroundMuted,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        DiagnosticSystemBlock(
+            state = systemState,
+            onToggle = { enabled -> if (enabled) DiagnosticSystemMonitor.start() else DiagnosticSystemMonitor.stop() },
+            onViewReport = { showSystemReport = true },
+            onClearReport = DiagnosticSystemMonitor::clearReport
+        )
     }
+
+    if (showSystemReport) {
+        AlertDialog(
+            onDismissRequest = { showSystemReport = false },
+            title = { Text("Rapport du diagnostic système") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    Text(systemState.report ?: "Aucun rapport disponible.", style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = { TextButton(onClick = { showSystemReport = false }) { Text("Fermer") } },
+            dismissButton = {
+                if (systemState.report != null) {
+                    TextButton(onClick = DiagnosticSystemMonitor::clearReport) { Text("Effacer") }
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun DiagnosticSystemBlock(
+    state: DiagnosticSystemMonitor.State,
+    onToggle: (Boolean) -> Unit,
+    onViewReport: () -> Unit,
+    onClearReport: () -> Unit
+) {
+    SettingBlock(
+        title = if (state.active) "Analyse active" else "Analyse désactivée",
+        subtitle = if (state.active) "Surveillance temporaire — arrêt automatique après 10 minutes." else "Aucune surveillance en permanence. Activez-la uniquement lorsque vous cherchez un problème."
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Switch(checked = state.active, onCheckedChange = onToggle)
+            Text(
+                text = if (state.active) "Temps restant : ${formatDiagnosticDuration(state.remainingMillis)}" else "Activer pendant 10 minutes",
+                color = DpFlixColors.OnBackground,
+                modifier = Modifier.padding(start = 12.dp)
+            )
+        }
+        Text(
+            text = "Actions : ${state.actions} · Réussites : ${state.successes} · Avertissements : ${state.warnings} · Erreurs : ${state.errors}",
+            color = DpFlixColors.OnBackground,
+            style = MaterialTheme.typography.bodyMedium
+        )
+        state.lastEvent?.let { event ->
+            Text(
+                text = "Dernier événement : ${event.area} — ${event.action}\n${event.detail}",
+                color = DpFlixColors.OnBackgroundMuted,
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = onViewReport, enabled = state.report != null) { Text("Voir le rapport") }
+            TextButton(onClick = onClearReport, enabled = state.report != null) { Text("Vider le rapport") }
+        }
+    }
+}
+
+private fun formatDiagnosticDuration(millis: Long): String {
+    val totalSeconds = (millis / 1000L).coerceAtLeast(0L)
+    return "%02d:%02d".format(totalSeconds / 60L, totalSeconds % 60L)
 }
 
 /** Intervalle du polling Diagnostic (§5.5, 6g-4) : "1-2s" au cahier des charges. */

@@ -3,6 +3,7 @@ package com.dpflix.android
 import android.app.Application
 import android.util.Log
 import com.dpflix.android.di.AppContainer
+import com.dpflix.android.settings.DiagnosticSystemMonitor
 import java.io.File
 import java.io.PrintWriter
 import java.io.StringWriter
@@ -27,6 +28,7 @@ class DpFlixApplication : Application() {
         super.onCreate()
         installCrashLogger()
         container = AppContainer(this)
+        DiagnosticSystemMonitor.initialize(this)
     }
 
     private fun installCrashLogger() {

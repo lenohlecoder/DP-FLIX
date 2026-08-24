@@ -122,6 +122,7 @@ object IptvHttpDataSourceFactory {
             // première) — voir NetworkDiagnostics pour le détail et son usage dans
             // PlayerController.onPlayerError.
             .addInterceptor(NetworkDiagnostics.interceptor)
+            .addInterceptor(com.dpflix.android.settings.DiagnosticSystemMonitor.okHttpInterceptor)
             .build()
     }
 

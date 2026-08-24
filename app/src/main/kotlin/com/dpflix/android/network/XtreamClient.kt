@@ -73,6 +73,7 @@ class XtreamClient(
         .connectionSpecs(listOf(ConnectionSpec.COMPATIBLE_TLS, ConnectionSpec.CLEARTEXT))
         .followRedirects(true)
         .followSslRedirects(true)
+        .addInterceptor(com.dpflix.android.settings.DiagnosticSystemMonitor.okHttpInterceptor)
         // TLS permissif (2026-07-22, étendu 2026-07-25) : mêmes raisons que
         // IptvHttpDataSourceFactory — certains panels servent un certificat auto-signé/
         // invalide sur player_api.php lui-même, ce qui ferait échouer l'authentification
