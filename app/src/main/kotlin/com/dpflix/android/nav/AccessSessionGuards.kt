@@ -1,10 +1,12 @@
 package com.dpflix.android.nav
 
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -37,6 +39,7 @@ fun AccessSessionGuards(
     val currentUser by accessRepository.currentUser.collectAsState()
     val currentBackStackEntry by navController.currentBackStackEntryAsState()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
 
     // A — Revérification à chaque reprise (détection seule, pas de navigation ici).
     DisposableEffect(lifecycleOwner, accessRepository) {
@@ -67,6 +70,15 @@ fun AccessSessionGuards(
             route != DpFlixDestination.Splash.route &&
             route != DpFlixDestination.Lock.route
         ) {
+            // Sortie en douceur : on prévient d'abord l'utilisateur (au lieu de couper
+            // la vidéo sans explication), PUIS on vide ce qui était en cours avant de
+            // naviguer - jamais l'inverse, pour éviter que le lecteur continue de tourner
+            // en arrière-plan pendant que l'écran change déjà.
+            Toast.makeText(
+                context,
+                "Votre accès a expiré — merci de saisir un nouveau code.",
+                Toast.LENGTH_LONG
+            ).show()
             // C — arrêter ExoPlayer / scopes avant de vider le back stack.
             activePlayerHolder.releaseIfAny()
             navController.navigate(DpFlixDestination.Lock.route) {

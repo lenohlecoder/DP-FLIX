@@ -136,7 +136,16 @@ class AccessRepository(
      */
     suspend fun ensureAccessAtStartup(): Boolean {
         val local = loadFromPrefs()
-        if (!local.isAccessValid) return false
+        if (!local.isAccessValid) {
+            // Fix : sans cette ligne, currentUser gardait la dernière valeur ACTIVE connue
+            // tant que l'app restait au premier plan sans redémarrer — la garde de
+            // navigation (AccessSessionGuards) ne se déclenchait donc qu'après un
+            // redémarrage complet, qui seul recrée le StateFlow avec loadFromPrefs() à
+            // jour. Ici on synchronise dès la détection de l'expiration, pour que la
+            // navigation vers Lock réagisse immédiatement même en plein visionnage.
+            _currentUser.value = local
+            return false
+        }
 
         val code = local.companionCode
         if (code.isNullOrBlank()) {
