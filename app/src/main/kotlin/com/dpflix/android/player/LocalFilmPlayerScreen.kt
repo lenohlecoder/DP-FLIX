@@ -12,17 +12,13 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.SkipNext
-import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -45,6 +41,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -63,8 +60,10 @@ import java.io.File
  * Lecteur offline responsive mobile/TV.
  *
  * La lecture utilise une file logique correspondant au dossier du fichier courant. Quand
- * l'épisode se termine, le suivant démarre automatiquement. Les boutons précédent/suivant
- * changent de contenu, tandis que les commandes temporelles restent celles du PlayerView.
+ * l'épisode se termine, le suivant démarre automatiquement. Précédent/suivant sont relayés
+ * via un ForwardingPlayer vers les vrais boutons natifs exo_prev/exo_next du PlayerView :
+ * ils s'affichent donc dans la même rangée centrale que lecture/pause et retour-avance
+ * 10s, avec le même cycle d'apparition/disparition automatique.
  */
 @OptIn(UnstableApi::class)
 @Composable
@@ -146,6 +145,53 @@ fun LocalFilmPlayerScreen(
         }
     }
 
+    // Fait passer précédent/suivant par les VRAIS boutons natifs du PlayerView
+    // (exo_prev/exo_next), pour qu'ils s'affichent dans la même rangée centrale que
+    // lecture/pause et retour-avance 10s - exactement comme sur le lecteur de référence.
+    // Sans ce relais, Media3 ne sait pas que la file logique (dossier courant) a un
+    // "épisode" suivant/précédent puisque ce n'est pas une vraie playlist ExoPlayer.
+    val displayPlayer = remember(player, previousItem?.id, nextItem?.id) {
+        player?.let { basePlayer ->
+            object : ForwardingPlayer(basePlayer) {
+                override fun isCommandAvailable(command: Int): Boolean = when (command) {
+                    Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                    Player.COMMAND_SEEK_TO_PREVIOUS -> previousItem != null
+                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                    Player.COMMAND_SEEK_TO_NEXT -> nextItem != null
+                    else -> super.isCommandAvailable(command)
+                }
+
+                override fun getAvailableCommands(): Player.Commands {
+                    val builder = super.getAvailableCommands().buildUpon()
+                    listOf(
+                        Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                        Player.COMMAND_SEEK_TO_PREVIOUS
+                    ).forEach { if (previousItem != null) builder.add(it) else builder.remove(it) }
+                    listOf(
+                        Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                        Player.COMMAND_SEEK_TO_NEXT
+                    ).forEach { if (nextItem != null) builder.add(it) else builder.remove(it) }
+                    return builder.build()
+                }
+
+                override fun hasPreviousMediaItem(): Boolean = previousItem != null
+                override fun hasNextMediaItem(): Boolean = nextItem != null
+                override fun seekToPreviousMediaItem() {
+                    previousItem?.let { currentId = it.id }
+                }
+                override fun seekToNextMediaItem() {
+                    nextItem?.let { currentId = it.id }
+                }
+                override fun seekToPrevious() {
+                    previousItem?.let { currentId = it.id }
+                }
+                override fun seekToNext() {
+                    nextItem?.let { currentId = it.id }
+                }
+            }
+        }
+    }
+
     BackHandler(onBack = onBack)
 
     Box(
@@ -162,13 +208,16 @@ fun LocalFilmPlayerScreen(
                             ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT
                         )
-                        this.player = player
+                        this.player = displayPlayer
                         resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
                         useController = true
                         controllerShowTimeoutMs = 3500
-                        // Le titre et les boutons précédent/suivant suivent désormais
-                        // exactement le même cycle d'affichage/masquage que les
-                        // commandes natives (lecture, barre de progression, etc.).
+                        // Précédent/suivant rejoignent retour-10s/lecture/avance-10s dans
+                        // la même rangée native centrale, comme sur le lecteur de référence.
+                        setShowPreviousButton(true)
+                        setShowNextButton(true)
+                        // Le titre suit désormais exactement le même cycle
+                        // d'affichage/masquage que les commandes natives.
                         setControllerVisibilityListener(
                             PlayerView.ControllerVisibilityListener { visibility ->
                                 controlsVisible = visibility == View.VISIBLE
@@ -176,31 +225,9 @@ fun LocalFilmPlayerScreen(
                         )
                     }
                 },
+                update = { playerView -> playerView.player = displayPlayer },
                 modifier = Modifier.fillMaxSize()
             )
-
-            AnimatedVisibility(
-                visible = controlsVisible,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier.align(Alignment.BottomCenter)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .widthIn(max = 900.dp)
-                        .padding(bottom = 88.dp),
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    IconButton(onClick = { previousItem?.let { currentId = it.id } }, enabled = previousItem != null) {
-                        Icon(Icons.Filled.SkipPrevious, contentDescription = "Programme précédent", tint = Color.White)
-                    }
-                    IconButton(onClick = { nextItem?.let { currentId = it.id } }, enabled = nextItem != null) {
-                        Icon(Icons.Filled.SkipNext, contentDescription = "Programme suivant", tint = Color.White)
-                    }
-                }
-            }
 
             AnimatedVisibility(
                 visible = controlsVisible,
