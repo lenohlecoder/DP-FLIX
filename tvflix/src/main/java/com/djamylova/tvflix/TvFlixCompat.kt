@@ -110,4 +110,19 @@ object TvFlixCompat {
             null
         }
     }
+
+    /**
+     * versionName du package WebView système, si détectable. Complète
+     * [getWebViewPackageName] pour le diagnostic — permet par exemple de repérer
+     * en prod un WebView resté bloqué sur une vieille version Chromium sur un
+     * device Android 9, cause fréquente de sites qui échouent uniquement là.
+     */
+    fun getWebViewVersionName(context: Context): String? {
+        return try {
+            val pkgName = getWebViewPackageName(context) ?: return null
+            context.packageManager.getPackageInfo(pkgName, 0).versionName
+        } catch (e: Exception) {
+            null
+        }
+    }
 }

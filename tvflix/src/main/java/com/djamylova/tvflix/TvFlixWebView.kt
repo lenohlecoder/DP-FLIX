@@ -13,6 +13,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 
 /**
@@ -33,11 +34,27 @@ class TvFlixWebView @JvmOverloads constructor(
 
     var desktopSpoofEnabled: Boolean = true
 
+    /** true si le spoof a pu être installé en document-start (voir
+     *  [installDocumentStartSpoofIfSupported]) — sinon on reste sur le fallback
+     *  evaluateJavascript, moins fiable sur WebView ancien/lent. */
+    private var documentStartSpoofInstalled = false
+
     init {
+        logWebViewDiagnostics()
         applyCookies()
         applyDesktopConfig()
         applyClientHintsDesktop()
         installDesktopSpoofClient()
+    }
+
+    /** Log le package et la version du WebView système au démarrage — sert
+     *  uniquement au diagnostic (ex : distinguer en prod les devices Android 9
+     *  bas de gamme dont le WebView système est resté sur une vieille version
+     *  Chromium, cause probable des sites qui échouent seulement sur eux). */
+    private fun logWebViewDiagnostics() {
+        val pkg = TvFlixCompat.getWebViewPackageName(context)
+        val version = TvFlixCompat.getWebViewVersionName(context)
+        Log.i(TAG, "WebView système : package=$pkg version=$version SDK=${Build.VERSION.SDK_INT}")
     }
 
     /**
@@ -129,14 +146,21 @@ class TvFlixWebView @JvmOverloads constructor(
     }
 
     private fun installDesktopSpoofClient() {
+        installDocumentStartSpoofIfSupported()
         webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
-                injectDesktopSpoof()
+                // Fallback uniquement : si document-start n'est pas supporté (WebView
+                // ancien, cas typique Android 9 bas de gamme), on retente ici en
+                // best-effort — mais evaluateJavascript reste asynchrone et peut
+                // arriver après les premiers scripts de la page cible.
+                if (!documentStartSpoofInstalled) injectDesktopSpoof()
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                // Toujours réappliqué ici, même avec document-start : certains sites
+                // recréent des iframes ou re-testent après le chargement initial.
                 injectDesktopSpoof()
             }
 
@@ -148,6 +172,51 @@ class TvFlixWebView @JvmOverloads constructor(
                 request: WebResourceRequest?
             ): Boolean = false
         }
+    }
+
+    /**
+     * Fix diagnostic « sites avec vérification, Android 9 » : installe le spoof
+     * desktop en document-start quand l'API le permet — le script s'exécute alors
+     * AVANT tout script de la page cible, ce qui élimine la course observée sur
+     * devices lents entre notre spoof (auparavant : evaluateJavascript à
+     * onPageStarted, asynchrone) et les scripts de vérification/anti-bot du site,
+     * qui pouvaient lire navigator.maxTouchPoints/userAgentData avant qu'on les ait
+     * redéfinis.
+     *
+     * DOCUMENT_START_SCRIPT n'est disponible que sur un WebView système
+     * suffisamment récent — c'est justement ce qui manque le plus souvent sur les
+     * devices Android 9 bas de gamme (WebView rarement mis à jour par l'OEM),
+     * d'où le fallback evaluateJavascript conservé dans installDesktopSpoofClient().
+     */
+    private fun installDocumentStartSpoofIfSupported() {
+        try {
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                WebViewCompat.addDocumentStartJavaScript(this, DesktopSpoofJs.SCRIPT, setOf("*"))
+                documentStartSpoofInstalled = true
+                Log.d(TAG, "Spoof desktop installé en document-start (fiable même sur WebView lent)")
+            } else {
+                Log.w(
+                    TAG,
+                    "DOCUMENT_START_SCRIPT non supporté par ce WebView (probable sur Android 9 " +
+                        "ancien) — fallback evaluateJavascript, sujet à une course sur devices lents"
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Échec installation document-start spoof, fallback evaluateJavascript", e)
+        }
+    }
+
+    /**
+     * Best-effort : indique si le WebView système semble trop ancien pour les
+     * techniques de spoof desktop utilisées ici (document-start injection +
+     * Client Hints). Utile pour le host app qui voudrait suggérer à l'utilisateur
+     * de mettre à jour « Android System WebView » depuis le Play Store — c'est
+     * souvent la vraie cause des sites qui échouent uniquement sur certains
+     * devices Android 9 bas de gamme, sans rien à voir avec l'app elle-même.
+     */
+    fun isWebViewLikelyOutdated(): Boolean {
+        return !WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT) ||
+            !WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)
     }
 
     fun injectDesktopSpoof() {

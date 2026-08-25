@@ -102,12 +102,29 @@ class CursorDrawer(
     private val UNCHANGED = Integer.MIN_VALUE
 
     // Boucle de déplacement
+    //
+    // Fix diagnostic « zigzag / désynchronisation télécommande » :
+    // 1. Cadence FIXE via postDelayed(FRAME_INTERVAL_MS) au lieu de post() sans délai
+    //    — avant, la boucle tournait aussi vite que le thread UI le permettait
+    //    (beaucoup plus vite qu'un taux d'affichage réel sur device rapide, ou figée
+    //    plusieurs dizaines de ms sur box lente pendant un rendu WebView/GC).
+    // 2. lastCursorUpdate n'est plus écrit QUE par cette boucle (voir handleDirection,
+    //    qui ne le touche plus). Avant, chaque KeyEvent de répétition matérielle
+    //    (télécommande maintenue) réinitialisait lastCursorUpdate en parallèle de la
+    //    boucle → dTime artificiellement proche de zéro à l'itération suivante →
+    //    accélération cassée sur cette frame → à-coup visible.
+    // 3. dTime est désormais plafonné (MAX_DTIME_MS), pas seulement plancher à 1L —
+    //    après un décrochage du thread UI, un dTime démesuré faisait sauter la
+    //    vitesse instantanément à speedCap au lieu de monter progressivement : le
+    //    curseur « sautait » au lieu de glisser. C'est la cause la plus probable du
+    //    zigzag rapporté, et elle empire avec la durée de l'appui (plus d'itérations
+    //    = plus d'occasions de décrochage).
     private val cursorUpdateRunnable = object : Runnable {
         override fun run() {
             hideHandler.removeCallbacks(hideRunnable)
 
             val now = SystemClock.uptimeMillis()
-            val dTime = (now - lastCursorUpdate).coerceAtLeast(1L)
+            val dTime = (now - lastCursorUpdate).coerceIn(1L, MAX_DTIME_MS)
             lastCursorUpdate = now
 
             val speedCap = maxSpeedBaselinePx * (maxSpeedPercent / 100f)
@@ -144,7 +161,7 @@ class CursorDrawer(
             val maxY = (surface.height - 1).toFloat().coerceAtLeast(0f)
             if (maxX <= 0f || maxY <= 0f) {
                 // Layout pas encore prêt (vieilles TV parfois lentes)
-                surface.post(this)
+                surface.postDelayed(this, FRAME_INTERVAL_MS)
                 return
             }
             cursorX = (cursorX + cursorSpeed.x).coerceIn(0f, maxX)
@@ -185,7 +202,7 @@ class CursorDrawer(
 
             isVisible = true
             surface.invalidate()
-            surface.post(this)
+            surface.postDelayed(this, FRAME_INTERVAL_MS)
         }
     }
 
@@ -418,7 +435,11 @@ class CursorDrawer(
     }
 
     private fun handleDirection(event: KeyEvent, dirX: Int, dirY: Int) {
-        lastCursorUpdate = SystemClock.uptimeMillis()
+        // lastCursorUpdate n'est PLUS touché ici (fix zigzag) : cursorUpdateRunnable
+        // en est l'unique propriétaire pendant qu'il tourne. L'écrire aussi depuis ce
+        // callback — appelé à chaque KeyEvent, y compris les répétitions matérielles
+        // envoyées par la télécommande tant qu'une direction est maintenue — cassait
+        // le calcul du delta-temps utilisé pour l'accélération.
         isVisible = true
 
         if (event.action == KeyEvent.ACTION_DOWN) {
@@ -431,11 +452,24 @@ class CursorDrawer(
 
             longPressHandler.removeCallbacks(longPressRunnable)
 
-            surface.removeCallbacks(cursorUpdateRunnable)
-            surface.post(cursorUpdateRunnable)
+            val wasIdle = cursorDirection.x == 0 && cursorDirection.y == 0
 
             if (dirX != UNCHANGED) cursorDirection.x = dirX
             if (dirY != UNCHANGED) cursorDirection.y = dirY
+
+            if (wasIdle) {
+                // Redémarrage propre : la boucle était arrêtée, donc personne d'autre
+                // n'a pu écrire lastCursorUpdate récemment — c'est le seul moment où
+                // handleDirection doit encore l'initialiser lui-même.
+                lastCursorUpdate = SystemClock.uptimeMillis()
+                surface.removeCallbacks(cursorUpdateRunnable)
+                surface.post(cursorUpdateRunnable)
+            }
+            // Si la boucle tournait déjà (ex : on ajoute une deuxième direction pour
+            // former une diagonale pendant que la première est encore maintenue), on
+            // se contente de mettre à jour cursorDirection ci-dessus : la boucle en
+            // vol reprendra la nouvelle direction à sa prochaine itération, sans
+            // discontinuité de temps ni redémarrage inutile de son cadencement.
 
         } else if (event.action == KeyEvent.ACTION_UP) {
             if (dirX != UNCHANGED) cursorDirection.x = 0
@@ -760,5 +794,16 @@ class CursorDrawer(
 
     companion object {
         private const val TAG = "CursorDrawer"
+
+        /** Cadence fixe de la boucle de déplacement (~60 fps). Avant ce fix, la
+         *  boucle tournait via post() sans délai, donc à une vitesse dépendant
+         *  entièrement de la charge du thread UI — irrégulière selon le device. */
+        private const val FRAME_INTERVAL_MS = 16L
+
+        /** Plafond du delta-temps utilisé pour l'accélération. Sans lui, un
+         *  décrochage du thread UI (rendu WebView, GC...) produisait un dTime
+         *  démesuré à la reprise → saut instantané de vitesse au lieu d'une
+         *  accélération progressive (le « zigzag » rapporté). */
+        private const val MAX_DTIME_MS = 50L
     }
 }
