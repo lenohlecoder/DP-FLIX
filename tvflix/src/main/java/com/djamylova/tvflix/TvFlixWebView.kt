@@ -187,7 +187,7 @@ class TvFlixWebView @JvmOverloads constructor(
                     // perd pas le comportement WebView standard.
                     (parent as? android.view.ViewGroup)?.addView(
                         view,
-                        android.view.ViewGroup.LayoutParams(MATCH_PARENT, MATCH_PARENT)
+                        android.view.ViewGroup.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT)
                     )
                 }
             }
