@@ -338,7 +338,9 @@ fun FilmsSeriesScreen(
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
-                    preferDesktopUserAgent = streamIndex == 3,
+                    // Le profil desktop du Stream 3 est réservé au moteur TV.
+                    // Sur mobile, le même stream doit conserver le profil WebView natif.
+                    preferDesktopUserAgent = useTvFlix && streamIndex == 3,
                     forceSoftwareLayer = showVirtualCursor || useTvFlix,
                     useTvFlix = useTvFlix,
                     strictDomainLock = true, // Politique Films/Séries : navigation principale strictement whitelistée.
@@ -1261,7 +1263,13 @@ private fun LockedWebView(
                     ) {
                         super.onReceivedHttpError(view, request, errorResponse)
                         if (request != null && errorResponse != null) {
-                            val cookieHeader = android.webkit.CookieManager.getInstance().getCookie(request.url.toString())
+                            // CookieManager n'est consulté que pendant une vraie session
+                            // de diagnostic : aucune lecture de cookie dans le chemin normal.
+                            val cookieHeader = if (DiagnosticSystemMonitor.isRunning()) {
+                                android.webkit.CookieManager.getInstance().getCookie(request.url.toString())
+                            } else {
+                                null
+                            }
                             DiagnosticSystemMonitor.recordHttp(
                                 area = "Films & Séries / WebView",
                                 action = "Réponse HTTP WebView",
@@ -1329,13 +1337,18 @@ private fun LockedWebView(
                     ): android.webkit.WebResourceResponse? {
                         try {
                             snifferState.value.onRequest(request)
-                            val cookieHeader = android.webkit.CookieManager.getInstance().getCookie(request.url.toString())
-                            DiagnosticSystemMonitor.recordWebViewRequest(
-                                area = "Films & Séries / WebView",
-                                request = request,
-                                userAgentPresent = view?.settings?.userAgentString?.isNotBlank() == true,
-                                cookieHeaderPresent = !cookieHeader.isNullOrBlank()
-                            )
+                            // Aucun accès CookieManager sur le chemin réseau normal.
+                            // Les cookies de diagnostic ne sont lus que si la session est active.
+                            if (DiagnosticSystemMonitor.isRunning()) {
+                                val cookieHeader = android.webkit.CookieManager.getInstance()
+                                    .getCookie(request.url.toString())
+                                DiagnosticSystemMonitor.recordWebViewRequest(
+                                    area = "Films & Séries / WebView",
+                                    request = request,
+                                    userAgentPresent = view?.settings?.userAgentString?.isNotBlank() == true,
+                                    cookieHeaderPresent = !cookieHeader.isNullOrBlank()
+                                )
+                            }
                         } catch (_: Exception) {
                             // Best-effort : un sniffer qui plante ne doit jamais casser la page.
                         }

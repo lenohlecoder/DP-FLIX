@@ -114,6 +114,9 @@ object DiagnosticSystemMonitor {
         finalizeSession("Analyse arrêtée manuellement")
     }
 
+    /** Indique si l'instrumentation est réellement active. */
+    fun isRunning(): Boolean = running.get()
+
     /** Enregistre une action uniquement pendant la session active. */
     fun record(
         area: String,
