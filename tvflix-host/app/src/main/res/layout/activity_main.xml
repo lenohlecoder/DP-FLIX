@@ -4,40 +4,10 @@
     android:layout_height="match_parent"
     android:keepScreenOn="true">
 
+    <!-- Environnement de test minimal : aucune barre d'adresse. -->
     <FrameLayout
         android:id="@+id/container"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <LinearLayout
-        android:id="@+id/address_bar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:background="#CC000000"
-        android:padding="8dp"
-        android:gravity="center_vertical"
-        android:elevation="12dp">
-
-        <EditText
-            android:id="@+id/url_input"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:inputType="textUri"
-            android:imeOptions="actionGo"
-            android:singleLine="true"
-            android:hint="https://exemple.com"
-            android:textColor="#FFFFFF"
-            android:textColorHint="#88FFFFFF"
-            android:background="#33FFFFFF"
-            android:padding="8dp" />
-
-        <Button
-            android:id="@+id/go_button"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="8dp"
-            android:text="Aller" />
-    </LinearLayout>
 </FrameLayout>

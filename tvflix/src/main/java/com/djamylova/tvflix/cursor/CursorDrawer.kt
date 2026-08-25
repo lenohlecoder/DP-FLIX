@@ -11,7 +11,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
@@ -53,25 +52,20 @@ class CursorDrawer(
     private var downTime: Long = 0L
     private var isVisible = true
     private var lastCursorUpdate = SystemClock.uptimeMillis()
-    // Un vrai flux souris commence par HOVER_ENTER avant les HOVER_MOVE.
-    private var hoverEntered = false
 
-    // Long press
-    private val longPressTimeout = ViewConfiguration.getLongPressTimeout() + 100L
+    // Clic / appui long — même flux tactile que TV Bro.
+    // ACTION_DOWN -> ACTION_UP avec TOOL_TYPE_FINGER.
     private var longPressTriggered = false
-    private var pendingClickUp = false
-    private var pendingClickX = 0f
-    private var pendingClickY = 0f
-    private val MIN_CLICK_HOLD_MS = 32L
-    private val clickUpRunnable = Runnable {
-        if (pendingClickUp && isPressed && !longPressTriggered) {
-            injectMouseEvent(pendingClickX, pendingClickY, MotionEvent.ACTION_UP)
+    private val longPressTimeout = ViewConfiguration.getLongPressTimeout() + 100L
+
+    private val longPressRunnable = Runnable {
+        if (isPressed && !longPressTriggered) {
+            longPressTriggered = true
+            dispatchMotionEvent(cursorX, cursorY, MotionEvent.ACTION_CANCEL)
+            isPressed = false
+            surface.invalidate()
+            onLongPress?.invoke(cursorX, cursorY)
         }
-        pendingClickUp = false
-        isPressed = false
-        longPressTriggered = false
-        surface.invalidate()
-        scheduleHide()
     }
 
     // ——— Scroll bord d’écran (Étape 5) ———
@@ -96,23 +90,10 @@ class CursorDrawer(
     // ——— Handlers ———
     private val hideHandler = Handler(Looper.getMainLooper())
     private val longPressHandler = Handler(Looper.getMainLooper())
-    private val clickHandler = Handler(Looper.getMainLooper())
 
     private val hideRunnable = Runnable {
         isVisible = false
         surface.invalidate()
-    }
-
-    private val longPressRunnable = Runnable {
-        if (isPressed && !longPressTriggered) {
-            longPressTriggered = true
-            pendingClickUp = false
-            clickHandler.removeCallbacks(clickUpRunnable)
-            injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_CANCEL)
-            isPressed = false
-            surface.invalidate()
-            onLongPress?.invoke(cursorX, cursorY)
-        }
     }
 
     private val CURSOR_HIDE_DELAY = 5000L
@@ -164,7 +145,7 @@ class CursorDrawer(
             ) {
                 // Fin de mouvement → arrête le scroll hack si actif
                 if (scrollHackStarted) {
-                    injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
+                    dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
                     scrollHackStarted = false
                 }
                 scheduleHide()
@@ -204,17 +185,11 @@ class CursorDrawer(
                 scrollContentBy(dx, dy)
             }
 
-            // Clic maintenu + déplacement → MOVE
+            // Même comportement que TV Bro : un MOVE n'est injecté que pendant
+            // un clic maintenu. En dehors d'un clic, le curseur est uniquement
+            // dessiné ; aucun flux HOVER synthétique n'est envoyé à la WebView.
             if (isPressed && (prevX != cursorX || prevY != cursorY)) {
-                hoverEntered = false // un clic interrompt le flux hover
-                injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_MOVE)
-            } else if (!isPressed && !scrollHackStarted) {
-                // Hover uniquement si on n’est pas en train de scroller via le hack
-                if (!hoverEntered) {
-                    injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_HOVER_ENTER)
-                    hoverEntered = true
-                }
-                injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_HOVER_MOVE)
+                dispatchMotionEvent(cursorX, cursorY, MotionEvent.ACTION_MOVE)
             }
 
             isVisible = true
@@ -269,11 +244,11 @@ class CursorDrawer(
 
     fun hide() {
         if (isPressed) {
-            injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_UP)
+            dispatchMotionEvent(cursorX, cursorY, MotionEvent.ACTION_UP)
             isPressed = false
         }
         if (scrollHackStarted) {
-            injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
+            dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
             scrollHackStarted = false
         }
         isVisible = false
@@ -349,7 +324,7 @@ class CursorDrawer(
                     scrollHackActiveRect.bottom.toFloat()
                 )
             )
-            injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_DOWN)
+            dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_DOWN)
             scrollHackStarted = true
             justStarted = true
         }
@@ -367,7 +342,7 @@ class CursorDrawer(
             // Remet la position précédente
             scrollHackCoords.x += scrollX
             scrollHackCoords.y += scrollY
-            injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
+            dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
             scrollHackStarted = false
 
             // Relance immédiatement si ce n’est pas le tout premier frame
@@ -377,7 +352,7 @@ class CursorDrawer(
             return
         }
 
-        injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_MOVE)
+        dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_MOVE)
     }
 
     // ——————————————————————————————————————————————
@@ -510,7 +485,7 @@ class CursorDrawer(
 
             // Arrête le scroll hack dès qu’on relâche la direction
             if (cursorDirection.x == 0 && cursorDirection.y == 0 && scrollHackStarted) {
-                injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
+                dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
                 scrollHackStarted = false
             }
         }
@@ -519,141 +494,92 @@ class CursorDrawer(
     private fun handleClickKey(event: KeyEvent): Boolean {
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
-                if (event.repeatCount == 0 && !isPressed) {
-                    // Annule un éventuel scroll hack en cours
-                    if (scrollHackStarted) {
-                        injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
-                        scrollHackStarted = false
-                    }
+                // Même logique de suivi de touche que TV Bro. Cela évite les
+                // doubles ACTION_DOWN lorsque la télécommande répète KEY_ENTER.
+                if (event.repeatCount == 0 &&
+                    !surface.keyDispatcherState.isTracking(event)
+                ) {
+                    surface.keyDispatcherState.startTracking(event, this)
 
-                    // Termine proprement le flux de survol avant le clic.
-                    // Certains anciens Chromium embarqués ignorent un DOWN qui arrive
-                    // directement après un HOVER_MOVE.
-                    if (hoverEntered) {
-                        injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_HOVER_EXIT)
-                        hoverEntered = false
+                    if (!isPressed) {
+                        if (scrollHackStarted) {
+                            dispatchMotionEvent(
+                                scrollHackCoords.x,
+                                scrollHackCoords.y,
+                                MotionEvent.ACTION_CANCEL
+                            )
+                            scrollHackStarted = false
+                        }
+
+                        isPressed = true
+                        longPressTriggered = false
+                        isVisible = true
+
+                        // TV Bro : le clic commence exactement ici.
+                        dispatchMotionEvent(cursorX, cursorY, MotionEvent.ACTION_DOWN)
+                        longPressHandler.removeCallbacks(longPressRunnable)
+                        longPressHandler.postDelayed(longPressRunnable, longPressTimeout)
+                        surface.invalidate()
                     }
-                    isPressed = true
-                    pendingClickUp = false
-                    longPressTriggered = false
-                    isVisible = true
-                    injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_DOWN)
-                    longPressHandler.postDelayed(longPressRunnable, longPressTimeout)
-                    surface.invalidate()
                 }
                 return true
             }
+
             KeyEvent.ACTION_UP -> {
+                // Même gestion du cycle de vie de la touche que TV Bro.
+                surface.keyDispatcherState.handleUpEvent(event)
                 longPressHandler.removeCallbacks(longPressRunnable)
+
                 if (isPressed && !longPressTriggered) {
-                    // Garantit une durée DOWN suffisamment longue pour les vieux WebView.
-                    // Sinon DOWN et UP peuvent être fusionnés dans la même frame.
-                    val elapsed = SystemClock.uptimeMillis() - downTime
-                    val remaining = (MIN_CLICK_HOLD_MS - elapsed).coerceAtLeast(0L)
-                    pendingClickX = cursorX
-                    pendingClickY = cursorY
-                    if (remaining == 0L) {
-                        injectMouseEvent(pendingClickX, pendingClickY, MotionEvent.ACTION_UP)
-                        isPressed = false
-                        longPressTriggered = false
-                        surface.invalidate()
-                        scheduleHide()
-                    } else {
-                        pendingClickUp = true
-                        clickHandler.removeCallbacks(clickUpRunnable)
-                        clickHandler.postDelayed(clickUpRunnable, remaining)
-                    }
-                } else {
-                    isPressed = false
-                    longPressTriggered = false
-                    surface.invalidate()
-                    scheduleHide()
+                    // TV Bro : ACTION_UP sur le même point, avec le même downTime.
+                    dispatchMotionEvent(cursorX, cursorY, MotionEvent.ACTION_UP)
                 }
+
+                isPressed = false
+                longPressTriggered = false
+                surface.invalidate()
+                scheduleHide()
                 return true
             }
         }
         return false
     }
 
-    fun dispatchGenericMotionEvent(event: MotionEvent): Boolean = false
-
     // ——————————————————————————————————————————————
-    // Injection MotionEvent (SOURCE_MOUSE)
+    // Injection MotionEvent — même mécanisme que TV Bro
     // ——————————————————————————————————————————————
 
-    /** true pour ACTION_HOVER_ENTER/MOVE/EXIT — ces actions passent par un circuit
-     * différent des événements tactiles dans Android et NE DOIVENT PAS être
-     * envoyées via dispatchTouchEvent (elles y seraient silencieusement ignorées). */
-    private fun isHoverAction(action: Int): Boolean {
-        return action == MotionEvent.ACTION_HOVER_MOVE ||
-                action == MotionEvent.ACTION_HOVER_ENTER ||
-                action == MotionEvent.ACTION_HOVER_EXIT
-    }
-
-    private fun injectMouseEvent(x: Float, y: Float, action: Int) {
-        val now = SystemClock.uptimeMillis()
-
-        if (action == MotionEvent.ACTION_DOWN) {
-            downTime = now
+    private fun dispatchMotionEvent(x: Float, y: Float, action: Int, pointerId: Int = 0) {
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_POINTER_DOWN) {
+            downTime = SystemClock.uptimeMillis()
         }
 
-        val properties = arrayOf(MotionEvent.PointerProperties().apply {
-            id = 0
-            toolType = MotionEvent.TOOL_TYPE_MOUSE
-        })
+        val eventTime = SystemClock.uptimeMillis()
+        val properties = arrayOfNulls<MotionEvent.PointerProperties>(1)
+        val pp1 = MotionEvent.PointerProperties()
+        pp1.id = pointerId
+        pp1.toolType = MotionEvent.TOOL_TYPE_FINGER
+        properties[0] = pp1
 
-        val coords = arrayOf(MotionEvent.PointerCoords().apply {
-            this.x = x
-            this.y = y
-            pressure = if (isHoverAction(action)) 0f else 1f
-            size = 1f
-        })
+        val pointerCoords = arrayOfNulls<MotionEvent.PointerCoords>(1)
+        val pc1 = MotionEvent.PointerCoords()
+        pc1.x = x
+        pc1.y = y
+        pc1.pressure = 1f
+        pc1.size = 1f
+        pointerCoords[0] = pc1
 
-        // Bug 2 (corrigé) : un vrai clic souris porte BUTTON_PRIMARY tant que le
-        // bouton est enfoncé (DOWN et MOVE pendant le drag). Sans ça, Chromium
-        // peut ne pas reconnaître le DOWN comme un vrai clic de bouton gauche.
-        val buttonState = when (action) {
-            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE ->
-                if (isPressed) MotionEvent.BUTTON_PRIMARY else 0
-            else -> 0
-        }
-
-        val event = MotionEvent.obtain(
-            downTime,
-            now,
-            action,
-            1,
-            properties,
-            coords,
-            0,
-            buttonState,
-            1f,
-            1f,
-            0,
-            0,
-            InputDevice.SOURCE_MOUSE,
-            0
+        val motionEvent = MotionEvent.obtain(
+            downTime, eventTime, action, 1, properties, pointerCoords,
+            0, 0, 1f, 1f, 0, 0, 0, 0
         )
 
         try {
-            // Les actions souris de survol suivent le circuit GenericMotion.
-            // Les actions de bouton (DOWN/UP) suivent le circuit tactile, qui est
-            // celui que WebView/Chromium utilise pour déclencher click/onclick.
-            // On passe d'abord par le ViewGroup pour que le child réellement visé
-            // reçoive une séquence complète DOWN -> UP avec le même downTime.
-            if (isHoverAction(action)) {
-                surface.dispatchGenericMotionEvent(event)
-            } else {
-                val handled = surface.dispatchTouchEvent(event)
-                if (!handled) {
-                    // Certaines anciennes WebView sont plus strictes avec les
-                    // événements synthétiques de souris : tente aussi le circuit
-                    // générique sans dupliquer un clic déjà accepté.
-                    surface.dispatchGenericMotionEvent(event)
-                }
-            }
+            // C'est volontairement identique au mécanisme de TV Bro :
+            // WebView reçoit un véritable flux tactile synthétique.
+            surface.dispatchTouchEvent(motionEvent)
         } finally {
-            event.recycle()
+            motionEvent.recycle()
         }
     }
 
@@ -699,11 +625,11 @@ class CursorDrawer(
 
         // Annule un éventuel scroll hack / clic en cours
         if (scrollHackStarted) {
-            injectMouseEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
+            dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
             scrollHackStarted = false
         }
         if (isPressed) {
-            injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_CANCEL)
+            dispatchMotionEvent(cursorX, cursorY, MotionEvent.ACTION_CANCEL)
             isPressed = false
         }
 
