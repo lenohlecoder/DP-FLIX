@@ -4,6 +4,7 @@ import androidx.annotation.DrawableRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.LiveTv
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Replay
@@ -37,17 +38,22 @@ enum class UserGuideTopic(
     ),
     FilmsSeries(
         title = "Films et Séries",
-        subtitle = "Stream 1, 2 et 3 — navigation",
+        subtitle = "Streams 1 à 5 — navigation et accès",
         icon = Icons.Filled.Movie
+    ),
+    Dreaming(
+        title = "Notifications / Dreaming",
+        subtitle = "Programmes annoncés, horaires et directs",
+        icon = Icons.Filled.Notifications
     ),
     Downloads(
         title = "Téléchargements",
-        subtitle = "Flèche ↓, choix du lien, bibliothèque",
+        subtitle = "Gestion, sélection multiple et lecture hors ligne",
         icon = Icons.Filled.Download
     ),
     SettingsHelp(
         title = "Réglages & Diagnostic",
-        subtitle = "Lecteur, qualité, métriques",
+        subtitle = "Lecteur, Direct et diagnostic système",
         icon = Icons.Filled.Settings
     ),
     Troubleshooting(
@@ -163,130 +169,209 @@ fun userGuideContentFor(topic: UserGuideTopic): List<UserGuideBlockData> = when 
     UserGuideTopic.FilmsSeries -> listOf(
         UserGuideBlockData(
             "Ouvrir Films et Séries",
-            "Sur l'accueil, touchez l'icône Films / cinéma. " +
-                "Un sélecteur propose trois plateformes :\n" +
-                "• Stream 1 — Purstream.\n" +
-                "• Stream 2 — French-Stream.\n" +
-                "• Stream 3 — MovieBox.\n\n" +
-                "Les adresses se configurent dans Réglages → Général. Des liens par défaut " +
-                "existent déjà : vous n'êtes pas obligé de les changer pour commencer."
+            "Sur l'accueil, touchez l'icône Films / cinéma. Le sélecteur propose maintenant cinq streams. " +
+                "Les streams 1 à 3 correspondent aux plateformes de catalogue, tandis que les streams 4 et 5 ouvrent " +
+                "des sites dans la page intégrée.",
+            imageRes = R.drawable.guide_features_overview,
+            imageCaption = "Vue d'ensemble des nouveaux accès et commandes Films et Séries"
         ),
         UserGuideBlockData(
             title = "Stream 1 — Purstream (catalogue)",
-            body = "Plateforme classée par univers (Marvel, DC, Prime Video, Disney, Netflix, etc.), " +
-                "avec un large catalogue et les dernières sorties.\n\n" +
-                "Choisissez un film ou une série depuis l'accueil, puis ouvrez la fiche.",
+            body = "Plateforme classée par univers (Marvel, DC, Prime Video, Disney, Netflix, etc.), avec un large catalogue et les dernières sorties.\n\nChoisissez un film ou une série depuis l'accueil, puis ouvrez la fiche.",
             imageRes = R.drawable.guide_stream1_accueil,
             imageCaption = "Page d'accueil Purstream — choisir un film ou une série"
         ),
         UserGuideBlockData(
             title = "Stream 2 — French-Stream (catalogue)",
-            body = "Plus global : action, aventure, horreur et autres genres — très bon pour du " +
-                "divertissement au quotidien.\n\n" +
-                "Sur une série : lecteur + liste d'épisodes (VF / VOSTFR). Le téléchargement " +
-                "se fait surtout depuis cette page (voir section Téléchargements).",
+            body = "Plus global : action, aventure, horreur et autres genres — très bon pour du divertissement au quotidien.\n\nSur une série : lecteur + liste d'épisodes (VF / VOSTFR). Le téléchargement se fait surtout depuis cette page.",
             imageRes = R.drawable.guide_stream2_episodes,
-            imageCaption = "Lecteur + épisodes French-Stream — flèche de téléchargement à côté de l'épisode"
+            imageCaption = "Lecteur + épisodes French-Stream"
         ),
         UserGuideBlockData(
             title = "Stream 3 — MovieBox (catalogue)",
-            body = "Encore plus vaste : films tous genres, mangas, animés, séries asiatiques, " +
-                "contenus africains (Nollywood / Ibo, etc.).\n\n" +
-                "Ignorez les boutons du type « Regarde & Télécharge dans l'appli » ou toute " +
-                "invitation à installer une application tierce. Cette option n'est pas " +
-                "disponible ici pour l'instant.",
+            body = "Encore plus vaste : films tous genres, mangas, animés, séries asiatiques et contenus africains.\n\nIgnorez les boutons du type « Regarde & Télécharge dans l'appli » ou toute invitation à installer une application tierce.",
             imageRes = R.drawable.guide_stream3_accueil,
-            imageCaption = "Page d'accueil MovieBox — ignorer « télécharge dans l'appli »"
+            imageCaption = "Page d'accueil MovieBox"
         ),
         UserGuideBlockData(
-            "Naviguer dans une plateforme",
-            "Chaque stream ouvre le site dans une page intégrée (comme un navigateur) :\n" +
-                "• Recherchez un film ou une série.\n" +
-                "• Ouvrez la fiche, choisissez la qualité ou le lecteur proposé par le site.\n" +
-                "• Le bouton retour de l'appareil recule d'abord dans l'historique du site, " +
-                "puis quitte Films et Séries.\n\n" +
-                "Sur TV : un curseur se déplace avec les flèches ; OK = clic à l'emplacement du curseur."
+            title = "Stream 4 — YouTube mobile",
+            body = "Le Stream 4 ouvre directement YouTube mobile dans la page intégrée de DP-FLIX.\n\n• Sélectionnez Stream 4.\n• La page se charge dans l'application.\n• Sur Android TV, utilisez le focus et la télécommande pour naviguer.\n\nAdresse configurée : https://m.youtube.com/",
+            imageRes = R.drawable.guide_stream4_youtube,
+            imageCaption = "Stream 4 — accès à YouTube mobile"
+        ),
+        UserGuideBlockData(
+            title = "Stream 5 — accès réservé aux adultes",
+            body = "Le Stream 5 est protégé par une demande d'accès locale avant l'ouverture du site.\n\n• Sélectionnez Stream 5.\n• La demande d'accès apparaît avant l'ouverture.\n• Un accès non valide ne permet pas d'ouvrir le stream.\n\nLe code d'accès n'est volontairement pas indiqué dans ce guide. Il doit être communiqué séparément par le responsable de l'application.",
+            imageRes = R.drawable.guide_stream5_18plus,
+            imageCaption = "Stream 5 — contenu réservé aux adultes (18+)"
+        ),
+        UserGuideBlockData(
+            title = "Nouvelle icône DP-FLIX ☰",
+            body = "La barre supérieure utilise désormais une seule petite icône DP-FLIX à trois lignes, placée entre le nom/logo du site et le menu propre au site.\n\nLorsque vous l'ouvrez, elle donne accès aux fonctions DP-FLIX :\n• Réglages.\n• Mes téléchargements.\n• Télécharger lorsqu'un média est détecté.\n• Plus de téléchargements lorsqu'il existe plusieurs liens détectés.\n\nLa détection vidéo conserve le nombre de liens détectés et leurs noms exacts. La détection ne lance pas automatiquement un téléchargement : l'utilisateur choisit le lien voulu. Sur TV, la zone de focus reste confortable même si l'icône est visuellement discrète.",
+            imageRes = R.drawable.guide_dpflix_menu,
+            imageCaption = "Nouvelle icône centrale DP-FLIX et menu d'actions"
+        ),
+        UserGuideBlockData(
+            title = "Naviguer dans une plateforme",
+            body = "Chaque stream ouvre le site dans une page intégrée comme un navigateur :\n• Recherchez un film ou une série.\n• Ouvrez la fiche et choisissez le contenu proposé par le site.\n• Le bouton retour recule d'abord dans l'historique du site, puis quitte Films et Séries.\n\nSur TV : un curseur se déplace avec les flèches ; OK = clic à l'emplacement du curseur.",
+            imageRes = R.drawable.guide_features_overview,
+            imageCaption = "Navigation intégrée et commandes DP-FLIX"
         ),
         UserGuideBlockData(
             title = "Stream 3 — lancer la lecture (MovieBox)",
-            body = "Sur la fiche d'un film ou d'une série MovieBox :\n" +
-                "• Appuyez sur « Regarder en ligne » (bouton vert).\n" +
-                "• N'utilisez pas « Dans l'appli » : cette option n'est pas disponible dans DP-FLIX " +
-                "pour le moment.",
+            body = "Sur la fiche d'un film ou d'une série MovieBox :\n• Appuyez sur « Regarder en ligne » (bouton vert).\n• N'utilisez pas « Dans l'appli » : cette option n'est pas disponible dans DP-FLIX pour le moment.",
             imageRes = R.drawable.guide_stream3_regarder_en_ligne,
-            imageCaption = "Appuyer sur « Regarder en ligne » (pas « Dans l'appli »)"
+            imageCaption = "Appuyer sur « Regarder en ligne »"
+        )
+    )
+    UserGuideTopic.Dreaming -> listOf(
+        UserGuideBlockData(
+            title = "À quoi sert Dreaming ?",
+            body = "Dreaming est l’espace de notifications et de programmes annoncés de DP-FLIX. Le responsable de l’application peut publier depuis le site d’administration une annonce pour un film, une série, un direct ou un événement programmé. L’annonce peut contenir une affiche, un titre, un message, une heure de début et de fin et un bouton pour regarder le programme.",
+            imageRes = R.drawable.guide_dreaming_admin,
+            imageCaption = "Depuis le site, le programme est créé, programmé et publié."
+        ),
+        UserGuideBlockData(
+            title = "Annonce à l’ouverture de l’application",
+            body = "Lorsqu’un programme Dreaming est actuellement visible, une annonce peut apparaître directement sur l’accueil de DP-FLIX. Elle présente l’affiche, le titre, les informations importantes et les actions disponibles. Appuyez sur ✕ pour fermer l’annonce ou sur « Regarder » pour ouvrir le programme.",
+            imageRes = R.drawable.guide_dreaming_popup,
+            imageCaption = "Une annonce Dreaming peut apparaître au-dessus du menu principal."
+        ),
+        UserGuideBlockData(
+            title = "Section Notifications / Dreaming",
+            body = "Toutes les publications disponibles sont regroupées dans la section « Notifications / Dreaming ». Les annonces peuvent concerner un film, une série, un direct ou une information importante. Ouvrez une carte pour consulter son contenu puis utilisez « Regarder » lorsqu’un lien de lecture est proposé.",
+            imageRes = R.drawable.guide_dreaming_notifications,
+            imageCaption = "La rubrique regroupe les programmes annoncés et permet de les sélectionner."
+        ),
+        UserGuideBlockData(
+            title = "Programme diffusé à une heure précise",
+            body = "Un programme peut être programmé avec une heure de début et une heure de fin. Avant l’heure de début, il reste programmé et n’est pas présenté comme disponible. Pendant la période prévue, il devient visible dans l’application. Après l’heure de fin, il cesse d’être présenté comme programme actif. Le serveur applique ce filtrage afin d’éviter d’afficher une annonce hors période.",
+            imageRes = R.drawable.guide_dreaming_admin,
+            imageCaption = "Les dates de début et de fin déterminent la période de visibilité."
+        ),
+        UserGuideBlockData(
+            title = "Regarder un programme Dreaming",
+            body = "Sélectionnez l’annonce avec le D-pad sur Android TV ou avec le toucher sur mobile, puis validez « Regarder ». Le programme est transmis au lecteur DP-FLIX prévu pour les liens de lecture Dreaming. Lorsque le contenu est compatible avec le lecteur, vous pouvez passer en plein écran et utiliser les commandes habituelles du lecteur.",
+            imageRes = R.drawable.guide_dreaming_notifications,
+            imageCaption = "Sur TV, déplacez le focus avec le D-pad puis validez avec OK."
+        ),
+        UserGuideBlockData(
+            title = "Fermer une annonce",
+            body = "La croix ✕ permet de fermer une annonce affichée sur l’accueil sans supprimer la publication du serveur. La fermeture est mémorisée localement afin d’éviter de présenter la même fenêtre à chaque ouverture. La publication peut toutefois rester disponible dans la section Notifications tant qu’elle est active.",
+            imageRes = R.drawable.guide_dreaming_popup,
+            imageCaption = "La croix ferme l’annonce d’accueil sans supprimer le programme."
+        ),
+        UserGuideBlockData(
+            title = "Notifications Android",
+            body = "Selon la configuration de l’application, une publication peut également être signalée dans la barre de notifications Android. Appuyez sur la notification pour revenir dans DP-FLIX. L’affichage dans l’application reste le point central pour consulter les programmes Dreaming.",
+            imageRes = R.drawable.guide_dreaming_notifications,
+            imageCaption = "La notification système sert de raccourci vers DP-FLIX."
+        ),
+        UserGuideBlockData(
+            title = "Conseils",
+            body = "Pour un programme diffusé ce soir, vérifiez l’heure indiquée dans l’annonce et votre connexion avant le début. Sur Android TV, utilisez le curseur/focus existant de DP-FLIX : les cartes et boutons Dreaming doivent rester accessibles à la télécommande. Si un programme ne démarre pas, vérifiez d’abord que sa période de diffusion est active puis utilisez le Diagnostic système si nécessaire."
         )
     )
     UserGuideTopic.Downloads -> listOf(
         UserGuideBlockData(
             "Principe",
-            "DP-FLIX peut enregistrer un film ou un épisode pour le regarder hors ligne. " +
-                "Le téléchargement se lance depuis Films et Séries, puis se suit dans " +
-                "« Mes téléchargements » (icône ↓ sur l'accueil). Le fichier est stocké dans " +
-                "l'espace de stockage de l'application elle-même."
+            "DP-FLIX peut enregistrer un film ou un épisode pour le regarder hors ligne. Le téléchargement se lance depuis Films et Séries, puis se suit dans « Mes téléchargements ». L'accès est également disponible depuis la nouvelle icône DP-FLIX.",
+            imageRes = R.drawable.guide_downloads_multi,
+            imageCaption = "Bibliothèque de téléchargements et actions groupées"
+        ),
+        UserGuideBlockData(
+            title = "Interface adaptée mobile et Android TV",
+            body = "La section Téléchargements est pensée pour les téléphones, les Android TV et les différentes tailles/orientations d'écran. Les commandes importantes restent accessibles sans sortir de l'écran.",
+            imageRes = R.drawable.guide_downloads_multi,
+            imageCaption = "Interface de téléchargements adaptée aux différents écrans"
+        ),
+        UserGuideBlockData(
+            title = "Sélection multiple des fichiers",
+            body = "Lorsqu'il y a plusieurs fichiers :\n• Maintenez un fichier pour entrer en mode sélection.\n• Sélectionnez les fichiers un par un.\n• Utilisez « Tout sélectionner » pour sélectionner tous les éléments affichés.\n• Les actions groupées s'appliquent aux éléments sélectionnés.",
+            imageRes = R.drawable.guide_downloads_multi,
+            imageCaption = "Appui long, sélection individuelle et Tout sélectionner"
+        ),
+        UserGuideBlockData(
+            title = "Sélection multiple dans les dossiers",
+            body = "La même fonction est disponible dans les dossiers créés dans Téléchargements : ouvrez un dossier, maintenez un élément, puis sélectionnez individuellement les fichiers ou utilisez « Tout sélectionner ».",
+            imageRes = R.drawable.guide_downloads_multi,
+            imageCaption = "La sélection multiple fonctionne également à l'intérieur des dossiers"
+        ),
+        UserGuideBlockData(
+            title = "Lecture continue des épisodes",
+            body = "Lorsque plusieurs épisodes/programmes appartiennent à une même liste, la lecture peut continuer automatiquement :\n\nÉpisode 1 → fin → Épisode 2 → fin → Épisode 3 → etc.\n\nL'objectif est de regarder une saison sans devoir revenir à la liste après chaque épisode.",
+            imageRes = R.drawable.guide_continuous_playback,
+            imageCaption = "Lecture continue : l'épisode suivant démarre automatiquement"
+        ),
+        UserGuideBlockData(
+            title = "Programme précédent et programme suivant",
+            body = "Le lecteur distingue maintenant deux types de navigation :\n• ⏪ / ⏩ : reculer ou avancer de quelques secondes dans le contenu actuel.\n• ⏮ / ⏭ : revenir directement au programme précédent ou passer directement au programme suivant.",
+            imageRes = R.drawable.guide_program_navigation,
+            imageCaption = "Navigation temporelle et navigation entre programmes"
+        ),
+        UserGuideBlockData(
+            title = "Lecteur vidéo adapté à l'écran",
+            body = "Le lecteur des téléchargements doit s'adapter au format de l'écran sur mobile et Android TV : vidéo correctement dimensionnée, centrée et commandes accessibles. La même adaptation est attendue pour la lecture directe en ligne.",
+            imageRes = R.drawable.guide_adaptive_player,
+            imageCaption = "Lecteur adapté au mobile et à Android TV"
         ),
         UserGuideBlockData(
             title = "Stream 1 — Purstream (flèche ↓ + lien 720p)",
-            body = "1. Ouvrez le film ou l'épisode et laissez charger (idéalement lancez la lecture un instant).\n" +
-                "2. Sortez du plein écran du site : la flèche DP-FLIX n'apparaît jamais en plein écran web.\n" +
-                "3. Flèche ↓ en haut à droite dès qu'un flux est détecté (badge = nombre de liens).\n" +
-                "4. Touchez la flèche → liste « Flux détectés ».\n" +
-                "5. Choisissez le lien HLS dont l'adresse contient « 720p » (ex. …/720p/playlist.m3u8).",
+            body = "1. Ouvrez le film ou l'épisode et laissez charger.\n2. Sortez du plein écran du site.\n3. Utilisez la flèche DP-FLIX lorsqu'un flux est détecté.\n4. Ouvrez « Flux détectés ».\n5. Choisissez le lien HLS dont l'adresse contient « 720p ».",
             imageRes = R.drawable.guide_stream1_flux_720p,
-            imageCaption = "Choisir le lien HLS contenant « 720p » (pas l'audio ni le master en priorité)"
+            imageCaption = "Choisir le lien HLS contenant « 720p »"
         ),
         UserGuideBlockData(
-            title = "Stream 2 — French-Stream (flèche à côté de l'épisode)",
-            body = "Sur French-Stream, utilisez la flèche de téléchargement du site, juste sous le " +
-                "lecteur / à côté de chaque épisode — pas la flèche ↓ en haut de DP-FLIX.\n\n" +
-                "1. Ouvrez le contenu (série : VF ou VOSTFR).\n" +
-                "2. Appuyez sur l'icône de téléchargement à côté de l'épisode.\n" +
-                "3. Restez hors plein écran pour voir les boutons de la page.",
+            title = "Stream 2 — French-Stream",
+            body = "Sur French-Stream, utilisez la flèche de téléchargement du site, juste sous le lecteur / à côté de chaque épisode — pas la flèche DP-FLIX. Restez hors plein écran pour voir les boutons de la page.",
             imageRes = R.drawable.guide_stream2_episodes,
-            imageCaption = "Flèche de téléchargement à côté de l'épisode (pas la ↓ du haut)"
+            imageCaption = "Flèche de téléchargement à côté de l'épisode"
         ),
         UserGuideBlockData(
-            title = "Stream 3 — MovieBox (flèche ↓ après lecture)",
-            body = "1. Sur la fiche, « Regarder en ligne » (pas « Dans l'appli »).\n" +
-                "2. Laissez la lecture / le média charger.\n" +
-                "3. Sortez du plein écran si besoin.\n" +
-                "4. Flèche ↓ en haut à droite.\n" +
-                "5. Dans « Flux détectés », touchez le flux MP4 ou HLS pour télécharger dans DP-FLIX.\n\n" +
-                "Rappel : les boutons « télécharge l'appli » du site ne sont pas disponibles ici.",
+            title = "Stream 3 — MovieBox",
+            body = "1. Sur la fiche, utilisez « Regarder en ligne ».\n2. Laissez le média charger.\n3. Sortez du plein écran si besoin.\n4. Ouvrez la flèche DP-FLIX.\n5. Dans « Flux détectés », choisissez le flux MP4 ou HLS voulu.",
             imageRes = R.drawable.guide_stream3_flux_detectes,
-            imageCaption = "Toucher le flux MP4/HLS listé pour lancer le téléchargement"
+            imageCaption = "Flux MP4/HLS détectés et sélection du téléchargement"
         ),
         UserGuideBlockData(
             "Mes téléchargements",
-            "Depuis l'accueil (icône téléchargement) ou le raccourci « Téléch. » dans " +
-                "Films et Séries : suivre la progression, classer, lire hors ligne, supprimer.\n\n" +
-                "Un téléchargement continue en arrière-plan (notification). Évitez de forcer " +
-                "la fermeture de DP-FLIX pendant un gros transfert."
+            "Depuis l'accueil ou l'icône DP-FLIX, ouvrez votre bibliothèque hors ligne. Vous pouvez suivre la progression, classer, lire, sélectionner plusieurs éléments et gérer les dossiers. Un téléchargement peut continuer en arrière-plan ; évitez de forcer la fermeture de l'application pendant un gros transfert."
         )
     )
     UserGuideTopic.SettingsHelp -> listOf(
         UserGuideBlockData(
             "Général",
-            "• Qualité vidéo maximale par défaut pour les chaînes.\n" +
-                "• Reprise de la dernière chaîne au démarrage.\n" +
-                "• Playlist par défaut.\n" +
-                "• URLs Stream 1, Stream 2 et Stream 3 (Films et Séries).\n" +
-                "• Réinitialisation complète — irréversible."
+            "• Qualité vidéo maximale par défaut pour les chaînes.\n• Reprise de la dernière chaîne au démarrage.\n• Playlist par défaut.\n• Paramètres des streams Films et Séries.\n• Réinitialisation complète — irréversible."
         ),
         UserGuideBlockData(
             "Lecteur",
-            "• Mode direct, marge de sécurité du tampon, cache RAM, tampon hybride, " +
-                "préchargement initial, cache disque.\n\n" +
-                "Connexion stable / sport → mode direct. Connexion instable → augmentez la marge."
+            "• Mode direct, marge de sécurité du tampon, cache RAM, tampon hybride, préchargement initial et cache disque.\n\nConnexion stable / sport → mode direct. Connexion instable → augmentez la marge."
+        ),
+        UserGuideBlockData(
+            title = "Mode Direct — retour au direct réel",
+            body = "Lorsque vous passez en mode Direct, la logique de retard volontaire doit être désactivée : la lecture doit revenir au direct réel. Si le retard continue de compter, vérifiez le comportement côté TV et mobile et utilisez le Diagnostic système pour recueillir les informations nécessaires.",
+            imageRes = R.drawable.guide_direct_mode,
+            imageCaption = "Mode Direct : le retard volontaire est désactivé"
         ),
         UserGuideBlockData(
             "Playlists & numérotation",
-            "• Playlists : ajout, activation, édition, suppression.\n" +
-                "• Numérotation : numéros personnalisés pour le zapping numérique."
+            "• Playlists : ajout, activation, édition, suppression.\n• Numérotation : numéros personnalisés pour le zapping numérique."
         ),
         UserGuideBlockData(
-            "Diagnostic",
-            "Pendant une lecture : débit, tampon, résolution, écart au direct, segments, cache, erreurs."
+            "Diagnostic lecture",
+            "Pendant une lecture, ce diagnostic aide à observer le débit, le tampon, la résolution, l'écart au direct, les segments, le cache et les erreurs du lecteur."
+        ),
+        UserGuideBlockData(
+            title = "Diagnostic système — analyse temporaire",
+            body = "Le Diagnostic système est désactivé par défaut. Depuis les Réglages, activez-le uniquement lorsque vous cherchez un problème. Une session d'analyse dure 10 minutes. Pendant cette période, l'application surveille les actions effectuées et analyse les informations disponibles liées aux requêtes, réponses HTTP, redirections, User-Agent, cookies présents ou absents, WebView, chargements, téléchargements, types de fichiers et lecture.\n\nLe but est de rechercher la cause technique d'un échec et pas seulement d'afficher « action échouée ». À la fin des 10 minutes, la surveillance s'arrête automatiquement et un rapport est généré.",
+            imageRes = R.drawable.guide_system_diagnostic,
+            imageCaption = "Diagnostic système : activation, analyse pendant 10 minutes et rapport"
+        ),
+        UserGuideBlockData(
+            title = "Comprendre le rapport",
+            body = "Le rapport distingue les éléments constatés des causes seulement probables. Il peut détailler un code HTTP, une redirection, un délai d'attente, un User-Agent absent, un cookie requis manquant, un type de contenu inattendu, un refus de téléchargement, un problème WebView ou une incompatibilité de fichier.\n\nLes valeurs sensibles (mots de passe, jetons et contenu des cookies) ne doivent pas être conservées dans le rapport.",
+            imageRes = R.drawable.guide_system_diagnostic,
+            imageCaption = "Rapport technique : comprendre où et pourquoi une action a échoué"
         )
     )
     UserGuideTopic.Troubleshooting -> listOf(
@@ -303,24 +388,38 @@ fun userGuideContentFor(topic: UserGuideTopic): List<UserGuideBlockData> = when 
             "La chaîne doit avoir l'archive activée chez le fournisseur."
         ),
         UserGuideBlockData(
-            "Flèche de téléchargement invisible (Stream 1 / 3)",
-            "Jamais en plein écran web. Sortez du plein écran, laissez le média charger."
-        ),
-        UserGuideBlockData(
-            "Quel lien (Stream 1 — Purstream)",
-            "Privilégiez le lien HLS contenant « 720p »."
-        ),
-        UserGuideBlockData(
-            "Stream 2 (French-Stream) : rien ne se télécharge",
-            "Utilisez la flèche à côté de l'épisode, pas seulement la ↓ en haut de DP-FLIX."
-        ),
-        UserGuideBlockData(
-            "Stream 3 (MovieBox) : « Dans l'appli » ne marche pas",
-            "Normal : l'appli tierce n'est pas disponible ici. Utilisez « Regarder en ligne », puis ↓."
+            "Flèche de téléchargement invisible",
+            "Sortez du plein écran web et laissez le média charger. La nouvelle icône DP-FLIX reste disponible dans la barre supérieure pour accéder aux fonctions de téléchargement."
         ),
         UserGuideBlockData(
             "Films & Séries ne charge pas",
-            "Vérifiez les URLs Stream 1 / 2 / 3 dans Réglages → Général, et votre connexion."
+            "Vérifiez votre connexion et les paramètres du stream. Si le problème persiste, activez le Diagnostic système pendant 10 minutes et reproduisez le problème.",
+            imageRes = R.drawable.guide_system_diagnostic,
+            imageCaption = "Utiliser le Diagnostic système pour identifier la cause"
+        ),
+        UserGuideBlockData(
+            "Focus TV difficile à voir",
+            "Le focus de la chaîne sélectionnée doit être clairement visible avant l'ouverture du mini-lecteur. Déplacez le D-pad : la carte ciblée doit être immédiatement identifiable.",
+            imageRes = R.drawable.guide_tv_focus,
+            imageCaption = "Focus TV visible sur la chaîne actuellement ciblée"
+        ),
+        UserGuideBlockData(
+            "Le retard continue en mode Direct",
+            "Le mode Direct est censé supprimer le retard volontaire. Vérifiez le comportement sur TV et mobile. Si le problème est reproductible, activez le Diagnostic système puis reproduisez le passage en Direct.",
+            imageRes = R.drawable.guide_direct_mode,
+            imageCaption = "Mode Direct : vérifier que la lecture revient au direct réel"
+        ),
+        UserGuideBlockData(
+            "Téléchargements : sélectionner plusieurs fichiers",
+            "Maintenez un fichier pour entrer en mode sélection, sélectionnez les éléments voulus ou utilisez « Tout sélectionner ». La même procédure fonctionne dans les dossiers.",
+            imageRes = R.drawable.guide_downloads_multi,
+            imageCaption = "Sélection multiple dans la bibliothèque"
+        ),
+        UserGuideBlockData(
+            "Lecture continue : l'épisode suivant ne démarre pas",
+            "Vérifiez que les épisodes appartiennent à la même liste et que leur ordre est correct. Le bouton ⏭ permet de passer manuellement au programme suivant.",
+            imageRes = R.drawable.guide_continuous_playback,
+            imageCaption = "Lecture continue d'une saison"
         )
     )
 }
