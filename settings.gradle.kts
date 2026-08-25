@@ -16,3 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "DP-Flix"
 include(":app")
+include(":tvflix")

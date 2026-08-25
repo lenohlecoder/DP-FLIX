@@ -118,5 +118,8 @@ dependencies {
     // Images (logo de la chaîne dans l'OSD, étape 8a)
     implementation(libs.coil.compose)
 
+    // Module TV : WebView desktop + curseur D-pad (Films & Séries, mode TV)
+    implementation(project(":tvflix"))
+
 }
 

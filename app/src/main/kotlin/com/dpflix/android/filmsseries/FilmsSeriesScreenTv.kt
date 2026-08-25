@@ -35,7 +35,11 @@ fun FilmsSeriesScreenTv(
         appRepository = appRepository,
         onNavigateHome = onNavigateHome,
         streamIndex = streamIndex,
-        showVirtualCursor = true,
+        // TvFlix fournit le WebView desktop et le curseur D-pad. Le reste de
+        // FilmsSeriesScreen est inchangé : téléchargement, sniffer, blocage des
+        // redirections, historique, plein écran, menus et persistance WebView.
+        showVirtualCursor = false,
+        useTvFlix = true,
         downloadManager = downloadManager,
         onOpenDownloads = onOpenDownloads,
         modifier = modifier

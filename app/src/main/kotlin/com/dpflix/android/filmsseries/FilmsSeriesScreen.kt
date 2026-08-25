@@ -7,6 +7,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
@@ -88,6 +89,8 @@ import androidx.compose.ui.window.Dialog
 import com.dpflix.android.filmsseries.download.FilmDownloadManager
 import com.dpflix.android.filmsseries.stream.DetectedStream
 import com.dpflix.android.filmsseries.stream.StreamSniffer
+import com.djamylova.tvflix.TvFlixWebView
+import com.djamylova.tvflix.cursor.CursorLayout
 import com.dpflix.android.repository.AppRepository
 import com.dpflix.android.settings.GeneralSettings
 import com.dpflix.android.settings.DiagnosticSystemMonitor
@@ -170,6 +173,10 @@ fun FilmsSeriesScreen(
     onNavigateHome: () -> Unit,
     streamIndex: Int = 1,
     showVirtualCursor: Boolean = false,
+    /** Utilise le moteur TvFlix uniquement pour le rendu/curseur TV. Toutes les
+     * fonctionnalités de cet écran (téléchargement, anti-redirection, navigation,
+     * sniffer, plein écran, historique, etc.) restent celles de FilmsSeriesScreen. */
+    useTvFlix: Boolean = false,
     downloadManager: FilmDownloadManager? = null,
     onOpenDownloads: (() -> Unit)? = null,
     modifier: Modifier = Modifier
@@ -332,8 +339,9 @@ fun FilmsSeriesScreen(
                     url = url,
                     sniffer = sniffer,
                     preferDesktopUserAgent = streamIndex == 3,
-                    forceSoftwareLayer = showVirtualCursor,
-                    strictDomainLock = generalSettings?.strictDomainLock == true,
+                    forceSoftwareLayer = showVirtualCursor || useTvFlix,
+                    useTvFlix = useTvFlix,
+                    strictDomainLock = true, // Politique Films/Séries : navigation principale strictement whitelistée.
                     savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
                     onSaveState = { bundle ->
                         webViewStateBundle = bundle
@@ -346,14 +354,11 @@ fun FilmsSeriesScreen(
                     ),
                     onWebViewCreated = { webView ->
                         webViewRef.value = webView
-                        if (showVirtualCursor) {
-                            // Empêche la page de capter le focus D-pad : toutes les
-                            // pressions doivent remonter au gestionnaire de curseur
-                            // ci-dessus, jamais au contenu de la WebView elle-même.
+                        if (showVirtualCursor && !useTvFlix) {
+                            // Curseur historique mobile/TV conservé uniquement pour
+                            // compatibilité. En TV, TvFlix CursorLayout prend le relais.
                             webView.isFocusable = false
                             webView.isFocusableInTouchMode = false
-                            // Double filet Z-order (au cas où le factory n'aurait pas
-                            // encore appliqué forceSoftwareLayer).
                             webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                         }
                     },
@@ -388,7 +393,7 @@ fun FilmsSeriesScreen(
         }
 
         val offset = cursorOffset
-        if (showVirtualCursor && offset != null) {
+        if (showVirtualCursor && !useTvFlix && offset != null) {
             // Fix (16 août 2026) : voir doc de [VirtualCursorView] plus bas — une View
             // interop (la WebView) dessine toujours par-dessus le contenu Compose composé
             // après elle, curseur donc invisible tant qu'il restait un Composable pur.
@@ -446,7 +451,7 @@ fun FilmsSeriesScreen(
             ExceptionDomainsDialog(
                 domains = generalSettings?.extraAllowedDomains
                     ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
-                strictDomainLock = generalSettings?.strictDomainLock == true,
+                strictDomainLock = true, // Politique Films/Séries : navigation principale strictement whitelistée.
                 onStrictDomainLockChange = { enabled ->
                     scope.launch {
                         appRepository.settings.updateGeneralSettings { current ->
@@ -1070,53 +1075,6 @@ private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<
  *
  * Liste volontairement courte et ciblée — à enrichir si besoin.
  */
-private val KNOWN_AD_REDIRECT_HOSTS: Set<String> = setOf(
-    "doubleclick.net",
-    "googlesyndication.com",
-    "googleadservices.com",
-    "advertising.com",
-    "adnxs.com",
-    "adservice.google.com",
-    "pagead2.googlesyndication.com",
-    "popads.net",
-    "popcash.net",
-    "propellerads.com",
-    "propellerclick.com",
-    "adsterra.com",
-    "juicyads.com",
-    "exoclick.com",
-    "clickadu.com",
-    "trafficjunky.com",
-    "realsrv.com",
-    "tsyndicate.com",
-    "ad-maven.com",
-    "adcash.com",
-    "bidvertiser.com",
-    "openx.net",
-    "pubmatic.com",
-    "rubiconproject.com",
-    "taboola.com",
-    "outbrain.com",
-    "mgid.com",
-    "revcontent.com",
-)
-
-/**
- * `host` (déjà normalisé — minuscule, sans `www.`) est-il [KNOWN_AD_REDIRECT_HOSTS] ou un
- * sous-domaine de l'un de ces hôtes ?
- *
- * Appelée dans [LockedWebView.shouldOverrideUrlLoading] **avant** les exemptions
- * `request.isRedirect` / `request.hasGesture()` du mode ouvert : un tap-hijack (calque
- * publicitaire invisible qui capte le tap "lecture" de l'utilisateur) est justement une
- * navigation avec `hasGesture() == true`, et une régie pub peut tout autant être atteinte
- * via un redirect HTTP 3xx classique — si ces deux cas étaient vérifiés avant celui-ci, la
- * liste noire ne bloquerait plus jamais rien en pratique.
- */
-private fun isKnownAdRedirectHost(host: String): Boolean {
-    if (host.isEmpty()) return false
-    return KNOWN_AD_REDIRECT_HOSTS.any { base -> host == base || host.endsWith(".$base") }
-}
-
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 private fun LockedWebView(
@@ -1124,12 +1082,13 @@ private fun LockedWebView(
     sniffer: StreamSniffer,
     extraAllowedHosts: Set<String> = emptySet(),
     /**
-     * Verrouillage strict de domaine (whitelist exclusive) : `false` par défaut →
-     * navigation ouverte + filtrage soft des hôtes pub connus ([KNOWN_AD_REDIRECT_HOSTS]).
-     * `true` = seuls le domaine principal, l'infra du stream et [extraAllowedHosts] passent.
+     * Verrouillage strict de domaine (whitelist exclusive) : `true` par défaut.
+     * Toute navigation principale hors du domaine principal et [extraAllowedHosts] est bloquée,
+     * y compris les redirections et les schémas externes. Les sous-ressources restent autorisées
+     * pour ne pas casser les CDN/segments nécessaires au lecteur.
      * Voir doc de classe de `FilmsSeriesScreen` (§ Verrouillage du navigateur).
      */
-    strictDomainLock: Boolean = false,
+    strictDomainLock: Boolean = true,
     savedState: Bundle? = null,
     onSaveState: (Bundle) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit,
@@ -1138,6 +1097,8 @@ private fun LockedWebView(
     onRendererGone: () -> Unit = {},
     /** TV : UA bureau pour limiter les pages vides / versions mobiles cassées. */
     preferDesktopUserAgent: Boolean = false,
+    /** Utilise TvFlixWebView + CursorLayout comme moteur TV. */
+    useTvFlix: Boolean = false,
     /**
      * TV + curseur : force [View.LAYER_TYPE_SOFTWARE] pour éviter le punch-through
      * SurfaceView de la WebView qui cache le curseur (Z-order SurfaceFlinger).
@@ -1163,7 +1124,12 @@ private fun LockedWebView(
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
-            WebView(ctx).apply {
+            // Référence tardive : le WebChromeClient est installé avant la création du
+            // CursorLayout, mais onShowCustomView() n'arrive qu'après le rendu de la page.
+            // Elle permet donc de faire passer le plein écran vidéo DANS CursorLayout.
+            var tvCursorLayout: CursorLayout? = null
+
+            val webView = (if (useTvFlix) TvFlixWebView(ctx) else WebView(ctx)).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -1213,65 +1179,50 @@ private fun LockedWebView(
                 setOnLongClickListener { true }
 
                 webViewClient = object : WebViewClient() {
+                    /**
+                     * Politique de navigation Films/Séries : aucune navigation principale
+                     * externe n'est autorisée. Les redirections HTTP 3xx, location.href,
+                     * window.open(), intent://, tel:, market:, etc. ne peuvent donc pas
+                     * sortir de la whitelist. Les sous-ressources (CDN, segments vidéo,
+                     * images, JS) ne passent pas par cette méthode et restent disponibles
+                     * au lecteur ; leur domaine peut être ajouté à extraAllowedHosts.
+                     */
+                    private fun isAllowedMainFrameUri(uri: Uri): Boolean {
+                        val scheme = uri.scheme?.lowercase()
+                        if (scheme != "http" && scheme != "https") return false
+                        // Le paramètre reste disponible pour des intégrations hôtes qui
+                        // choisissent explicitement le mode ouvert. DP-FLIX Films/Séries
+                        // force actuellement le mode strict.
+                        if (!strictDomainLock) return true
+                        val host = uri.host?.lowercase()?.removePrefix("www.") ?: return false
+                        val isMainDomain = allowedHostNormalized != null &&
+                            (host == allowedHostNormalized || host.endsWith(".$allowedHostNormalized"))
+                        val isExtraAllowed = normalizedExtraHosts.any { extra ->
+                            host == extra || host.endsWith(".$extra")
+                        }
+                        return isMainDomain || isExtraAllowed
+                    }
+
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: WebResourceRequest
                     ): Boolean {
-                        // Schémas non-web (intent:, market:, tel:, etc.) : jamais suivis,
-                        // pour ne jamais sortir de l'app vers un handler externe opaque.
-                        val scheme = request.url.scheme?.lowercase()
-                        if (scheme != "http" && scheme != "https") {
-                            return true
-                        }
-                        val host = request.url.host?.lowercase()?.removePrefix("www.") ?: return true
-                        // Domaine du stream + tous ses sous-domaines (ex. api.purstream.store).
-                        val isMainDomain = allowedHostNormalized != null &&
-                            (host == allowedHostNormalized ||
-                                host.endsWith(".$allowedHostNormalized"))
-                        // Infra du stream + domaines d'exception Réglages (CDN téléchargement,
-                        // API, assets). Sous-domaines inclus.
-                        val isExtraAllowed = normalizedExtraHosts.any { extra ->
-                            host == extra || host.endsWith(".$extra")
-                        }
-                        val isAllowed = isMainDomain || isExtraAllowed
+                        // Ne bloque jamais les sous-ressources : cette méthode concerne
+                        // uniquement les navigations. Les segments vidéo/CDN restent donc
+                        // consommables par le lecteur même lorsque leur domaine est externe.
+                        if (!request.isForMainFrame) return false
+                        return !isAllowedMainFrameUri(request.url)
+                    }
 
-                        // --- Mode STRICT (whitelist exclusive) ---
-                        if (strictDomainLock) {
-                            return !isAllowed
-                        }
-
-                        // --- Mode ouvert + protection soft (défaut, style navigateur TV) ---
-                        if (isAllowed) {
-                            return false
-                        }
-                        // Reste sur le même hôte (ou un sous/sur-domaine) que la page
-                        // actuellement affichée : navigation interne normale du site.
-                        val currentHost = view.url?.let { u ->
-                            Uri.parse(u).host?.lowercase()?.removePrefix("www.")
-                        }
-                        if (currentHost != null && (
-                                host == currentHost ||
-                                    host.endsWith(".$currentHost") ||
-                                    currentHost.endsWith(".$host")
-                                )
-                        ) {
-                            return false
-                        }
-                        // Liste noire pub vérifiée AVANT les exemptions redirect/gesture —
-                        // voir doc de [isKnownAdRedirectHost].
-                        if (isKnownAdRedirectHost(host)) {
-                            return true
-                        }
-                        if (request.isRedirect) {
-                            return false
-                        }
-                        if (request.hasGesture()) {
-                            return false
-                        }
-                        return false
+                    @Suppress("DEPRECATION")
+                    override fun shouldOverrideUrlLoading(view: WebView, url: String): Boolean {
+                        // Compatibilité API 23 : l'ancienne surcharge est indispensable sur
+                        // certaines box Android où WebView n'appelle pas la version moderne.
+                        return !isAllowedMainFrameUri(Uri.parse(url))
                     }
 
                     override fun onPageStarted(view: WebView?, pageUrl: String?, favicon: android.graphics.Bitmap?) {
+                        if (useTvFlix) (view as? TvFlixWebView)?.injectDesktopSpoof()
                         // Nouvelle page dans l'historique du site → les flux capturés pour
                         // l'ancienne page n'ont plus cours (module téléchargement).
                         snifferState.value.resetForNewPage(pageUrl)
@@ -1299,6 +1250,10 @@ private fun LockedWebView(
                      * abandonné — l'app elle-même survit et peut revenir proprement à
                      * l'accueil (voir [onRendererGoneState] côté appelant).
                      */
+                    override fun onPageFinished(view: WebView?, pageUrl: String?) {
+                        if (useTvFlix) (view as? TvFlixWebView)?.injectDesktopSpoof()
+                    }
+
                     override fun onReceivedHttpError(
                         view: WebView?,
                         request: WebResourceRequest?,
@@ -1395,6 +1350,12 @@ private fun LockedWebView(
                     private var customView: View? = null
                     private var customViewCallback: CustomViewCallback? = null
                     private var originalSystemUiVisibility: Int = 0
+                    // Mémorise le chemin réellement emprunté à l'ouverture (CursorLayout TV
+                    // ou decor de l'Activity), pour que la fermeture nettoie exactement le
+                    // même endroit — plus de déduction a posteriori depuis useTvFlix/
+                    // isFullscreenViewShown(), qui pouvait diverger de ce qui a été fait à
+                    // l'ouverture et laisser un removeView() sans effet.
+                    private var customViewInCursorLayout = false
 
                     override fun onReceivedTitle(view: WebView?, title: String?) {
                         // Propage le titre de la page vers l'UI Compose — utilisé pour
@@ -1416,26 +1377,47 @@ private fun LockedWebView(
                         originalSystemUiVisibility = decor.systemUiVisibility
                         customView = view
                         customViewCallback = callback
-                        decor.addView(
-                            view,
-                            FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT
+
+                        // IMPORTANT TV : le lecteur HTML5 doit rester dans le même
+                        // CursorLayout que la WebView. Le curseur est ensuite dessiné
+                        // par CursorLayout.dispatchDraw(), donc au-dessus du lecteur.
+                        // Cela rend le plein écran et le mini-player navigables au D-pad.
+                        val cursorLayout = tvCursorLayout
+                        customViewInCursorLayout = useTvFlix && cursorLayout != null
+                        if (customViewInCursorLayout) {
+                            cursorLayout?.showFullscreenView(view)
+                        } else {
+                            decor.addView(
+                                view,
+                                FrameLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT,
+                                    ViewGroup.LayoutParams.MATCH_PARENT
+                                )
                             )
-                        )
+                        }
+
                         decor.systemUiVisibility = (
                             View.SYSTEM_UI_FLAG_FULLSCREEN
                                 or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
                                 or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                             )
+                        // La vidéo plein écran ne doit jamais être coupée par la mise en
+                        // veille de l'écran (TV/box restée immobile devant un film).
+                        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
                         onFullscreenState.value(true)
                     }
 
                     override fun onHideCustomView() {
                         val activity = context as? android.app.Activity
                         val decor = activity?.window?.decorView as? FrameLayout
-                        customView?.let { decor?.removeView(it) }
+                        if (customViewInCursorLayout) {
+                            tvCursorLayout?.hideFullscreenView(notify = false)
+                        } else {
+                            customView?.let { decor?.removeView(it) }
+                        }
                         decor?.systemUiVisibility = originalSystemUiVisibility
+                        activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                        customViewInCursorLayout = false
                         customViewCallback?.onCustomViewHidden()
                         customView = null
                         customViewCallback = null
@@ -1456,23 +1438,46 @@ private fun LockedWebView(
 
                 if (savedState != null) {
                     // Restaure l'historique de navigation (page + pile retour) au lieu de
-                    // repartir de l'accueil du site — voir le commentaire sur
-                    // `webViewStateBundle` dans `FilmsSeriesScreen`. `onPageStarted`
-                    // (ci-dessus) se charge de resynchroniser le sniffer avec la VRAIE page
-                    // restaurée dès que la navigation démarre ; inutile de le faire ici
-                    // avec [url], qui ne correspond qu'à la racine du site.
+                    // repartir de l'accueil du site.
                     restoreState(savedState)
                 } else {
                     snifferState.value.resetForNewPage(url)
                     loadUrl(url)
                 }
-            }.also(onWebViewCreated)
+            }
+
+            if (useTvFlix) {
+                val cursor = CursorLayout(ctx).apply {
+                    layoutParams = ViewGroup.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT
+                    )
+                    cursorEnabled = true
+                    // Le curseur TV doit être le seul destinataire du D-pad.
+                    descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                }
+                cursor.addView(webView)
+                tvCursorLayout = cursor
+                onWebViewCreated(webView)
+                cursor
+            } else {
+                onWebViewCreated(webView)
+                webView
+            }
         },
-        onRelease = { webView ->
-            val bundle = Bundle()
-            webView.saveState(bundle)
-            onSaveState(bundle)
-            webView.destroy()
+        onRelease = { container ->
+            val webView = if (container is CursorLayout) {
+                container.getChildAt(0) as? WebView
+            } else {
+                container as? WebView
+            }
+            webView?.let {
+                val bundle = Bundle()
+                it.saveState(bundle)
+                onSaveState(bundle)
+                it.stopLoading()
+                it.destroy()
+            }
         }
     )
 }
