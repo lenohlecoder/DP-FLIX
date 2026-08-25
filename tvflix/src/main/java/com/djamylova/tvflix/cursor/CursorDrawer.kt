@@ -59,6 +59,20 @@ class CursorDrawer(
     // Long press
     private val longPressTimeout = ViewConfiguration.getLongPressTimeout() + 100L
     private var longPressTriggered = false
+    private var pendingClickUp = false
+    private var pendingClickX = 0f
+    private var pendingClickY = 0f
+    private val MIN_CLICK_HOLD_MS = 32L
+    private val clickUpRunnable = Runnable {
+        if (pendingClickUp && isPressed && !longPressTriggered) {
+            injectMouseEvent(pendingClickX, pendingClickY, MotionEvent.ACTION_UP)
+        }
+        pendingClickUp = false
+        isPressed = false
+        longPressTriggered = false
+        surface.invalidate()
+        scheduleHide()
+    }
 
     // ——— Scroll bord d’écran (Étape 5) ———
     private var scrollStartPadding = 100
@@ -70,7 +84,7 @@ class CursorDrawer(
     var useScrollHack: Boolean = true
 
     // ——— Config vitesse ———
-    private var maxSpeedBaselinePx: Float = 40f
+    private var maxSpeedBaselinePx: Float = 52f
     var maxSpeedPercent: Int = 100
     var accelerationPercent: Int = 100
 
@@ -82,6 +96,7 @@ class CursorDrawer(
     // ——— Handlers ———
     private val hideHandler = Handler(Looper.getMainLooper())
     private val longPressHandler = Handler(Looper.getMainLooper())
+    private val clickHandler = Handler(Looper.getMainLooper())
 
     private val hideRunnable = Runnable {
         isVisible = false
@@ -91,6 +106,8 @@ class CursorDrawer(
     private val longPressRunnable = Runnable {
         if (isPressed && !longPressTriggered) {
             longPressTriggered = true
+            pendingClickUp = false
+            clickHandler.removeCallbacks(clickUpRunnable)
             injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_CANCEL)
             isPressed = false
             surface.invalidate()
@@ -128,7 +145,7 @@ class CursorDrawer(
             lastCursorUpdate = now
 
             val speedCap = maxSpeedBaselinePx * (maxSpeedPercent / 100f)
-            val accelerationFactor = 0.05f * (accelerationPercent / 100f) * dTime
+            val accelerationFactor = 0.065f * (accelerationPercent / 100f) * dTime
 
             cursorSpeed.x = bound(
                 cursorSpeed.x + bound(cursorDirection.x.toFloat(), 1f) * accelerationFactor,
@@ -219,7 +236,7 @@ class CursorDrawer(
         cursorRadius = (size.x / 100f).coerceIn(16f, 40f)
         cursorRadiusPressed = cursorRadius * 0.75f
         strokeWidth = (size.x / 400f).coerceIn(2f, 5f)
-        maxSpeedBaselinePx = (size.x / 25f).coerceIn(20f, 80f)
+        maxSpeedBaselinePx = (size.x / 20f).coerceIn(28f, 96f)
         scrollStartPadding = size.x / 15
     }
 
@@ -509,7 +526,15 @@ class CursorDrawer(
                         scrollHackStarted = false
                     }
 
+                    // Termine proprement le flux de survol avant le clic.
+                    // Certains anciens Chromium embarqués ignorent un DOWN qui arrive
+                    // directement après un HOVER_MOVE.
+                    if (hoverEntered) {
+                        injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_HOVER_EXIT)
+                        hoverEntered = false
+                    }
                     isPressed = true
+                    pendingClickUp = false
                     longPressTriggered = false
                     isVisible = true
                     injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_DOWN)
@@ -521,12 +546,29 @@ class CursorDrawer(
             KeyEvent.ACTION_UP -> {
                 longPressHandler.removeCallbacks(longPressRunnable)
                 if (isPressed && !longPressTriggered) {
-                    injectMouseEvent(cursorX, cursorY, MotionEvent.ACTION_UP)
+                    // Garantit une durée DOWN suffisamment longue pour les vieux WebView.
+                    // Sinon DOWN et UP peuvent être fusionnés dans la même frame.
+                    val elapsed = SystemClock.uptimeMillis() - downTime
+                    val remaining = (MIN_CLICK_HOLD_MS - elapsed).coerceAtLeast(0L)
+                    pendingClickX = cursorX
+                    pendingClickY = cursorY
+                    if (remaining == 0L) {
+                        injectMouseEvent(pendingClickX, pendingClickY, MotionEvent.ACTION_UP)
+                        isPressed = false
+                        longPressTriggered = false
+                        surface.invalidate()
+                        scheduleHide()
+                    } else {
+                        pendingClickUp = true
+                        clickHandler.removeCallbacks(clickUpRunnable)
+                        clickHandler.postDelayed(clickUpRunnable, remaining)
+                    }
+                } else {
+                    isPressed = false
+                    longPressTriggered = false
+                    surface.invalidate()
+                    scheduleHide()
                 }
-                isPressed = false
-                longPressTriggered = false
-                surface.invalidate()
-                scheduleHide()
                 return true
             }
         }
@@ -594,15 +636,21 @@ class CursorDrawer(
         )
 
         try {
-            // Bug 1 (corrigé) : le hover ne passe PAS par dispatchTouchEvent
-            // (réservé aux vrais événements tactiles DOWN/MOVE/UP/CANCEL) mais
-            // par dispatchGenericMotionEvent, le circuit utilisé par Android pour
-            // la souris/trackball. CursorLayout.dispatchGenericMotionEvent relaie
-            // déjà les événements non gérés à ses enfants (donc à la WebView).
+            // Les actions souris de survol suivent le circuit GenericMotion.
+            // Les actions de bouton (DOWN/UP) suivent le circuit tactile, qui est
+            // celui que WebView/Chromium utilise pour déclencher click/onclick.
+            // On passe d'abord par le ViewGroup pour que le child réellement visé
+            // reçoive une séquence complète DOWN -> UP avec le même downTime.
             if (isHoverAction(action)) {
                 surface.dispatchGenericMotionEvent(event)
             } else {
-                surface.dispatchTouchEvent(event)
+                val handled = surface.dispatchTouchEvent(event)
+                if (!handled) {
+                    // Certaines anciennes WebView sont plus strictes avec les
+                    // événements synthétiques de souris : tente aussi le circuit
+                    // générique sans dupliquer un clic déjà accepté.
+                    surface.dispatchGenericMotionEvent(event)
+                }
             }
         } finally {
             event.recycle()

@@ -20,8 +20,8 @@ import com.djamylova.tvflix.TvFlixNavigator
  * Contrôles :
  * - D-pad : déplacer le curseur
  * - OK / Centre : clic
- * - Menu / Info : afficher/masquer la barre d'adresse de test
- *   (appui long ou double-appui rapide : dialogue « À propos »)
+ * - Menu / Info / SEARCH / SETTINGS : afficher/masquer la barre d'adresse
+ * - Double-appui rapide sur BACK : afficher/masquer la barre sur les télécommandes génériques
  * - Channel+ / Channel− (si dispo) : zoom in / out
  * - Back : historique WebView, sinon quitter
  *
@@ -36,6 +36,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var navigator: TvFlixNavigator
     private lateinit var addressBar: View
     private lateinit var urlInput: EditText
+    private var lastBackDownTime = 0L
+    private var backDoublePress = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -133,7 +135,10 @@ class MainActivity : AppCompatActivity() {
         when (keyCode) {
             // Menu / Info : afficher/masquer la barre d'adresse de test
             KeyEvent.KEYCODE_MENU,
-            KeyEvent.KEYCODE_INFO -> {
+            KeyEvent.KEYCODE_INFO,
+            KeyEvent.KEYCODE_SEARCH,
+            KeyEvent.KEYCODE_SETTINGS,
+            KeyEvent.KEYCODE_GUIDE -> {
                 toggleAddressBar()
                 return true
             }
@@ -153,16 +158,31 @@ class MainActivity : AppCompatActivity() {
                 navigator.zoomOut()
                 return true
             }
-            // Retour
+            // Retour : double-appui rapide = barre d'adresse, appui simple = retour normal.
             KeyEvent.KEYCODE_BACK -> {
-                if (::addressBar.isInitialized && addressBar.visibility == View.VISIBLE) {
-                    addressBar.visibility = View.GONE
+                val now = event?.eventTime ?: android.os.SystemClock.uptimeMillis()
+                if (event?.repeatCount ?: 0 > 0) return true
+                if (now - lastBackDownTime <= 450L) {
+                    lastBackDownTime = 0L
+                    backDoublePress = true
+                    toggleAddressBar()
                     return true
                 }
-                if (navigator.canGoBack()) {
-                    navigator.goBack()
-                    return true
-                }
+                lastBackDownTime = now
+                window.decorView.postDelayed({
+                    if (!backDoublePress && lastBackDownTime == now) {
+                        lastBackDownTime = 0L
+                        if (::addressBar.isInitialized && addressBar.visibility == View.VISIBLE) {
+                            addressBar.visibility = View.GONE
+                        } else if (navigator.canGoBack()) {
+                            navigator.goBack()
+                        } else {
+                            super.onBackPressed()
+                        }
+                    }
+                    backDoublePress = false
+                }, 450L)
+                return true
             }
         }
         return super.onKeyDown(keyCode, event)

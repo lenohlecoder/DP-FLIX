@@ -1,0 +1,31 @@
+diff --git a/tvflix/src/main/java/com/djamylova/tvflix/cursor/CursorDrawer.kt b/tvflix/src/main/java/com/djamylova/tvflix/cursor/CursorDrawer.kt
+index e3e2e8c..2983f25 100644
+--- a/tvflix/src/main/java/com/djamylova/tvflix/cursor/CursorDrawer.kt
++++ b/tvflix/src/main/java/com/djamylova/tvflix/cursor/CursorDrawer.kt
+@@ -472,8 +472,24 @@ class CursorDrawer(
+             // discontinuité de temps ni redémarrage inutile de son cadencement.
+ 
+         } else if (event.action == KeyEvent.ACTION_UP) {
+-            if (dirX != UNCHANGED) cursorDirection.x = 0
+-            if (dirY != UNCHANGED) cursorDirection.y = 0
++            // Bug principal (fix « le curseur continue après relâchement ») : le modèle
++            // ci-dessus n'a AUCUN terme de freinage. Quand cursorDirection revient à 0,
++            // le facteur d'accélération devient 0 * accelerationFactor = 0, donc
++            // cursorSpeed reste tel quel — il ne redescend jamais tout seul vers 0. La
++            // boucle ne s'arrête que quand cursorSpeed == 0f exactement (voir plus haut),
++            // ce qui n'arrivait donc jamais après un appui ayant fait décoller la
++            // vitesse : le curseur continuait indéfiniment à cette vitesse résiduelle,
++            // même après un simple appui bref. On stoppe donc explicitement la vitesse
++            // de l'axe relâché ici, plutôt que de compter sur une décélération
++            // progressive qui n'existait pas.
++            if (dirX != UNCHANGED) {
++                cursorDirection.x = 0
++                cursorSpeed.x = 0f
++            }
++            if (dirY != UNCHANGED) {
++                cursorDirection.y = 0
++                cursorSpeed.y = 0f
++            }
+ 
+             // Arrête le scroll hack dès qu’on relâche la direction
+             if (cursorDirection.x == 0 && cursorDirection.y == 0 && scrollHackStarted) {

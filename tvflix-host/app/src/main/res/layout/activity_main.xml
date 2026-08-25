@@ -1,16 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
     android:keepScreenOn="true">
 
-    <!--
-        Barre d'adresse de test (Étape 11).
-        Permet de changer l'URL directement à la télécommande, sans recompiler,
-        pour comparer rapidement plusieurs sites (stream 1 / 2 / 3).
-        Masquable via le bouton MENU de la télécommande (voir MainActivity.toggleAddressBar()).
-    -->
+    <FrameLayout
+        android:id="@+id/container"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
     <LinearLayout
         android:id="@+id/address_bar"
         android:layout_width="match_parent"
@@ -18,7 +16,8 @@
         android:orientation="horizontal"
         android:background="#CC000000"
         android:padding="8dp"
-        android:gravity="center_vertical">
+        android:gravity="center_vertical"
+        android:elevation="12dp">
 
         <EditText
             android:id="@+id/url_input"
@@ -41,11 +40,4 @@
             android:layout_marginStart="8dp"
             android:text="Aller" />
     </LinearLayout>
-
-    <FrameLayout
-        android:id="@+id/container"
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
-
-</LinearLayout>
+</FrameLayout>

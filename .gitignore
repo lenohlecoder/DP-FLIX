@@ -1,0 +1,7 @@
+tvflix-host/.gradle/
+tvflix-host/build/
+tvflix-host/local.properties
+.gradle/
+build/
+*.iml
+.idea/

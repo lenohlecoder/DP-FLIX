@@ -1,0 +1,357 @@
+diff --git a/app/src/main/kotlin/com/dpflix/android/nav/DpFlixNavHost.kt b/app/src/main/kotlin/com/dpflix/android/nav/DpFlixNavHost.kt
+index 68dec3a..2b879ec 100644
+--- a/app/src/main/kotlin/com/dpflix/android/nav/DpFlixNavHost.kt
++++ b/app/src/main/kotlin/com/dpflix/android/nav/DpFlixNavHost.kt
+@@ -330,6 +330,7 @@ fun DpFlixNavHost(
+         composable(DpFlixDestination.Settings.route) {
+             SettingsScreen(
+                 appRepository = appRepository,
++                accessRepository = accessRepository,
+                 onBack = { navController.popBackStack() },
+                 onResetComplete = {
+                     navController.navigate(DpFlixDestination.Onboarding.route) {
+@@ -346,6 +347,7 @@ fun DpFlixNavHost(
+             val channelId = backStackEntry.arguments?.getString(DpFlixDestination.ARG_CHANNEL_ID).orEmpty()
+             ResolvedChannelPlayer(
+                 appRepository = appRepository,
++                accessRepository = accessRepository,
+                 channelId = channelId,
+                 onBack = { navController.popBackStack() },
+                 onNavigateToReplay = { fromChannelId ->
+@@ -381,6 +383,7 @@ fun DpFlixNavHost(
+             )
+             ResolvedChannelReplayPlayer(
+                 appRepository = appRepository,
++                accessRepository = accessRepository,
+                 channelId = channelId,
+                 program = program,
+                 onBack = { navController.popBackStack() },
+@@ -412,6 +415,7 @@ private const val POST_STARTUP_VIDEO_ROUTE = "post_startup_video_routing"
+ @Composable
+ private fun ResolvedChannelPlayer(
+     appRepository: AppRepository,
++    accessRepository: AccessRepository,
+     channelId: String,
+     onBack: () -> Unit,
+     onNavigateToReplay: (channelId: String) -> Unit,
+@@ -431,6 +435,7 @@ private fun ResolvedChannelPlayer(
+             channel = currentChannel,
+             modifier = Modifier.fillMaxSize(),
+             appRepository = appRepository,
++            accessRepository = accessRepository,
+             onNavigateToReplay = onNavigateToReplay,
+             onRequestFullReset = onRequestFullReset
+         )
+@@ -461,6 +466,7 @@ private fun ResolvedChannelPlayer(
+ @Composable
+ private fun ResolvedChannelReplayPlayer(
+     appRepository: AppRepository,
++    accessRepository: AccessRepository,
+     channelId: String,
+     program: ReplayProgram,
+     onBack: () -> Unit,
+@@ -481,6 +487,7 @@ private fun ResolvedChannelReplayPlayer(
+             initialReplayProgram = program,
+             modifier = Modifier.fillMaxSize(),
+             appRepository = appRepository,
++            accessRepository = accessRepository,
+             onRequestFullReset = onRequestFullReset
+         )
+         notFound -> PlaceholderScreen(
+diff --git a/app/src/main/kotlin/com/dpflix/android/nav/DpFlixTvNavHost.kt b/app/src/main/kotlin/com/dpflix/android/nav/DpFlixTvNavHost.kt
+index 83a472f..72e4507 100644
+--- a/app/src/main/kotlin/com/dpflix/android/nav/DpFlixTvNavHost.kt
++++ b/app/src/main/kotlin/com/dpflix/android/nav/DpFlixTvNavHost.kt
+@@ -291,6 +291,7 @@ fun DpFlixTvNavHost(
+         composable(DpFlixDestination.Settings.route) {
+             SettingsScreenTv(
+                 appRepository = appRepository,
++                accessRepository = accessRepository,
+                 onBack = { navController.popBackStack() },
+                 onResetComplete = {
+                     navController.navigate(DpFlixDestination.Onboarding.route) {
+@@ -307,6 +308,7 @@ fun DpFlixTvNavHost(
+             val channelId = backStackEntry.arguments?.getString(DpFlixDestination.ARG_CHANNEL_ID).orEmpty()
+             ResolvedChannelPlayerTv(
+                 appRepository = appRepository,
++                accessRepository = accessRepository,
+                 channelId = channelId,
+                 onBack = { navController.popBackStack() },
+                 onNavigateToReplay = { fromChannelId ->
+@@ -340,6 +342,7 @@ fun DpFlixTvNavHost(
+             )
+             ResolvedChannelReplayPlayerTv(
+                 appRepository = appRepository,
++                accessRepository = accessRepository,
+                 channelId = channelId,
+                 program = program,
+                 onBack = { navController.popBackStack() },
+@@ -376,6 +379,7 @@ private const val TV_POST_STARTUP_VIDEO_ROUTE = "tv_post_startup_video_routing"
+ @Composable
+ private fun ResolvedChannelPlayerTv(
+     appRepository: AppRepository,
++    accessRepository: AccessRepository,
+     channelId: String,
+     onBack: () -> Unit,
+     onNavigateToReplay: (channelId: String) -> Unit,
+@@ -395,6 +399,7 @@ private fun ResolvedChannelPlayerTv(
+             channel = currentChannel,
+             modifier = Modifier.fillMaxSize(),
+             appRepository = appRepository,
++            accessRepository = accessRepository,
+             onNavigateToReplay = onNavigateToReplay,
+             onRequestFullReset = onRequestFullReset
+         )
+@@ -413,6 +418,7 @@ private fun ResolvedChannelPlayerTv(
+ @Composable
+ private fun ResolvedChannelReplayPlayerTv(
+     appRepository: AppRepository,
++    accessRepository: AccessRepository,
+     channelId: String,
+     program: ReplayProgram,
+     onBack: () -> Unit,
+@@ -433,6 +439,7 @@ private fun ResolvedChannelReplayPlayerTv(
+             initialReplayProgram = program,
+             modifier = Modifier.fillMaxSize(),
+             appRepository = appRepository,
++            accessRepository = accessRepository,
+             onRequestFullReset = onRequestFullReset
+         )
+         notFound -> TvPlaceholderScreen(title = "Chaîne introuvable", actions = listOf("Retour" to onBack))
+diff --git a/app/src/main/kotlin/com/dpflix/android/player/PlayerScreen.kt b/app/src/main/kotlin/com/dpflix/android/player/PlayerScreen.kt
+index b32026a..5a6aa28 100644
+--- a/app/src/main/kotlin/com/dpflix/android/player/PlayerScreen.kt
++++ b/app/src/main/kotlin/com/dpflix/android/player/PlayerScreen.kt
+@@ -46,6 +46,7 @@ import androidx.core.view.WindowInsetsCompat
+ import androidx.core.view.WindowInsetsControllerCompat
+ import androidx.media3.ui.PlayerView
+ import androidx.media3.ui.AspectRatioFrameLayout
++import com.dpflix.android.access.AccessRepository
+ import com.dpflix.android.settings.SettingsScreen
+ import com.dpflix.android.model.Channel
+ import com.dpflix.android.model.ReplayProgram
+@@ -216,6 +217,7 @@ fun PlayerScreen(
+     modifier: Modifier = Modifier,
+     osdEnabled: Boolean = true,
+     appRepository: AppRepository? = null,
++    accessRepository: AccessRepository? = null,
+     initialReplayProgram: ReplayProgram? = null,
+     onNavigateToReplay: ((channelId: String) -> Unit)? = null,
+     onRequestFullReset: () -> Unit = {}
+@@ -941,10 +943,16 @@ fun PlayerScreen(
+         // plus haut. Rendue en dernier dans ce Box pour passer au-dessus de tout le reste
+         // (vidéo, OSD, indicateurs d'état) ; appRepository != null est garanti ici
+         // puisque c'est la seule condition sous laquelle onOpenSettings existe (voir
+-        // l'appel à PlayerOsd ci-dessus).
+-        if (settingsOverlayVisible && appRepository != null) {
++        // l'appel à PlayerOsd ci-dessus). accessRepository != null : condition
++        // supplémentaire pour le bandeau de suivi d'accès (AccessStatusBanner) — sur les
++        // deux appelants plein écran qui le fournissent (voir DpFlixNavHost), ce bandeau
++        // s'affiche donc aussi depuis Réglages ouvert en incrustation ; sur les
++        // mini-lecteurs sans réglages (HomeScreen, osdEnabled = false) il reste absent,
++        // sans conséquence puisque cette incrustation n'y est de toute façon jamais ouverte.
++        if (settingsOverlayVisible && appRepository != null && accessRepository != null) {
+             SettingsScreen(
+                 appRepository = appRepository,
++                accessRepository = accessRepository,
+                 onBack = { settingsOverlayVisible = false },
+                 onResetComplete = {
+                     settingsOverlayVisible = false
+diff --git a/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreen.kt b/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreen.kt
+index 45e6e06..066488f 100644
+--- a/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreen.kt
++++ b/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreen.kt
+@@ -61,6 +61,7 @@ import androidx.compose.ui.text.input.ImeAction
+ import androidx.compose.ui.text.input.KeyboardType
+ import androidx.compose.ui.unit.dp
+ import androidx.lifecycle.viewmodel.compose.viewModel
++import com.dpflix.android.access.AccessRepository
+ import com.dpflix.android.model.Channel
+ import com.dpflix.android.model.Playlist
+ import com.dpflix.android.model.PlaylistType
+@@ -96,6 +97,7 @@ import kotlinx.coroutines.delay
+ @Composable
+ fun SettingsScreen(
+     appRepository: AppRepository,
++    accessRepository: AccessRepository,
+     onBack: () -> Unit,
+     onResetComplete: () -> Unit,
+     modifier: Modifier = Modifier
+@@ -137,7 +139,10 @@ fun SettingsScreen(
+                 }
+ 
+                 when (val current = section) {
+-                    SettingsSection.List -> SectionListBody(onSelect = { section = it })
++                    SettingsSection.List -> SectionListBody(
++                        accessRepository = accessRepository,
++                        onSelect = { section = it }
++                    )
+                     SettingsSection.General -> GeneralSectionBody(
+                         uiState = uiState,
+                         onQualityCapSelected = viewModel::setDefaultVideoQualityCap,
+@@ -199,7 +204,10 @@ fun SettingsScreen(
+ private fun SettingsSection.pendingStepLabel(): String = ""
+ 
+ @Composable
+-private fun SectionListBody(onSelect: (SettingsSection) -> Unit) {
++private fun SectionListBody(
++    accessRepository: AccessRepository,
++    onSelect: (SettingsSection) -> Unit
++) {
+     val sections = listOf(
+         SettingsSection.General,
+         SettingsSection.Player,
+@@ -209,6 +217,9 @@ private fun SectionListBody(onSelect: (SettingsSection) -> Unit) {
+         SettingsSection.UserGuide
+     )
+     LazyColumn(modifier = Modifier.fillMaxSize()) {
++        item(key = "access_status_banner") {
++            AccessStatusBanner(accessRepository = accessRepository)
++        }
+         items(sections, key = { it.title }) { item ->
+             Row(
+                 modifier = Modifier
+@@ -1562,3 +1573,54 @@ private fun ResetConfirmationDialog(onConfirm: () -> Unit, onDismiss: () -> Unit
+         }
+     )
+ }
++
++/**
++ * Bandeau de suivi permanent de l'accès, en tête de la liste des sections Paramètres.
++ * Choix de l'écran Paramètres (et non l'écran de lecture ni Lock) : c'est le seul
++ * endroit consulté volontairement et régulièrement, sans être intrusif — contrairement
++ * à un bandeau sur l'écran de lecture (gênant) ou sur Lock (invisible tant que l'accès
++ * est valide, donc inutile pour "suivre").
++ *
++ * Purement informatif : ne navigue jamais vers Lock lui-même — c'est le rôle
++ * d'AccessSessionGuards, qui observe [AccessRepository.currentUser] indépendamment.
++ */
++@Composable
++private fun AccessStatusBanner(accessRepository: AccessRepository) {
++    val userAccess by accessRepository.currentUser.collectAsState()
++
++    val (label, valueColor) = when {
++        !userAccess.isAccessValid -> "Verrouillé" to DpFlixColors.Red
++        else -> {
++            val days = userAccess.daysRemaining(accessRepository.estimatedNowMs())
++            when {
++                days == null || days >= 36_500L -> "Illimité" to DpFlixColors.OnBackground
++                days <= 0L -> "Expire aujourd'hui" to DpFlixColors.Red
++                days <= 7L -> "Expire dans $days j" to DpFlixColors.Red
++                else -> "Expire dans $days j" to DpFlixColors.OnBackgroundMuted
++            }
++        }
++    }
++
++    Column(modifier = Modifier.fillMaxWidth()) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .padding(horizontal = 20.dp, vertical = 16.dp),
++            horizontalArrangement = Arrangement.SpaceBetween,
++            verticalAlignment = Alignment.CenterVertically
++        ) {
++            Text(
++                text = "Accès",
++                color = DpFlixColors.OnBackgroundMuted,
++                style = MaterialTheme.typography.bodyLarge
++            )
++            Text(
++                text = label,
++                color = valueColor,
++                style = MaterialTheme.typography.bodyLarge,
++                fontWeight = FontWeight.Bold
++            )
++        }
++        HorizontalDivider(color = DpFlixColors.OnBackgroundMuted.copy(alpha = 0.2f))
++    }
++}
+diff --git a/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreenTv.kt b/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreenTv.kt
+index 425837e..4e240d5 100644
+--- a/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreenTv.kt
++++ b/app/src/main/kotlin/com/dpflix/android/settings/SettingsScreenTv.kt
+@@ -53,6 +53,7 @@ import androidx.compose.foundation.lazy.items
+ import androidx.tv.material3.Button
+ import androidx.tv.material3.MaterialTheme
+ import androidx.tv.material3.Text
++import com.dpflix.android.access.AccessRepository
+ import com.dpflix.android.model.Channel
+ import com.dpflix.android.model.Playlist
+ import com.dpflix.android.model.PlaylistType
+@@ -106,6 +107,7 @@ import kotlinx.coroutines.delay
+ @Composable
+ fun SettingsScreenTv(
+     appRepository: AppRepository,
++    accessRepository: AccessRepository,
+     onBack: () -> Unit,
+     onResetComplete: () -> Unit,
+     modifier: Modifier = Modifier
+@@ -144,6 +146,7 @@ fun SettingsScreenTv(
+ 
+                 when (val current = section) {
+                     SettingsSection.List -> SectionListBodyTv(
++                        accessRepository = accessRepository,
+                         firstItemFocusRequester = firstItemFocusRequester,
+                         onSelect = { section = it }
+                     )
+@@ -227,7 +230,11 @@ fun SettingsScreenTv(
+ private fun SettingsSection.pendingStepLabelTv(): String = ""
+ 
+ @Composable
+-private fun SectionListBodyTv(firstItemFocusRequester: FocusRequester, onSelect: (SettingsSection) -> Unit) {
++private fun SectionListBodyTv(
++    accessRepository: AccessRepository,
++    firstItemFocusRequester: FocusRequester,
++    onSelect: (SettingsSection) -> Unit
++) {
+     val sections = listOf(
+         SettingsSection.General,
+         SettingsSection.Player,
+@@ -240,6 +247,9 @@ private fun SectionListBodyTv(firstItemFocusRequester: FocusRequester, onSelect:
+         contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
+         verticalArrangement = Arrangement.spacedBy(12.dp)
+     ) {
++        item(key = "access_status_banner") {
++            AccessStatusBannerTv(accessRepository = accessRepository)
++        }
+         items(sections, key = { it.title }) { item ->
+             Button(
+                 onClick = { onSelect(item) },
+@@ -1237,3 +1247,37 @@ private fun formatBytesTv(bytes: Long): String {
+         String.format(java.util.Locale.FRANCE, "%.1f Mo", mb)
+     }
+ }
++
++/** Équivalent TV de `AccessStatusBanner` (mobile, `SettingsScreen.kt`) — même bandeau de
++ *  suivi permanent de l'accès, en tête de `SectionListBodyTv`, purement informatif. */
++@Composable
++private fun AccessStatusBannerTv(accessRepository: AccessRepository) {
++    val userAccess by accessRepository.currentUser.collectAsState()
++
++    val (label, valueColor) = when {
++        !userAccess.isAccessValid -> "Verrouillé" to DpFlixColors.Red
++        else -> {
++            val days = userAccess.daysRemaining(accessRepository.estimatedNowMs())
++            when {
++                days == null || days >= 36_500L -> "Illimité" to DpFlixColors.OnBackground
++                days <= 0L -> "Expire aujourd'hui" to DpFlixColors.Red
++                days <= 7L -> "Expire dans $days j" to DpFlixColors.Red
++                else -> "Expire dans $days j" to DpFlixColors.OnBackgroundMuted
++            }
++        }
++    }
++
++    Column(modifier = Modifier.fillMaxWidth()) {
++        Row(
++            modifier = Modifier
++                .fillMaxWidth()
++                .padding(horizontal = 4.dp, vertical = 12.dp),
++            horizontalArrangement = Arrangement.SpaceBetween,
++            verticalAlignment = Alignment.CenterVertically
++        ) {
++            Text(text = "Accès", color = DpFlixColors.OnBackgroundMuted, fontSize = 20.sp)
++            Text(text = label, color = valueColor, fontSize = 20.sp)
++        }
++        androidx.compose.material3.HorizontalDivider()
++    }
++}
