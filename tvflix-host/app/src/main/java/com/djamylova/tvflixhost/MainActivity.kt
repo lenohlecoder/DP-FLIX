@@ -3,52 +3,42 @@ package com.djamylova.tvflixhost
 import android.os.Bundle
 import android.util.Log
 import android.view.KeyEvent
-import android.view.View
-import android.view.inputmethod.EditorInfo
-import android.widget.Button
-import android.widget.EditText
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.djamylova.tvflix.TvFlixAbout
 import com.djamylova.tvflix.TvFlixCompat
 import com.djamylova.tvflix.TvFlixNavigator
 
 /**
- * Activity hôte d’intégration pour le module TvFlix.
- * Étape 11 – tests d’intégration.
+ * Hôte minimal de test du module TvFlix.
  *
  * Contrôles :
  * - D-pad : déplacer le curseur
- * - OK / Centre : clic
- * - Menu / Info / SEARCH / SETTINGS : afficher/masquer la barre d'adresse
- * - Double-appui rapide sur BACK : afficher/masquer la barre sur les télécommandes génériques
- * - Channel+ / Channel− (si dispo) : zoom in / out
+ * - OK / Centre / Enter : clic synthétique identique au mécanisme TV Bro
+ * - Channel+ / Channel− : zoom
  * - Back : historique WebView, sinon quitter
  *
- * Barre d'adresse (Étape 11) : permet de changer l'URL à la volée pour comparer
- * plusieurs sites (stream 1 / 2 / 3) sans recompiler. Masquée par défaut après le
- * premier chargement pour ne pas gêner le test du curseur ; MENU la ré-affiche.
- *
- * URL de test par défaut : purstream.store
+ * Il n'y a volontairement plus de barre d'adresse : l'URL est fournie par
+ * START_URL uniquement pour les tests du module. Dans DP Flix final, le
+ * navigateur sera piloté par l'application principale.
  */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var navigator: TvFlixNavigator
-    private lateinit var addressBar: View
-    private lateinit var urlInput: EditText
-    private var lastBackDownTime = 0L
-    private var backDoublePress = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Diagnostic WebView
         if (!TvFlixCompat.isWebViewAvailable(this)) {
-            Toast.makeText(this, "WebView non disponible sur cet appareil", Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                this,
+                "WebView non disponible sur cet appareil",
+                Toast.LENGTH_LONG
+            ).show()
             Log.e(TAG, "WebView missing")
             return
         }
+
         Log.i(TAG, "WebView package: ${TvFlixCompat.getWebViewPackageName(this)}")
         Log.i(TAG, "Low-end device: ${TvFlixCompat.isLowEndDevice(this)}")
 
@@ -80,108 +70,39 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "error $errorCode: $description ($failingUrl)")
             }
         })
-
-        setupAddressBar()
-    }
-
-    private fun setupAddressBar() {
-        addressBar = findViewById(R.id.address_bar)
-        urlInput = findViewById(R.id.url_input)
-        val goButton = findViewById<Button>(R.id.go_button)
-
-        urlInput.setText(START_URL)
-
-        val loadFromInput = {
-            val raw = urlInput.text.toString().trim()
-            if (raw.isNotEmpty()) {
-                val normalized = normalizeUrl(raw)
-                Log.i(TAG, "Chargement URL de test: $normalized")
-                navigator.loadUrl(normalized)
-                addressBar.visibility = View.GONE
-                navigator.getWebView()?.requestFocus()
-            }
-        }
-
-        goButton.setOnClickListener { loadFromInput() }
-        urlInput.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_GO) {
-                loadFromInput()
-                true
-            } else {
-                false
-            }
-        }
-    }
-
-    /** Ajoute https:// si l'utilisateur a tapé juste "purstream.store" par exemple. */
-    private fun normalizeUrl(raw: String): String {
-        return if (raw.startsWith("http://") || raw.startsWith("https://")) {
-            raw
-        } else {
-            "https://$raw"
-        }
-    }
-
-    private fun toggleAddressBar() {
-        if (addressBar.visibility == View.VISIBLE) {
-            addressBar.visibility = View.GONE
-        } else {
-            addressBar.visibility = View.VISIBLE
-            urlInput.requestFocus()
-        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         when (keyCode) {
-            // Menu / Info : afficher/masquer la barre d'adresse de test
-            KeyEvent.KEYCODE_MENU,
-            KeyEvent.KEYCODE_INFO,
-            KeyEvent.KEYCODE_SEARCH,
-            KeyEvent.KEYCODE_SETTINGS,
-            KeyEvent.KEYCODE_GUIDE -> {
-                toggleAddressBar()
-                return true
-            }
-            // À propos (obligation licence) — reste accessible via HELP
             KeyEvent.KEYCODE_HELP -> {
                 navigator.showAbout(this)
                 return true
             }
-            // Zoom
+
             KeyEvent.KEYCODE_CHANNEL_UP,
             KeyEvent.KEYCODE_ZOOM_IN -> {
                 navigator.zoomIn()
                 return true
             }
+
             KeyEvent.KEYCODE_CHANNEL_DOWN,
             KeyEvent.KEYCODE_ZOOM_OUT -> {
                 navigator.zoomOut()
                 return true
             }
-            // Retour : double-appui rapide = barre d'adresse, appui simple = retour normal.
-            KeyEvent.KEYCODE_BACK -> {
-                val now = event?.eventTime ?: android.os.SystemClock.uptimeMillis()
-                if (event?.repeatCount ?: 0 > 0) return true
-                if (now - lastBackDownTime <= 450L) {
-                    lastBackDownTime = 0L
-                    backDoublePress = true
-                    toggleAddressBar()
-                    return true
+
+            KeyEvent.KEYCODE_BACK,
+            KeyEvent.KEYCODE_ESCAPE -> {
+                // KEYCODE_BACK = flèche retour habituelle. KEYCODE_ESCAPE = bouton
+                // "EXIT" dédié présent sur beaucoup de télécommandes génériques/IR,
+                // distinct physiquement de la flèche retour et jusqu'ici ignoré :
+                // sur ces télécommandes, EXIT ne faisait donc rien. Même comportement
+                // pour les deux : retour dans l'historique WebView, sinon on quitte.
+                if (navigator.canGoBack()) {
+                    navigator.goBack()
+                } else {
+                    super.onBackPressed()
                 }
-                lastBackDownTime = now
-                window.decorView.postDelayed({
-                    if (!backDoublePress && lastBackDownTime == now) {
-                        lastBackDownTime = 0L
-                        if (::addressBar.isInitialized && addressBar.visibility == View.VISIBLE) {
-                            addressBar.visibility = View.GONE
-                        } else if (navigator.canGoBack()) {
-                            navigator.goBack()
-                        } else {
-                            super.onBackPressed()
-                        }
-                    }
-                    backDoublePress = false
-                }, 450L)
                 return true
             }
         }
