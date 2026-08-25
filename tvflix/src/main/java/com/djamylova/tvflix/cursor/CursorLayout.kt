@@ -99,12 +99,7 @@ class CursorLayout @JvmOverloads constructor(
     }
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (!cursorEnabled || cursorDrawer == null) {
-            return super.dispatchGenericMotionEvent(event)
-        }
-
-        val handled = cursorDrawer!!.dispatchGenericMotionEvent(event)
-        return if (handled) true else super.dispatchGenericMotionEvent(event)
+        return super.dispatchGenericMotionEvent(event)
     }
 
     override fun dispatchDraw(canvas: Canvas) {
