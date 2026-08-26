@@ -128,10 +128,12 @@ import kotlinx.coroutines.launch
  *     ces deux exemptions).
  * - Dans les deux modes : jamais de nouvel onglet ni de sortie vers un navigateur externe,
  *   la navigation bloquée est simplement ignorée (la page reste sur son état courant).
- * - `setSupportMultipleWindows(false)` + [WebChromeClient.onCreateWindow] retourne
- *   toujours `false` : `window.open()`/`target="_blank"` n'ouvrent rien. Pas de barre
- *   d'adresse, de navigation précédente/suivante ni de menu long-press (désactivé
- *   explicitement) : aucun chrome de navigateur visible.
+ * - `setSupportMultipleWindows(true)` + [WebChromeClient.onCreateWindow] : les
+ *   `window.open()`/`target="_blank"` déclenchés par un vrai geste utilisateur sont
+ *   capturés et chargés dans cette même WebView (jamais une vraie 2e fenêtre — voir
+ *   doc de `onCreateWindow`) ; ceux sans geste utilisateur (pop-under auto) restent
+ *   bloqués. Pas de barre d'adresse, de navigation précédente/suivante ni de menu
+ *   long-press (désactivé explicitement) : aucun chrome de navigateur visible.
  *
  * ## Téléchargement Films & Séries (module download, principe 1DM)
  * - [StreamSniffer] observe les requêtes via [WebViewClient.shouldInterceptRequest]
@@ -334,16 +336,18 @@ fun FilmsSeriesScreen(
             // écran est déjà ouvert (retour arrière, changement, retour ici), on force une
             // toute nouvelle WebView plutôt que de tenter un `loadUrl` sur l'existante —
             // plus simple et plus sûr que de garder une référence mutable à la WebView.
-            key(url, generalSettings?.strictDomainLock == true) {
+            key(url, streamIndex, !(useTvFlix && streamIndex == 1)) {
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
                     // Le profil desktop du Stream 3 est réservé au moteur TV.
                     // Sur mobile, le même stream doit conserver le profil WebView natif.
                     preferDesktopUserAgent = useTvFlix && streamIndex == 3,
-                    forceSoftwareLayer = showVirtualCursor || useTvFlix,
+                    // Stream 3 : certaines TV sont instables avec le WebView en couche logicielle.
+                    // Les autres streams conservent le correctif Z-order existant.
+                    forceSoftwareLayer = showVirtualCursor || (useTvFlix && streamIndex != 3),
                     useTvFlix = useTvFlix,
-                    strictDomainLock = true, // Politique Films/Séries : navigation principale strictement whitelistée.
+                    strictDomainLock = !(useTvFlix && streamIndex == 1), // TV Stream 1 : navigation principale totalement ouverte pour suivre ses redirections.
                     savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
                     onSaveState = { bundle ->
                         webViewStateBundle = bundle
@@ -453,7 +457,7 @@ fun FilmsSeriesScreen(
             ExceptionDomainsDialog(
                 domains = generalSettings?.extraAllowedDomains
                     ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
-                strictDomainLock = true, // Politique Films/Séries : navigation principale strictement whitelistée.
+                strictDomainLock = !(useTvFlix && streamIndex == 1), // TV Stream 1 : navigation principale totalement ouverte pour suivre ses redirections.
                 onStrictDomainLockChange = { enabled ->
                     scope.launch {
                         appRepository.settings.updateGeneralSettings { current ->
@@ -938,15 +942,30 @@ private fun WebView.simulateClick(x: Float, y: Float) {
         (function(){
           var x = %f, y = %f;
           var el = document.elementFromPoint(x, y);
-          if (!el) return;
+          if (!el) return false;
           var opts = {bubbles:true, cancelable:true, clientX:x, clientY:y, view:window};
           el.dispatchEvent(new MouseEvent('mousedown', opts));
           el.dispatchEvent(new MouseEvent('mouseup', opts));
           el.dispatchEvent(new MouseEvent('click', opts));
+          try {
+            if (el.matches && el.matches('input, textarea, select, [contenteditable="true"]')) {
+              el.focus();
+              return true;
+            }
+          } catch (e) {}
+          return false;
         })();
-        """.trimIndent().format(cssX, cssY),
-        null
-    )
+        """.trimIndent().format(cssX, cssY)
+    ) { focusedInput ->
+        if (focusedInput == "true") {
+            requestFocus()
+            postDelayed({
+                val imm = context.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+                    as? android.view.inputmethod.InputMethodManager
+                imm?.showSoftInput(this, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+            }, 80L)
+        }
+    }
 }
 
 /**
@@ -1070,6 +1089,42 @@ private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<
 }
 
 /**
+ * Hôtes typiques de redirections publicitaires / pop-under / trackers agressifs — inspiré
+ * du principe de TV Bro (`AdblockModel`/EasyList) : plutôt qu'une whitelist qui bloquerait
+ * aussi les sous-domaines légitimes du site (CDN, embed, mirroirs), on bloque au contraire
+ * une liste noire connue de régies pub/redirecteurs, **peu importe le domaine visité** —
+ * ça laisse un stream ouvrir tous ses sous-domaines utiles sans les whitelister un par un,
+ * tout en coupant les redirections vers ces régies. Contrairement à TV Bro (EasyList complet
+ * + moteur natif, cf. `com.brave.adblock`), la liste ici reste volontairement courte et
+ * ciblée sur la **navigation principale** (redirections plein cadre), pas sur les
+ * sous-ressources — à enrichir si un nouveau redirecteur apparaît en test.
+ */
+private val KNOWN_AD_REDIRECT_HOSTS: Set<String> = setOf(
+    "propellerads.com", "propellerapi.com", "onclickmax.com", "onclckmx.com",
+    "adsterra.com", "adsterratech.com", "exoclick.com", "exosrv.com",
+    "juicyads.com", "juicyads.net", "trafficjunky.net", "trafficjunky.com",
+    "clickadu.com", "hilltopads.net", "hilltopads.com", "adnium.com",
+    "bidvertiser.com", "popads.net", "popcash.net", "propush.me",
+    "yllix.com", "adcash.com", "a-ads.com", "mgid.com", "adskeeper.co.uk",
+    "smartadserver.com", "revcontent.com", "outbrain.com", "taboola.com",
+    "popunder.net", "popunderjs.com", "adexchangeprediction.com",
+    "adk2.com", "adk2x.com", "cpmstar.com", "cpalead.com",
+    "galaksion.com", "richads.com", "clickaine.com", "adcorto.co",
+    "shrinkme.io", "linkvertise.com", "poplink.io", "trafficstars.com",
+    "trafficfactory.biz", "syndication.exdynsrv.com", "exdynsrv.com",
+)
+
+/**
+ * Vérification volontairement placée AVANT les exemptions de mode ouvert / whitelist dans
+ * [isAllowedMainFrameUri] : une régie connue reste bloquée même si elle correspond par
+ * ailleurs à un hôte autorisé (ne devrait jamais arriver en pratique, mais l'ordre de
+ * vérification est ce qui rend la liste noire réellement prioritaire).
+ */
+private fun isKnownAdRedirectHost(host: String): Boolean {
+    return KNOWN_AD_REDIRECT_HOSTS.any { blocked -> host == blocked || host.endsWith(".$blocked") }
+}
+
+/**
  * Hôtes typiques de redirections publicitaires / pop-under / trackers agressifs.
  * Protection « anti-redirection » du mode ouvert (§ [LockedWebView], `strictDomainLock =
  * false`) : on bloque ces destinations **sur la navigation principale**, sans empêcher les
@@ -1131,6 +1186,32 @@ private fun LockedWebView(
             // Elle permet donc de faire passer le plein écran vidéo DANS CursorLayout.
             var tvCursorLayout: CursorLayout? = null
 
+            // Hissée ici (avant webView/webViewClient/webChromeClient) pour être partagée
+            // entre la navigation principale (WebViewClient) et les popups/window.open()
+            // (WebChromeClient.onCreateWindow, voir plus bas) : les deux doivent appliquer
+            // exactement la même politique de domaine + liste noire pub.
+            fun isAllowedMainFrameUri(uri: Uri): Boolean {
+                val scheme = uri.scheme?.lowercase()
+                if (scheme != "http" && scheme != "https") return false
+                val host = uri.host?.lowercase()?.removePrefix("www.")
+                // Liste noire vérifiée en premier, avant les deux exemptions
+                // ci-dessous (mode ouvert ET whitelist stricte) : une régie
+                // pub/redirecteur connue reste bloquée dans tous les cas — voir
+                // doc de [isKnownAdRedirectHost].
+                if (host != null && isKnownAdRedirectHost(host)) return false
+                // Le paramètre reste disponible pour des intégrations hôtes qui
+                // choisissent explicitement le mode ouvert. DP-FLIX Films/Séries
+                // force actuellement le mode strict.
+                if (!strictDomainLock) return true
+                if (host == null) return false
+                val isMainDomain = allowedHostNormalized != null &&
+                    (host == allowedHostNormalized || host.endsWith(".$allowedHostNormalized"))
+                val isExtraAllowed = normalizedExtraHosts.any { extra ->
+                    host == extra || host.endsWith(".$extra")
+                }
+                return isMainDomain || isExtraAllowed
+            }
+
             val webView = (if (useTvFlix) TvFlixWebView(ctx) else WebView(ctx)).apply {
                 layoutParams = ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1173,12 +1254,25 @@ private fun LockedWebView(
                 // reste requis, ce réglage évite seulement un blocage supplémentaire du
                 // navigateur système sur certains lecteurs embarqués).
                 settings.mediaPlaybackRequiresUserGesture = false
-                settings.setSupportMultipleWindows(false)
+                // Fix 26/08/2026 : true (au lieu de false) — indispensable pour que
+                // WebChromeClient.onCreateWindow soit seulement appelé quand un lien fait
+                // un window.open()/target="_blank" (cas de stream 1 : la page d'accueil
+                // ouvre le vrai site dans une "nouvelle fenêtre"). À false, Chromium
+                // ignorait ces clics en silence, avant même d'atteindre onCreateWindow —
+                // qui, lui, ne crée jamais de vraie 2e fenêtre : il charge l'URL demandée
+                // dans cette même WebView (voir onCreateWindow plus bas). L'app reste donc
+                // mono-fenêtre ; javaScriptCanOpenWindowsAutomatically=false ci-dessous
+                // continue de couper les popups automatiques (sans geste utilisateur).
+                settings.setSupportMultipleWindows(true)
                 settings.javaScriptCanOpenWindowsAutomatically = false
 
                 // Pas de menu contextuel long-press (copier le lien, ouvrir dans un nouvel
                 // onglet) : seul geste autorisé sur cette WebView, le tap simple.
                 setOnLongClickListener { true }
+                // Les champs HTML doivent pouvoir prendre le focus afin que le clavier
+                // système s'ouvre sur TV après un clic simulé par le curseur.
+                isFocusable = true
+                isFocusableInTouchMode = true
 
                 webViewClient = object : WebViewClient() {
                     /**
@@ -1188,23 +1282,9 @@ private fun LockedWebView(
                      * sortir de la whitelist. Les sous-ressources (CDN, segments vidéo,
                      * images, JS) ne passent pas par cette méthode et restent disponibles
                      * au lecteur ; leur domaine peut être ajouté à extraAllowedHosts.
+                     * Voir [isAllowedMainFrameUri] ci-dessus (hissée hors de cette classe
+                     * pour être réutilisée par WebChromeClient.onCreateWindow).
                      */
-                    private fun isAllowedMainFrameUri(uri: Uri): Boolean {
-                        val scheme = uri.scheme?.lowercase()
-                        if (scheme != "http" && scheme != "https") return false
-                        // Le paramètre reste disponible pour des intégrations hôtes qui
-                        // choisissent explicitement le mode ouvert. DP-FLIX Films/Séries
-                        // force actuellement le mode strict.
-                        if (!strictDomainLock) return true
-                        val host = uri.host?.lowercase()?.removePrefix("www.") ?: return false
-                        val isMainDomain = allowedHostNormalized != null &&
-                            (host == allowedHostNormalized || host.endsWith(".$allowedHostNormalized"))
-                        val isExtraAllowed = normalizedExtraHosts.any { extra ->
-                            host == extra || host.endsWith(".$extra")
-                        }
-                        return isMainDomain || isExtraAllowed
-                    }
-
                     override fun shouldOverrideUrlLoading(
                         view: WebView,
                         request: WebResourceRequest
@@ -1443,9 +1523,46 @@ private fun LockedWebView(
                         isUserGesture: Boolean,
                         resultMsg: android.os.Message?
                     ): Boolean {
-                        // Interdit toute popup / nouvel onglet — cohérent avec le
-                        // verrouillage du navigateur (voir doc de classe).
-                        return false
+                        // Fix 26/08/2026 : stream 1 (et potentiellement d'autres) ouvre son
+                        // vrai site via un clic sur un lien qui fait un window.open()/
+                        // target="_blank" — pas une redirection plein cadre. Avant, on
+                        // bloquait ça sans condition ("return false"), donc ce clic ne
+                        // menait jamais nulle part. On ne crée pas de vraie 2e fenêtre
+                        // (l'appli reste mono-fenêtre volontairement, cf. doc de classe) :
+                        // à la place, on capture l'URL demandée via une WebView jetable
+                        // (technique standard Android pour intercepter window.open() sans
+                        // l'ouvrir), puis on la charge DANS cette même WebView si elle
+                        // passe la même politique que la navigation normale (liste noire
+                        // pub + whitelist si mode strict). Les popups automatiques (sans
+                        // geste utilisateur, typiques des pop-under publicitaires) restent
+                        // bloquées : c'est justement le cas qu'on veut continuer à couper.
+                        if (view == null || resultMsg == null || !isUserGesture) return false
+                        val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                        val throwawayWebView = WebView(view.context).apply {
+                            webViewClient = object : WebViewClient() {
+                                override fun shouldOverrideUrlLoading(
+                                    dv: WebView,
+                                    request: WebResourceRequest
+                                ): Boolean {
+                                    if (isAllowedMainFrameUri(request.url)) {
+                                        view.loadUrl(request.url.toString())
+                                    }
+                                    return true
+                                }
+
+                                @Suppress("DEPRECATION")
+                                override fun shouldOverrideUrlLoading(dv: WebView, url: String): Boolean {
+                                    val uri = Uri.parse(url)
+                                    if (isAllowedMainFrameUri(uri)) {
+                                        view.loadUrl(url)
+                                    }
+                                    return true
+                                }
+                            }
+                        }
+                        transport.webView = throwawayWebView
+                        resultMsg.sendToTarget()
+                        return true
                     }
                 }
 
@@ -1466,8 +1583,16 @@ private fun LockedWebView(
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                     cursorEnabled = true
-                    // Le curseur TV doit être le seul destinataire du D-pad.
-                    descendantFocusability = ViewGroup.FOCUS_BLOCK_DESCENDANTS
+                    // Fix 26/08/2026 : FOCUS_BLOCK_DESCENDANTS empêchait la WebView (et donc
+                    // tout champ HTML interne — barre d'adresse, recherche, etc.) de recevoir
+                    // le focus, donc le clavier système ne s'affichait jamais au clic du
+                    // curseur sur ces champs, sur les 5 streams. Le D-pad continue d'être
+                    // intercepté en priorité par CursorLayout.dispatchKeyEvent() (indépendant
+                    // de descendantFocusability, qui ne régit que le focus, pas le routage des
+                    // touches) — voir CursorLayout.init pour le même choix
+                    // (FOCUS_AFTER_DESCENDANTS), ici réaffirmé explicitement pour éviter toute
+                    // régression si ce bloc `.apply` est retouché de nouveau.
+                    descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
                 }
                 cursor.addView(webView)
                 tvCursorLayout = cursor

@@ -66,17 +66,17 @@ object TvFlixCompat {
 
     /**
      * Vitesse de curseur recommandée selon le device.
-     * Relevé (100 → 130 / 70 → 90) : le curseur remontait comme trop lent en usage
-     * réel même sur device normal ; on garde quand même un palier réduit sur
-     * bas de gamme (90, au lieu de 70) pour préserver la fluidité là où le
-     * risque de saccade est réel.
+     * Baissé le 26/08/2026 (130 → 60 / 90 → 45) suite au retour terrain TV : le curseur
+     * restait trop rapide et pas assez fluide/synchronisé avec la télécommande, y compris
+     * sur device normal. Voir aussi la réduction du coefficient d'accélération et de
+     * [maxSpeedBaselinePx][com.djamylova.tvflix.cursor.CursorDrawer] pour le même correctif.
      */
     fun recommendedMaxSpeedPercent(context: Context): Int {
-        return if (isLowEndDevice(context)) 90 else 130
+        return if (isLowEndDevice(context)) 45 else 60
     }
 
     fun recommendedAccelerationPercent(context: Context): Int {
-        return if (isLowEndDevice(context)) 100 else 125
+        return if (isLowEndDevice(context)) 50 else 65
     }
 
     /**
