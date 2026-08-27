@@ -328,6 +328,15 @@ fun FilmsSeriesScreen(
             }
     }
 
+    // Politique de verrouillage de domaine par stream — voir doc de
+    // [resolveStrictDomainLock] : Stream 1 toujours ouvert, Stream 3 toujours confiné à son
+    // propre domaine (indépendamment de la plateforme et du réglage utilisateur), les autres
+    // streams suivent le réglage utilisateur (Réglages → icône DP-FLIX, OFF par défaut).
+    val effectiveStrictDomainLock = resolveStrictDomainLock(
+        streamIndex = streamIndex,
+        userSetting = generalSettings?.strictDomainLock ?: false,
+    )
+
     Box(modifier = boxModifier) {
         if (generalSettings == null) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -335,19 +344,23 @@ fun FilmsSeriesScreen(
             // `key(url)` : si l'utilisateur modifie le lien dans Réglages pendant que cet
             // écran est déjà ouvert (retour arrière, changement, retour ici), on force une
             // toute nouvelle WebView plutôt que de tenter un `loadUrl` sur l'existante —
-            // plus simple et plus sûr que de garder une référence mutable à la WebView.
-            key(url, streamIndex, !(useTvFlix && streamIndex == 1)) {
+            // plus simple et plus sûr que de garder une référence mutable à la WebView. Le
+            // 3e élément de la clé réagit aussi à un changement live du réglage utilisateur
+            // (Stream 2) pendant que l'écran est déjà ouvert.
+            key(url, streamIndex, effectiveStrictDomainLock) {
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
-                    // Le profil desktop du Stream 3 est réservé au moteur TV.
-                    // Sur mobile, le même stream doit conserver le profil WebView natif.
-                    preferDesktopUserAgent = useTvFlix && streamIndex == 3,
+                    // Stream 3 : UA bureau nécessaire des deux côtés (mobile ET TV) — sans
+                    // ça la version mobile du site reste blanche/cassée. Ce n'est pas une
+                    // spécificité TV, contrairement à ce que la précédente intégration TvFlix
+                    // supposait (fix 26/08/2026).
+                    preferDesktopUserAgent = streamIndex == 3,
                     // Stream 3 : certaines TV sont instables avec le WebView en couche logicielle.
                     // Les autres streams conservent le correctif Z-order existant.
                     forceSoftwareLayer = showVirtualCursor || (useTvFlix && streamIndex != 3),
                     useTvFlix = useTvFlix,
-                    strictDomainLock = !(useTvFlix && streamIndex == 1), // TV Stream 1 : navigation principale totalement ouverte pour suivre ses redirections.
+                    strictDomainLock = effectiveStrictDomainLock,
                     savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
                     onSaveState = { bundle ->
                         webViewStateBundle = bundle
@@ -457,7 +470,10 @@ fun FilmsSeriesScreen(
             ExceptionDomainsDialog(
                 domains = generalSettings?.extraAllowedDomains
                     ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
-                strictDomainLock = !(useTvFlix && streamIndex == 1), // TV Stream 1 : navigation principale totalement ouverte pour suivre ses redirections.
+                strictDomainLock = effectiveStrictDomainLock,
+                // Le réglage n'a d'effet réel que pour les streams qui le suivent
+                // (voir [resolveStrictDomainLock]) — Stream 1/3 ont une politique fixe.
+                strictDomainLockEditable = streamIndex != 1 && streamIndex != 3,
                 onStrictDomainLockChange = { enabled ->
                     scope.launch {
                         appRepository.settings.updateGeneralSettings { current ->
@@ -651,6 +667,11 @@ private fun DetectedStreamsDialog(
 private fun ExceptionDomainsDialog(
     domains: Set<String>,
     strictDomainLock: Boolean,
+    // Fix 26/08/2026 : certains streams ont désormais une politique fixe (voir
+    // [resolveStrictDomainLock]) — le switch reste visible pour montrer l'état réel
+    // appliqué, mais devient non interactif pour ne pas laisser croire qu'il change
+    // quelque chose sur ces streams.
+    strictDomainLockEditable: Boolean = true,
     onStrictDomainLockChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onAddDomain: (String) -> Unit,
@@ -696,16 +717,22 @@ private fun ExceptionDomainsDialog(
                             style = MaterialTheme.typography.bodyLarge
                         )
                         Text(
-                            text = "Verrouillage strict : seuls le site, ses sous-domaines " +
-                                "et la liste ci-dessous sont autorisés. Désactivé = navigation " +
-                                "ouverte (recommandé) avec filtrage soft des régies pub connues.",
+                            text = if (strictDomainLockEditable) {
+                                "Verrouillage strict : seuls le site, ses sous-domaines " +
+                                    "et la liste ci-dessous sont autorisés. Désactivé = navigation " +
+                                    "ouverte (recommandé) avec filtrage soft des régies pub connues."
+                            } else {
+                                "Ce stream a une politique fixe, indépendante de ce réglage " +
+                                    "(non modifiable ici)."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
                         checked = strictDomainLock,
-                        onCheckedChange = onStrictDomainLockChange
+                        onCheckedChange = onStrictDomainLockChange,
+                        enabled = strictDomainLockEditable
                     )
                 }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -1080,6 +1107,28 @@ private val STREAM_INFRASTRUCTURE_HOSTS: Map<Int, Set<String>> = mapOf(
         "xnxx.com",
     ),
 )
+
+/**
+ * Politique de verrouillage de domaine par stream (fix 26/08/2026, remplace la formule
+ * `!(useTvFlix && streamIndex == 1)` introduite avec TvFlix qui forçait le mode strict
+ * partout sauf TV Stream 1, mobile inclus, sans jamais lire [GeneralSettings.strictDomainLock]).
+ *
+ * - Stream 1 : toujours ouvert (mobile + TV) — le site n'accède à sa vraie page qu'via une
+ *   redirection/`window.open()` hors de son domaine de base.
+ * - Stream 3 : toujours confiné à son propre domaine + sous-domaines + infra nécessaire
+ *   ([STREAM_INFRASTRUCTURE_HOSTS]), quelle que soit la plateforme et indépendamment du
+ *   réglage utilisateur — sinon les CTA "Download App" / liens publicitaires externes du
+ *   site s'ouvrent librement (mode ouvert = liste noire pub uniquement, insuffisant ici).
+ * - Autres streams (Stream 2) : suivent le réglage utilisateur (Réglages → icône DP-FLIX,
+ *   ouvert par défaut).
+ */
+private fun resolveStrictDomainLock(streamIndex: Int, userSetting: Boolean): Boolean {
+    return when (streamIndex) {
+        1 -> false
+        3 -> true
+        else -> userSetting
+    }
+}
 
 private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<String> {
     return buildSet {
