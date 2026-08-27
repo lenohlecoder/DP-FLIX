@@ -329,9 +329,9 @@ fun FilmsSeriesScreen(
     }
 
     // Politique de verrouillage de domaine par stream — voir doc de
-    // [resolveStrictDomainLock] : Stream 1 toujours ouvert, Stream 3 toujours confiné à son
-    // propre domaine (indépendamment de la plateforme et du réglage utilisateur), les autres
-    // streams suivent le réglage utilisateur (Réglages → icône DP-FLIX, OFF par défaut).
+    // [resolveStrictDomainLock] : Stream 1 toujours ouvert (mobile + TV), Stream 2 et
+    // Stream 3 suivent le réglage utilisateur (Réglages → icône DP-FLIX, OFF par défaut),
+    // sur mobile comme sur TV — la fonction ne dépend jamais de la plateforme.
     val effectiveStrictDomainLock = resolveStrictDomainLock(
         streamIndex = streamIndex,
         userSetting = generalSettings?.strictDomainLock ?: false,
@@ -351,11 +351,11 @@ fun FilmsSeriesScreen(
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
-                    // Stream 3 : UA bureau nécessaire des deux côtés (mobile ET TV) — sans
-                    // ça la version mobile du site reste blanche/cassée. Ce n'est pas une
-                    // spécificité TV, contrairement à ce que la précédente intégration TvFlix
-                    // supposait (fix 26/08/2026).
-                    preferDesktopUserAgent = streamIndex == 3,
+                    // Le profil desktop est réservé au moteur TV. Sur mobile, le Stream 3
+                    // conserve le profil WebView natif/tactile pour éviter de modifier le
+                    // rendu et le comportement du lecteur en fonction d'un faux environnement
+                    // desktop.
+                    preferDesktopUserAgent = useTvFlix && streamIndex == 3,
                     // Stream 3 : certaines TV sont instables avec le WebView en couche logicielle.
                     // Les autres streams conservent le correctif Z-order existant.
                     forceSoftwareLayer = showVirtualCursor || (useTvFlix && streamIndex != 3),
@@ -472,8 +472,8 @@ fun FilmsSeriesScreen(
                     ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
                 strictDomainLock = effectiveStrictDomainLock,
                 // Le réglage n'a d'effet réel que pour les streams qui le suivent
-                // (voir [resolveStrictDomainLock]) — Stream 1/3 ont une politique fixe.
-                strictDomainLockEditable = streamIndex != 1 && streamIndex != 3,
+                // (voir [resolveStrictDomainLock]) — seul Stream 1 a une politique fixe.
+                strictDomainLockEditable = streamIndex != 1,
                 onStrictDomainLockChange = { enabled ->
                     scope.launch {
                         appRepository.settings.updateGeneralSettings { current ->
@@ -1115,17 +1115,17 @@ private val STREAM_INFRASTRUCTURE_HOSTS: Map<Int, Set<String>> = mapOf(
  *
  * - Stream 1 : toujours ouvert (mobile + TV) — le site n'accède à sa vraie page qu'via une
  *   redirection/`window.open()` hors de son domaine de base.
- * - Stream 3 : toujours confiné à son propre domaine + sous-domaines + infra nécessaire
- *   ([STREAM_INFRASTRUCTURE_HOSTS]), quelle que soit la plateforme et indépendamment du
- *   réglage utilisateur — sinon les CTA "Download App" / liens publicitaires externes du
- *   site s'ouvrent librement (mode ouvert = liste noire pub uniquement, insuffisant ici).
- * - Autres streams (Stream 2) : suivent le réglage utilisateur (Réglages → icône DP-FLIX,
- *   ouvert par défaut).
+ * - Stream 2 et Stream 3 : suivent le réglage utilisateur (Réglages → icône DP-FLIX, ouvert
+ *   par défaut). Fix 27/08/2026 : Stream 3 avait été forcé en strict permanent (`3 -> true`)
+ *   pour satisfaire l'exigence "confiner au domaine du site", mais la comparaison directe
+ *   avec l'archive où Stream 3 fonctionnait a montré que cette archive tournait déjà en
+ *   mode ouvert (`strictDomainLock = false`) — le strict permanent est donc la régression la
+ *   plus probable de l'écran noir, retiré ici en priorité sur les autres suspects
+ *   (`setSupportMultipleWindows`, `onCreateWindow`) qui restent nécessaires à Stream 1.
  */
 private fun resolveStrictDomainLock(streamIndex: Int, userSetting: Boolean): Boolean {
     return when (streamIndex) {
         1 -> false
-        3 -> true
         else -> userSetting
     }
 }
