@@ -329,9 +329,9 @@ fun FilmsSeriesScreen(
     }
 
     // Politique de verrouillage de domaine par stream — voir doc de
-    // [resolveStrictDomainLock] : Stream 1 toujours ouvert, Stream 3 toujours confiné à son
-    // propre domaine (indépendamment de la plateforme et du réglage utilisateur), les autres
-    // streams suivent le réglage utilisateur (Réglages → icône DP-FLIX, OFF par défaut).
+    // [resolveStrictDomainLock] : Stream 1 toujours ouvert, Stream 2 toujours confiné à son
+    // propre domaine, Stream 3 (restauré 27/08/2026) et les autres streams suivent le
+    // réglage utilisateur (Réglages → icône DP-FLIX, OFF par défaut).
     val effectiveStrictDomainLock = resolveStrictDomainLock(
         streamIndex = streamIndex,
         userSetting = generalSettings?.strictDomainLock ?: false,
@@ -351,11 +351,11 @@ fun FilmsSeriesScreen(
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
-                    // Le profil desktop est réservé au moteur TV. Sur mobile, le Stream 3
-                    // conserve le profil WebView natif/tactile pour éviter de modifier le
-                    // rendu et le comportement du lecteur en fonction d'un faux environnement
-                    // desktop.
-                    preferDesktopUserAgent = useTvFlix && streamIndex == 3,
+                    // Restauré 27/08/2026 (§ README-stream3-restauration.md) : profil desktop
+                    // sur TOUTES les plateformes pour Stream 3 (mobile + TV), comme dans la
+                    // version où ce stream s'affichait correctement — la restriction au seul
+                    // moteur TV est ce qui a changé le rendu mobile entre les deux versions.
+                    preferDesktopUserAgent = streamIndex == 3,
                     // Stream 3 : certaines TV sont instables avec le WebView en couche logicielle.
                     // Les autres streams conservent le correctif Z-order existant.
                     forceSoftwareLayer = showVirtualCursor || (useTvFlix && streamIndex != 3),
@@ -473,8 +473,9 @@ fun FilmsSeriesScreen(
                     ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
                 strictDomainLock = effectiveStrictDomainLock,
                 // Le réglage n'a d'effet réel que pour les streams qui le suivent
-                // (voir [resolveStrictDomainLock]) — Stream 1/3 ont une politique fixe.
-                strictDomainLockEditable = streamIndex != 1 && streamIndex != 3,
+                // (voir [resolveStrictDomainLock]) — seul Stream 1 a une politique fixe,
+                // Stream 3 suit de nouveau ce réglage depuis sa restauration (27/08/2026).
+                strictDomainLockEditable = streamIndex != 1,
                 onStrictDomainLockChange = { enabled ->
                     scope.launch {
                         appRepository.settings.updateGeneralSettings { current ->
@@ -1118,22 +1119,24 @@ private val STREAM_INFRASTRUCTURE_HOSTS: Map<Int, Set<String>> = mapOf(
  *   redirection/`window.open()` hors de son domaine de base.
  * - Stream 2 (27/08/2026) : toujours confiné à son propre domaine (french-stream.one) +
  *   sous-domaines + infra nécessaire ([STREAM_INFRASTRUCTURE_HOSTS]), quelle que soit la
- *   plateforme (mobile + TV) et indépendamment du réglage utilisateur — même politique que
- *   Stream 3 et pour la même raison : renforcer la protection contre les redirections
- *   publicitaires en tout genre du site, le mode ouvert (liste noire pub uniquement) étant
- *   jugé insuffisant.
- * - Stream 3 : toujours confiné à son propre domaine + sous-domaines + infra nécessaire
- *   ([STREAM_INFRASTRUCTURE_HOSTS]), quelle que soit la plateforme et indépendamment du
- *   réglage utilisateur — sinon les CTA "Download App" / liens publicitaires externes du
- *   site s'ouvrent librement (mode ouvert = liste noire pub uniquement, insuffisant ici).
- * - Autre stream restant (Stream 4, Stream 5) : suit le réglage utilisateur (Réglages →
+ *   plateforme (mobile + TV) et indépendamment du réglage utilisateur — pour renforcer la
+ *   protection contre les redirections publicitaires en tout genre du site, le mode ouvert
+ *   (liste noire pub uniquement) étant jugé insuffisant. Stream 3 avait initialement reçu
+ *   la même politique fixe pour la même raison, mais elle a été annulée le jour même (voir
+ *   bullet Stream 3 ci-dessous) pour retrouver un affichage qui fonctionnait.
+ * - Stream 3 (restauré 27/08/2026, § README-stream3-restauration.md) : suit de nouveau le
+ *   réglage utilisateur comme avant l'introduction de la politique fixe — ouvert par défaut,
+ *   protection soft uniquement ([KNOWN_AD_REDIRECT_HOSTS]). La politique fixe (whitelist
+ *   exclusive) avait été ajoutée pour couper les CTA "Download App"/liens publicitaires
+ *   externes du site, mais correspond à une version du projet où Stream 3 ne s'affichait
+ *   déjà plus correctement — annulée en priorité pour retrouver l'affichage qui fonctionnait.
+ * - Autre stream restant (Stream 4, Stream 5) : suit lui aussi le réglage utilisateur (Réglages →
  *   icône DP-FLIX, ouvert par défaut).
  */
 private fun resolveStrictDomainLock(streamIndex: Int, userSetting: Boolean): Boolean {
     return when (streamIndex) {
         1 -> false
         2 -> true
-        3 -> true
         else -> userSetting
     }
 }
