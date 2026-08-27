@@ -328,6 +328,15 @@ fun FilmsSeriesScreen(
             }
     }
 
+    // Politique de verrouillage de domaine par stream — voir doc de
+    // [resolveStrictDomainLock] : Stream 1 toujours ouvert, Stream 3 toujours confiné à son
+    // propre domaine (indépendamment de la plateforme et du réglage utilisateur), les autres
+    // streams suivent le réglage utilisateur (Réglages → icône DP-FLIX, OFF par défaut).
+    val effectiveStrictDomainLock = resolveStrictDomainLock(
+        streamIndex = streamIndex,
+        userSetting = generalSettings?.strictDomainLock ?: false,
+    )
+
     Box(modifier = boxModifier) {
         if (generalSettings == null) {
             CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
@@ -335,19 +344,24 @@ fun FilmsSeriesScreen(
             // `key(url)` : si l'utilisateur modifie le lien dans Réglages pendant que cet
             // écran est déjà ouvert (retour arrière, changement, retour ici), on force une
             // toute nouvelle WebView plutôt que de tenter un `loadUrl` sur l'existante —
-            // plus simple et plus sûr que de garder une référence mutable à la WebView.
-            key(url, streamIndex, !(useTvFlix && streamIndex == 1)) {
+            // plus simple et plus sûr que de garder une référence mutable à la WebView. Le
+            // 3e élément de la clé réagit aussi à un changement live du réglage utilisateur
+            // (Stream 2) pendant que l'écran est déjà ouvert.
+            key(url, streamIndex, effectiveStrictDomainLock) {
                 LockedWebView(
                     url = url,
                     sniffer = sniffer,
-                    // Le profil desktop du Stream 3 est réservé au moteur TV.
-                    // Sur mobile, le même stream doit conserver le profil WebView natif.
+                    // Le profil desktop est réservé au moteur TV. Sur mobile, le Stream 3
+                    // conserve le profil WebView natif/tactile pour éviter de modifier le
+                    // rendu et le comportement du lecteur en fonction d'un faux environnement
+                    // desktop.
                     preferDesktopUserAgent = useTvFlix && streamIndex == 3,
                     // Stream 3 : certaines TV sont instables avec le WebView en couche logicielle.
                     // Les autres streams conservent le correctif Z-order existant.
                     forceSoftwareLayer = showVirtualCursor || (useTvFlix && streamIndex != 3),
                     useTvFlix = useTvFlix,
-                    strictDomainLock = !(useTvFlix && streamIndex == 1), // TV Stream 1 : navigation principale totalement ouverte pour suivre ses redirections.
+                    strictDomainLock = effectiveStrictDomainLock,
+                    hardBlockedHosts = resolveHardBlockedHosts(streamIndex),
                     savedState = webViewStateBundle.takeIf { webViewStateUrl == url },
                     onSaveState = { bundle ->
                         webViewStateBundle = bundle
@@ -457,7 +471,10 @@ fun FilmsSeriesScreen(
             ExceptionDomainsDialog(
                 domains = generalSettings?.extraAllowedDomains
                     ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
-                strictDomainLock = !(useTvFlix && streamIndex == 1), // TV Stream 1 : navigation principale totalement ouverte pour suivre ses redirections.
+                strictDomainLock = effectiveStrictDomainLock,
+                // Le réglage n'a d'effet réel que pour les streams qui le suivent
+                // (voir [resolveStrictDomainLock]) — Stream 1/3 ont une politique fixe.
+                strictDomainLockEditable = streamIndex != 1 && streamIndex != 3,
                 onStrictDomainLockChange = { enabled ->
                     scope.launch {
                         appRepository.settings.updateGeneralSettings { current ->
@@ -651,6 +668,11 @@ private fun DetectedStreamsDialog(
 private fun ExceptionDomainsDialog(
     domains: Set<String>,
     strictDomainLock: Boolean,
+    // Fix 26/08/2026 : certains streams ont désormais une politique fixe (voir
+    // [resolveStrictDomainLock]) — le switch reste visible pour montrer l'état réel
+    // appliqué, mais devient non interactif pour ne pas laisser croire qu'il change
+    // quelque chose sur ces streams.
+    strictDomainLockEditable: Boolean = true,
     onStrictDomainLockChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onAddDomain: (String) -> Unit,
@@ -696,16 +718,22 @@ private fun ExceptionDomainsDialog(
                             style = MaterialTheme.typography.bodyLarge
                         )
                         Text(
-                            text = "Verrouillage strict : seuls le site, ses sous-domaines " +
-                                "et la liste ci-dessous sont autorisés. Désactivé = navigation " +
-                                "ouverte (recommandé) avec filtrage soft des régies pub connues.",
+                            text = if (strictDomainLockEditable) {
+                                "Verrouillage strict : seuls le site, ses sous-domaines " +
+                                    "et la liste ci-dessous sont autorisés. Désactivé = navigation " +
+                                    "ouverte (recommandé) avec filtrage soft des régies pub connues."
+                            } else {
+                                "Ce stream a une politique fixe, indépendante de ce réglage " +
+                                    "(non modifiable ici)."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     Switch(
                         checked = strictDomainLock,
-                        onCheckedChange = onStrictDomainLockChange
+                        onCheckedChange = onStrictDomainLockChange,
+                        enabled = strictDomainLockEditable
                     )
                 }
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -1081,11 +1109,63 @@ private val STREAM_INFRASTRUCTURE_HOSTS: Map<Int, Set<String>> = mapOf(
     ),
 )
 
+/**
+ * Politique de verrouillage de domaine par stream (fix 26/08/2026, remplace la formule
+ * `!(useTvFlix && streamIndex == 1)` introduite avec TvFlix qui forçait le mode strict
+ * partout sauf TV Stream 1, mobile inclus, sans jamais lire [GeneralSettings.strictDomainLock]).
+ *
+ * - Stream 1 : toujours ouvert (mobile + TV) — le site n'accède à sa vraie page qu'via une
+ *   redirection/`window.open()` hors de son domaine de base.
+ * - Stream 2 (27/08/2026) : toujours confiné à son propre domaine (french-stream.one) +
+ *   sous-domaines + infra nécessaire ([STREAM_INFRASTRUCTURE_HOSTS]), quelle que soit la
+ *   plateforme (mobile + TV) et indépendamment du réglage utilisateur — même politique que
+ *   Stream 3 et pour la même raison : renforcer la protection contre les redirections
+ *   publicitaires en tout genre du site, le mode ouvert (liste noire pub uniquement) étant
+ *   jugé insuffisant.
+ * - Stream 3 : toujours confiné à son propre domaine + sous-domaines + infra nécessaire
+ *   ([STREAM_INFRASTRUCTURE_HOSTS]), quelle que soit la plateforme et indépendamment du
+ *   réglage utilisateur — sinon les CTA "Download App" / liens publicitaires externes du
+ *   site s'ouvrent librement (mode ouvert = liste noire pub uniquement, insuffisant ici).
+ * - Autre stream restant (Stream 4, Stream 5) : suit le réglage utilisateur (Réglages →
+ *   icône DP-FLIX, ouvert par défaut).
+ */
+private fun resolveStrictDomainLock(streamIndex: Int, userSetting: Boolean): Boolean {
+    return when (streamIndex) {
+        1 -> false
+        2 -> true
+        3 -> true
+        else -> userSetting
+    }
+}
+
 private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<String> {
     return buildSet {
         addAll(userExtras)
         addAll(STREAM_INFRASTRUCTURE_HOSTS[streamIndex].orEmpty())
     }
+}
+
+/**
+ * Sites tiers à bloquer entièrement dans un stream donné, quelle que soit la façon dont
+ * ils apparaissent (navigation principale OU intégration en arrière-plan de type iframe
+ * publicitaire) — contrairement à [KNOWN_AD_REDIRECT_HOSTS], qui ne couvre que la
+ * navigation principale (§ doc de [isKnownAdRedirectHost]) et laisse donc passer un site
+ * injecté en sous-ressource/iframe plein cadre par une régie pub du site visité.
+ *
+ * Ajouté le 27/08/2026 : le site de paris sportifs MELBET s'affichait en plein écran sur
+ * le Stream 3 mobile (capture fournie par l'utilisateur), très probablement via une
+ * iframe publicitaire du site plutôt qu'une vraie navigation — d'où son passage inaperçu
+ * par la whitelist stricte du Stream 3 ([STREAM_INFRASTRUCTURE_HOSTS], qui ne régit que
+ * la navigation principale). Bloqué ici au niveau des requêtes réseau elles-mêmes (voir
+ * usage dans [LockedWebView.shouldInterceptRequest]), donc y compris en iframe — sans
+ * toucher à la whitelist ni à aucun autre stream/hôte.
+ */
+private val STREAM_HARD_BLOCKED_HOSTS: Map<Int, Set<String>> = mapOf(
+    3 to setOf("melbet.com", "1xbet.com"),
+)
+
+private fun resolveHardBlockedHosts(streamIndex: Int): Set<String> {
+    return STREAM_HARD_BLOCKED_HOSTS[streamIndex].orEmpty()
 }
 
 /**
@@ -1146,6 +1226,13 @@ private fun LockedWebView(
      * Voir doc de classe de `FilmsSeriesScreen` (§ Verrouillage du navigateur).
      */
     strictDomainLock: Boolean = true,
+    /**
+     * Blocage dur, indépendant de [strictDomainLock] (§ doc de [STREAM_HARD_BLOCKED_HOSTS]) :
+     * ces hôtes ne chargent JAMAIS, ni en navigation principale ni en sous-ressource/iframe —
+     * à la différence du reste de cette fonction, qui laisse toujours passer les sous-ressources
+     * pour ne pas casser CDN/segments vidéo.
+     */
+    hardBlockedHosts: Set<String> = emptySet(),
     savedState: Bundle? = null,
     onSaveState: (Bundle) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit,
@@ -1177,6 +1264,17 @@ private fun LockedWebView(
     val onFullscreenState = rememberUpdatedState(onFullscreenChanged)
     val onPageTitleState = rememberUpdatedState(onPageTitleChanged)
     val onRendererGoneState = rememberUpdatedState(onRendererGone)
+    val normalizedHardBlockedHosts = remember(hardBlockedHosts) {
+        hardBlockedHosts
+            .map { it.trim().lowercase().removePrefix("www.") }
+            .filter { it.isNotEmpty() }
+            .toSet()
+    }
+
+    fun isHardBlockedHost(host: String?): Boolean {
+        if (host == null) return false
+        return normalizedHardBlockedHosts.any { blocked -> host == blocked || host.endsWith(".$blocked") }
+    }
 
     AndroidView(
         modifier = modifier,
@@ -1194,6 +1292,9 @@ private fun LockedWebView(
                 val scheme = uri.scheme?.lowercase()
                 if (scheme != "http" && scheme != "https") return false
                 val host = uri.host?.lowercase()?.removePrefix("www.")
+                // Blocage dur (§ doc de [STREAM_HARD_BLOCKED_HOSTS]) vérifié en tout
+                // premier : prioritaire même sur la liste noire pub ci-dessous.
+                if (isHardBlockedHost(host)) return false
                 // Liste noire vérifiée en premier, avant les deux exemptions
                 // ci-dessous (mode ouvert ET whitelist stricte) : une régie
                 // pub/redirecteur connue reste bloquée dans tous les cas — voir
@@ -1415,6 +1516,19 @@ private fun LockedWebView(
                         view: WebView?,
                         request: WebResourceRequest
                     ): android.webkit.WebResourceResponse? {
+                        // Blocage dur (§ doc de [STREAM_HARD_BLOCKED_HOSTS]) : contrairement
+                        // au reste de cette méthode (observation pure, ne bloque jamais rien),
+                        // ces hôtes précis sont coupés ici même en sous-ressource/iframe —
+                        // c'est le seul moyen de les bloquer quand ils n'apparaissent jamais
+                        // comme une navigation principale (donc invisibles à
+                        // isAllowedMainFrameUri/shouldOverrideUrlLoading).
+                        if (isHardBlockedHost(request.url.host?.lowercase()?.removePrefix("www."))) {
+                            return android.webkit.WebResourceResponse(
+                                "text/plain",
+                                "utf-8",
+                                java.io.ByteArrayInputStream(ByteArray(0))
+                            )
+                        }
                         try {
                             snifferState.value.onRequest(request)
                             // Aucun accès CookieManager sur le chemin réseau normal.
