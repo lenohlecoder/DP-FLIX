@@ -1160,12 +1160,14 @@ private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<
  * plein écran sur le Stream 3 mobile (capture fournie par l'utilisateur), très probablement
  * via une iframe publicitaire du site plutôt qu'une vraie navigation — d'où son passage
  * inaperçu par la whitelist stricte du Stream 3 ([STREAM_INFRASTRUCTURE_HOSTS], qui ne
- * régit que la navigation principale). Bloqué ici au niveau des requêtes réseau elles-mêmes
+ * régit que la navigation principale). Bloqué au niveau des requêtes réseau elles-mêmes
  * (voir usage dans [LockedWebView.shouldInterceptRequest]), donc y compris en iframe — sans
- * toucher à la whitelist ni à aucun autre stream/hôte. Même constat et même correctif pour
- * le Stream 2 (French Stream) le même jour : chaîne de redirection publicitaire classique
- * (melbet.ci, 1xlite-83442.com, etc., fournie par l'utilisateur) traversant l'iframe du
- * lecteur choisi (DOOD/VOE/VIDZY/FILMOON).
+ * toucher à la whitelist ni à aucun autre stream/hôte. Retiré du Stream 3 le jour même
+ * (toujours écran noir malgré le passage à un blocage iframe-only, cause encore incertaine —
+ * l'écran noir a la priorité sur le blocage MELBET/1xbet tant que la vraie cause n'est pas
+ * identifiée). Même constat et même correctif conservé pour le Stream 2 (French Stream) :
+ * chaîne de redirection publicitaire classique (melbet.ci, 1xlite-83442.com, etc., fournie
+ * par l'utilisateur) traversant l'iframe du lecteur choisi (DOOD/VOE/VIDZY/FILMOON).
  */
 private val STREAM_HARD_BLOCKED_HOSTS: Map<Int, Set<String>> = mapOf(
     2 to setOf(
@@ -1178,7 +1180,6 @@ private val STREAM_HARD_BLOCKED_HOSTS: Map<Int, Set<String>> = mapOf(
         "ragiscafila.rest",
         "tracylocalschool.com",
     ),
-    3 to setOf("melbet.com", "1xbet.com"),
 )
 
 private fun resolveHardBlockedHosts(streamIndex: Int): Set<String> {
