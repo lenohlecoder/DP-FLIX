@@ -1146,21 +1146,38 @@ private fun resolveAllowedHosts(streamIndex: Int, userExtras: Set<String>): Set<
 }
 
 /**
- * Sites tiers à bloquer entièrement dans un stream donné, quelle que soit la façon dont
- * ils apparaissent (navigation principale OU intégration en arrière-plan de type iframe
- * publicitaire) — contrairement à [KNOWN_AD_REDIRECT_HOSTS], qui ne couvre que la
- * navigation principale (§ doc de [isKnownAdRedirectHost]) et laisse donc passer un site
- * injecté en sous-ressource/iframe plein cadre par une régie pub du site visité.
+ * Sites tiers dont l'affichage en pleine page (via iframe publicitaire) doit être coupé
+ * dans un stream donné, quelle que soit la façon dont ils apparaissent — contrairement à
+ * [KNOWN_AD_REDIRECT_HOSTS], qui ne couvre que la navigation principale (§ doc de
+ * [isKnownAdRedirectHost]) et laisse donc passer un site injecté en iframe plein cadre
+ * par une régie pub du site visité. Seul le CHARGEMENT DE PAGE de l'iframe est coupé
+ * (voir garde `isDocumentSubframeRequest` dans [LockedWebView.shouldInterceptRequest]) —
+ * pas les scripts/XHR/pixels annexes vers ces mêmes hôtes, dont la page principale
+ * pourrait dépendre pour fonctionner (fix du 27/08/2026 : bloquer aveuglément toute
+ * requête vers ces hôtes rendait le Stream 3 entièrement noir).
  *
- * Ajouté le 27/08/2026 : le site de paris sportifs MELBET s'affichait en plein écran sur
- * le Stream 3 mobile (capture fournie par l'utilisateur), très probablement via une
- * iframe publicitaire du site plutôt qu'une vraie navigation — d'où son passage inaperçu
- * par la whitelist stricte du Stream 3 ([STREAM_INFRASTRUCTURE_HOSTS], qui ne régit que
- * la navigation principale). Bloqué ici au niveau des requêtes réseau elles-mêmes (voir
- * usage dans [LockedWebView.shouldInterceptRequest]), donc y compris en iframe — sans
- * toucher à la whitelist ni à aucun autre stream/hôte.
+ * Ajouté le 27/08/2026 : le site de paris sportifs MELBET (puis 1xbet) s'affichait en
+ * plein écran sur le Stream 3 mobile (capture fournie par l'utilisateur), très probablement
+ * via une iframe publicitaire du site plutôt qu'une vraie navigation — d'où son passage
+ * inaperçu par la whitelist stricte du Stream 3 ([STREAM_INFRASTRUCTURE_HOSTS], qui ne
+ * régit que la navigation principale). Bloqué ici au niveau des requêtes réseau elles-mêmes
+ * (voir usage dans [LockedWebView.shouldInterceptRequest]), donc y compris en iframe — sans
+ * toucher à la whitelist ni à aucun autre stream/hôte. Même constat et même correctif pour
+ * le Stream 2 (French Stream) le même jour : chaîne de redirection publicitaire classique
+ * (melbet.ci, 1xlite-83442.com, etc., fournie par l'utilisateur) traversant l'iframe du
+ * lecteur choisi (DOOD/VOE/VIDZY/FILMOON).
  */
 private val STREAM_HARD_BLOCKED_HOSTS: Map<Int, Set<String>> = mapOf(
+    2 to setOf(
+        "xsportshd.com",
+        "melbet.ci",
+        "wuytg.com",
+        "1xlite-83442.com",
+        "moonlighthathel.org",
+        "golzu.com",
+        "ragiscafila.rest",
+        "tracylocalschool.com",
+    ),
     3 to setOf("melbet.com", "1xbet.com"),
 )
 
@@ -1518,11 +1535,26 @@ private fun LockedWebView(
                     ): android.webkit.WebResourceResponse? {
                         // Blocage dur (§ doc de [STREAM_HARD_BLOCKED_HOSTS]) : contrairement
                         // au reste de cette méthode (observation pure, ne bloque jamais rien),
-                        // ces hôtes précis sont coupés ici même en sous-ressource/iframe —
+                        // ces hôtes précis sont coupés ici même hors navigation principale —
                         // c'est le seul moyen de les bloquer quand ils n'apparaissent jamais
                         // comme une navigation principale (donc invisibles à
                         // isAllowedMainFrameUri/shouldOverrideUrlLoading).
-                        if (isHardBlockedHost(request.url.host?.lowercase()?.removePrefix("www."))) {
+                        //
+                        // Fix (27/08/2026) : bloquer TOUTES les requêtes vers ces hôtes (y
+                        // compris scripts/XHR/pixels) rendait le Stream 3 entièrement noir —
+                        // le site attend visiblement une réponse de ces domaines (mécanisme
+                        // anti-adblock classique d'un site financé par la pub) avant de retirer
+                        // son écran de chargement, et ne recevait plus jamais cette réponse.
+                        // On ne coupe donc plus que le CHARGEMENT DE PAGE de l'iframe pub
+                        // elle-même (frame secondaire + en-tête Accept de type document HTML,
+                        // signature d'une navigation de frame et non d'un script/pixel/XHR) :
+                        // ça empêche l'iframe de s'afficher en plein cadre sans jamais couper
+                        // les requêtes annexes dont la page principale pourrait dépendre.
+                        val isDocumentSubframeRequest = !request.isForMainFrame &&
+                            request.requestHeaders["Accept"]?.contains("text/html") == true
+                        if (isDocumentSubframeRequest &&
+                            isHardBlockedHost(request.url.host?.lowercase()?.removePrefix("www."))
+                        ) {
                             return android.webkit.WebResourceResponse(
                                 "text/plain",
                                 "utf-8",
