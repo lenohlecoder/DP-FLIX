@@ -1,5 +1,6 @@
 package com.dpflix.android.home
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -13,15 +14,17 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Download
@@ -122,6 +125,17 @@ fun HomeScreen(
     // écran, affiché au clic sur le bouton Films et Séries avant de naviguer — voir
     // FilmsSeriesStreamPickerDialog.
     var showFilmsSeriesPicker by remember { mutableStateOf(false) }
+
+    // Affichage par liste de catégories (§4.4, ajout du 27 août 2026, capture d'app de
+    // référence "Televizio") : l'accueil n'affiche plus directement les rangées
+    // horizontales de chaînes par catégorie, mais une liste de catégories (nom + nombre
+    // de chaînes + chevron). Un tap ouvre l'écran détail de cette catégorie (grille des
+    // chaînes qu'elle contient) — bien plus lisible sur une grosse playlist avec
+    // beaucoup de catégories ET beaucoup de chaînes par catégorie, où faire défiler N
+    // rangées horizontales en même temps devenait pénible. `null` = liste des catégories
+    // affichée ; sinon nom de la catégorie actuellement ouverte.
+    var openCategoryName by remember { mutableStateOf<String?>(null) }
+    BackHandler(enabled = openCategoryName != null) { openCategoryName = null }
 
     // Fix (25 juillet 2026, vague 1 "stop crash", diagnostic point 2) : voir la doc de
     // HomeUiState.previewPlaybackActive. Remet le mini-lecteur en état "actif" à chaque
@@ -277,11 +291,22 @@ fun HomeScreen(
                             onChannelClick = onChannelClick
                         )
                     }
-                    else -> ChannelCategoryList(
-                        categories = uiState.categories,
-                        selectedChannelId = preview?.id,
-                        onChannelClick = onChannelClick
-                    )
+                    else -> {
+                        val openCategory = uiState.categories.firstOrNull { it.name == openCategoryName }
+                        if (openCategory != null) {
+                            CategoryChannelsScreen(
+                                category = openCategory,
+                                selectedChannelId = preview?.id,
+                                onBack = { openCategoryName = null },
+                                onChannelClick = onChannelClick
+                            )
+                        } else {
+                            ChannelCategoryPickerList(
+                                categories = uiState.categories,
+                                onCategoryClick = { category -> openCategoryName = category.name }
+                            )
+                        }
+                    }
                 }
             }
 
@@ -437,7 +462,8 @@ private val DIACRITICS_REGEX = Regex("\\p{Mn}+")
 
 /**
  * Résultats de recherche (§4.4, ajout du 8 août 2026) : grille plate, TOUTES catégories
- * confondues — à la différence de [ChannelCategoryList], qui groupe par catégorie.
+ * confondues — à la différence de [ChannelCategoryPickerList]/[CategoryChannelsScreen],
+ * qui groupent par catégorie.
  * Réutilise [ChannelCard] tel quel (même apparence qu'une chaîne dans une rangée).
  */
 @Composable
@@ -464,53 +490,115 @@ private fun SearchResultsGrid(
     }
 }
 
+/**
+ * Liste des catégories (§4.4, remplace au 27 août 2026 les rangées horizontales par
+ * catégorie — capture d'app de référence "Televizio" fournie par l'utilisateur) : une
+ * ligne par catégorie non vide, avec son nombre de chaînes et un chevron, dans le même
+ * esprit que la référence ("Généraliste 102 >", "Divertissement 54 >", etc.). Un tap
+ * ouvre [CategoryChannelsScreen] pour cette catégorie — préférable à tout afficher
+ * d'un coup quand la playlist a beaucoup de catégories ET beaucoup de chaînes par
+ * catégorie (grosse playlist Xtream/M3U).
+ */
 @Composable
-private fun ChannelCategoryList(
+private fun ChannelCategoryPickerList(
     categories: List<ChannelCategory>,
-    selectedChannelId: String?,
-    onChannelClick: (Channel) -> Unit
+    onCategoryClick: (ChannelCategory) -> Unit
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(20.dp)
-    ) {
-        items(categories, key = { it.name }) { category ->
-            if (category.channels.isNotEmpty()) {
-                CategoryRow(
-                    category = category,
-                    selectedChannelId = selectedChannelId,
-                    onChannelClick = onChannelClick
-                )
-            }
+    val nonEmptyCategories = categories.filter { it.channels.isNotEmpty() }
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        items(nonEmptyCategories, key = { it.name }) { category ->
+            CategoryListRow(
+                category = category,
+                onClick = { onCategoryClick(category) }
+            )
         }
     }
 }
 
-/** Une rangée horizontale (§4.4 "style Netflix") : nom de catégorie en haut à gauche, défilement horizontal des chaînes. */
 @Composable
-private fun CategoryRow(
-    category: ChannelCategory,
-    selectedChannelId: String?,
-    onChannelClick: (Channel) -> Unit
-) {
-    Column {
+private fun CategoryListRow(category: ChannelCategory, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 20.dp, vertical = 18.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
         Text(
             text = category.name.ifBlank { "Sans catégorie" },
             color = DpFlixColors.OnBackground,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp)
+            style = MaterialTheme.typography.titleMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
         )
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = "${category.channels.size}",
+                color = DpFlixColors.OnBackgroundMuted,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Icon(
+                imageVector = Icons.Filled.ChevronRight,
+                contentDescription = null,
+                tint = DpFlixColors.OnBackgroundMuted,
+                modifier = Modifier.padding(start = 4.dp)
+            )
+        }
+    }
+}
+
+/**
+ * Écran détail d'une catégorie (§4.4, ajout du 27 août 2026) : ouvert depuis
+ * [ChannelCategoryPickerList], affiche uniquement les chaînes de cette catégorie sous
+ * forme de grille (même carte que [ChannelCard]/[SearchResultsGrid]) avec un bouton
+ * retour vers la liste des catégories. Le retour matériel/geste ([BackHandler] dans
+ * [HomeScreen]) fait la même chose que ce bouton.
+ */
+@Composable
+private fun CategoryChannelsScreen(
+    category: ChannelCategory,
+    selectedChannelId: String?,
+    onBack: () -> Unit,
+    onChannelClick: (Channel) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.Filled.ArrowBack,
+                    contentDescription = "Retour aux catégories",
+                    tint = DpFlixColors.OnBackground
+                )
+            }
+            Text(
+                text = category.name.ifBlank { "Sans catégorie" },
+                color = DpFlixColors.OnBackground,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(category.channels, key = { it.id }) { channel ->
                 ChannelCard(
                     channel = channel,
                     isSelected = channel.id == selectedChannelId,
-                    onClick = { onChannelClick(channel) }
+                    onClick = { onChannelClick(channel) },
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
