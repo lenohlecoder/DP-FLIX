@@ -105,7 +105,7 @@ import java.util.Locale
 import kotlin.system.exitProcess
 
 
-open private val DPFLIX_AD_REDIRECT_HOSTS = setOf(
+private val DPFLIX_AD_REDIRECT_HOSTS = setOf(
     "propellerads.com", "propellerapi.com", "onclickmax.com", "onclckmx.com",
     "adsterra.com", "adsterratech.com", "exoclick.com", "exosrv.com",
     "juicyads.com", "juicyads.net", "trafficjunky.net", "trafficjunky.com",
