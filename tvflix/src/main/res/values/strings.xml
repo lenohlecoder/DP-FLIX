@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="tvflix_about_title">À propos de TvFlix</string>
-    <string name="tvflix_about_message">TvFlix utilise des sources et des idées issues de TV Bro.\n\nTV Bro\nhttps://github.com/truefedex/tv-bro\n\nCopyright (c) 2019, Fedir Tsapana\nLicence BSD modifiée — voir le dépôt pour les conditions complètes.</string>
-    <string name="tvflix_about_credit">Based on TV Bro\nhttps://github.com/truefedex/tv-bro</string>
-    <string name="tvflix_about_ok">OK</string>
-    <string name="tvflix_about_open_link">Ouvrir le lien</string>
-</resources>

@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">TvFlix Host</string>
-    <string name="menu_about">À propos</string>
-    <string name="menu_zoom_in">Zoom +</string>
-    <string name="menu_zoom_out">Zoom −</string>
-</resources>
