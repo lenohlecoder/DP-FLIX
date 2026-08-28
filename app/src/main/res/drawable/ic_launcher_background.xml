@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Fond de l'adaptive icon (étape 2c).
+    Design simple, cohérent avec l'habillage rouge/noir de l'app (fond mer/montagne
+    + lumière rouge verticale des écrans d'onboarding) : base quasi noire + halo rouge
+    sombre décentré, approximé par des cercles semi-transparents empilés (pas de
+    dégradé natif, pour rester compatible sans dépendance supplémentaire).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Base noire -->
+    <path
+        android:pathData="M0,0h108v108h-0z"
+        android:fillColor="#0B0B0D" />
+
+    <!-- Halo rouge, décentré bas-droite, en cercles concentriques dégressifs -->
+    <path
+        android:pathData="M108,90 m-46,0 a46,46 0,1 1,92 0 a46,46 0,1 1,-92 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.10" />
+    <path
+        android:pathData="M104,86 m-32,0 a32,32 0,1 1,64 0 a32,32 0,1 1,-64 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.14" />
+    <path
+        android:pathData="M100,82 m-18,0 a18,18 0,1 1,36 0 a18,18 0,1 1,-36 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.18" />
+
+    <!-- Fine ligne rouge verticale (clin d'œil au repère lumineux des écrans d'onboarding) -->
+    <path
+        android:pathData="M96,4 L98,4 L98,60 L96,60 Z"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.55" />
+</vector>

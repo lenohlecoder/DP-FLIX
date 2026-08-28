@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Fallback pour API 23-25 (minSdk 23), avant l'adaptive icon (API 26+).
+    Fusion simple du fond + premier plan de l'adaptive icon en un seul vecteur,
+    utilisée via res/mipmap-anydpi/ic_launcher.xml (résolue uniquement sur les
+    appareils qui ne comprennent pas mipmap-anydpi-v26).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Fond -->
+    <path
+        android:pathData="M0,0h108v108h-0z"
+        android:fillColor="#0B0B0D" />
+    <path
+        android:pathData="M108,90 m-46,0 a46,46 0,1 1,92 0 a46,46 0,1 1,-92 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.10" />
+    <path
+        android:pathData="M104,86 m-32,0 a32,32 0,1 1,64 0 a32,32 0,1 1,-64 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.14" />
+    <path
+        android:pathData="M100,82 m-18,0 a18,18 0,1 1,36 0 a18,18 0,1 1,-36 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.18" />
+    <path
+        android:pathData="M96,4 L98,4 L98,60 L96,60 Z"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.55" />
+
+    <!-- Premier plan : badge -->
+    <path
+        android:pathData="M32,24 h44 a8,8 0,0 1,8 8 v44 a8,8 0,0 1,-8 8 h-44 a8,8 0,0 1,-8 -8 v-44 a8,8 0,0 1,8 -8 z"
+        android:fillColor="#F5F5F5" />
+    <path
+        android:pathData="M48,40 L72,54 L48,68 Z"
+        android:fillColor="#E4222A" />
+    <path
+        android:pathData="M18,54 h8 v3 h-8 z"
+        android:fillColor="#E4222A" />
+    <path
+        android:pathData="M82,54 h8 v3 h-8 z"
+        android:fillColor="#E4222A" />
+</vector>

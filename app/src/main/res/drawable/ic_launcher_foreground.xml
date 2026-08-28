@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Premier plan de l'adaptive icon (étape 2c).
+    Badge simple : carré arrondi blanc + triangle "play" rouge centré + deux petits
+    tirets rouges de part et d'autre (écho du "— FLIX —" des écrans de l'app).
+    Contenu maintenu dans la zone de sécurité (~66dp centrés sur 108dp) pour survivre
+    au masquage de l'adaptive icon (cercle, carré arrondi, "squircle", etc.).
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Carré arrondi blanc -->
+    <path
+        android:pathData="M32,24 h44 a8,8 0,0 1,8 8 v44 a8,8 0,0 1,-8 8 h-44 a8,8 0,0 1,-8 -8 v-44 a8,8 0,0 1,8 -8 z"
+        android:fillColor="#F5F5F5" />
+
+    <!-- Triangle "play" rouge -->
+    <path
+        android:pathData="M48,40 L72,54 L48,68 Z"
+        android:fillColor="#E4222A" />
+
+    <!-- Tirets rouges d'accent, gauche et droite -->
+    <path
+        android:pathData="M18,54 h8 v3 h-8 z"
+        android:fillColor="#E4222A" />
+    <path
+        android:pathData="M82,54 h8 v3 h-8 z"
+        android:fillColor="#E4222A" />
+</vector>

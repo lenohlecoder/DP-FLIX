@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Banner Android TV (étape 2c), format requis par LEANBACK_LAUNCHER : 320x180dp.
+    Même habillage rouge/noir que l'adaptive icon : fond noir + halo rouge, badge
+    play blanc/rouge aligné à gauche. Un vrai wordmark "DP-FLIX" pourra remplacer
+    ce banner plus tard si un fichier logo dédié est fourni.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+
+    <!-- Fond noir -->
+    <path
+        android:pathData="M0,0h320v180h-320z"
+        android:fillColor="#0B0B0D" />
+
+    <!-- Halo rouge décentré à droite -->
+    <path
+        android:pathData="M300,150 m-70,0 a70,70 0,1 1,140 0 a70,70 0,1 1,-140 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.10" />
+    <path
+        android:pathData="M292,140 m-46,0 a46,46 0,1 1,92 0 a46,46 0,1 1,-92 0"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.14" />
+
+    <!-- Ligne rouge verticale (repère lumineux, aligné à droite) -->
+    <path
+        android:pathData="M296,10 L299,10 L299,100 L296,100 Z"
+        android:fillColor="#E4222A"
+        android:fillAlpha="0.55" />
+
+    <!-- Badge : carré arrondi blanc + triangle play rouge, aligné à gauche -->
+    <path
+        android:pathData="M28,58 h64 a10,10 0,0 1,10 10 v64 a10,10 0,0 1,-10 10 h-64 a10,10 0,0 1,-10 -10 v-64 a10,10 0,0 1,10 -10 z"
+        android:fillColor="#F5F5F5" />
+    <path
+        android:pathData="M56,80 L96,100 L56,120 Z"
+        android:fillColor="#E4222A" />
+
+    <!-- Tirets d'accent sous le badge, écho du "— FLIX —" -->
+    <path
+        android:pathData="M28,150 h18 v4 h-18 z"
+        android:fillColor="#E4222A" />
+    <path
+        android:pathData="M84,150 h18 v4 h-18 z"
+        android:fillColor="#E4222A" />
+</vector>

@@ -1,0 +1,43 @@
+workflows:
+  android-release:
+    name: DP-Flix — Build Android release (APK signé)
+    max_build_duration: 60
+    # mac_mini_m2 : disponible sur le plan gratuit Codemagic (500 min/mois), contrairement
+    # à linux_x2 qui nécessite un compte avec facturation activée. Un simple
+    # `assembleRelease` Android n'a besoin ni d'émulateur ni de Docker, donc tourne aussi
+    # bien sur macOS que sur Linux.
+    instance_type: mac_mini_m2
+
+    environment:
+      # "dpflix_keystore" doit être le NOM EXACT donné au keystore uploadé dans
+      # Codemagic → Teams → Code signing identities → Android keystores.
+      # Codemagic injecte alors automatiquement 4 variables d'environnement
+      # utilisées par app/build.gradle.kts :
+      #   CM_KEYSTORE_PATH, CM_KEYSTORE_PASSWORD, CM_KEY_ALIAS, CM_KEY_PASSWORD
+      android_signing:
+        - dpflix_keystore
+      java: 17
+      vars:
+        PACKAGE_NAME: "com.dpflix.android"
+
+    triggering:
+      events:
+        - push
+      # ⚠️ à adapter si la branche par défaut du dépôt n'est pas "main"
+      branch_patterns:
+        - pattern: Test
+          include: true
+          source: true
+
+    scripts:
+      - name: Générer le wrapper Gradle (absent du dépôt, cf. étape 2a)
+        script: |
+          gradle wrapper --gradle-version 8.9
+
+      - name: Construire l'APK release signé
+        script: |
+          ./gradlew assembleRelease
+
+    artifacts:
+      - app/build/outputs/apk/release/*.apk
+      - app/build/outputs/**/mapping.txt
