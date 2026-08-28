@@ -82,7 +82,7 @@ class AutoUpdateModel: ActiveModel() {
                             val intent = Intent()
                             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                                 intent.action = Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES
-                                intent.data = Uri.parse("package:${BuildConfig.APPLICATION_ID}")
+                                intent.data = Uri.parse("package:${AppContext.get().packageName}")
                             } else {
                                 intent.action = Settings.ACTION_SECURITY_SETTINGS
                             }
