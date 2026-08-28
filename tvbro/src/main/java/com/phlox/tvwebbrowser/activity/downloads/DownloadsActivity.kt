@@ -117,7 +117,7 @@ class DownloadsActivity : AppCompatActivity(), AdapterView.OnItemClickListener, 
             }
 
             FileProvider.getUriForFile(this@DownloadsActivity,
-                BuildConfig.APPLICATION_ID + ".provider",
+                packageName + ".provider",
                 file)
         }
 
@@ -197,7 +197,7 @@ class DownloadsActivity : AppCompatActivity(), AdapterView.OnItemClickListener, 
                         val intentSettings = Intent()
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                             intentSettings.action = Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES
-                            intentSettings.data = Uri.parse("package:${BuildConfig.APPLICATION_ID}")
+                            intentSettings.data = Uri.parse("package:${packageName}")
                         } else {
                             intentSettings.action = Settings.ACTION_SECURITY_SETTINGS
                         }

@@ -329,6 +329,10 @@ class WebViewWebEngine(val tab: WebTabState) : WebEngine, CursorDrawerDelegate.C
             callback?.onBlockedAd(url.toString())
         }
 
+        override fun onWebViewRenderProcessGone(didCrash: Boolean) {
+            callback?.onWebViewRenderProcessGone(didCrash)
+        }
+
         override fun onBlockedDialog(newTab: Boolean) {
             callback?.onBlockedDialog(newTab)
         }
@@ -380,9 +384,6 @@ class WebViewWebEngine(val tab: WebTabState) : WebEngine, CursorDrawerDelegate.C
         }
     }
 
-    override fun onWebViewRenderProcessGone(didCrash: Boolean) {
-        callback?.onWebViewRenderProcessGone(didCrash)
-    }
 
     companion object {
         init {
