@@ -1,13 +1,15 @@
 plugins { id("com.android.library"); id("org.jetbrains.kotlin.android"); id("com.google.devtools.ksp") }
 android {
     namespace = "com.phlox.tvwebbrowser"; compileSdk = 35
-    defaultConfig { minSdk = 23; targetSdk = 35 }
-    buildFeatures { viewBinding = true; buildConfig = true }
+    defaultConfig {
+        minSdk = 23; targetSdk = 35
     buildConfigField("Boolean", "BUILT_IN_AUTO_UPDATE", "false")
     buildConfigField("String", "FLAVOR_appstore", "\"generic\"")
     buildConfigField("String", "FLAVOR_webengine", "\"webview\"")
     buildConfigField("Int", "VERSION_CODE", "69")
     buildConfigField("String", "VERSION_NAME", "\"2.1.6\"")
+    }
+    buildFeatures { viewBinding = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
 }
