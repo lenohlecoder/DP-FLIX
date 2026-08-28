@@ -144,7 +144,6 @@ class MainActivity : AppCompatActivity(), ActionBar.Callback {
     private lateinit var viewModel: MainActivityViewModel
     private lateinit var tabsModel: TabsModel
     private lateinit var settingsModel: SettingsModel
-    private lateinit var adblockModel: AdblockModel
     private lateinit var autoUpdateModel: AutoUpdateModel
     private lateinit var uiHandler: Handler
     private var isFullscreen: Boolean = false
@@ -202,7 +201,6 @@ class MainActivity : AppCompatActivity(), ActionBar.Callback {
             viewModel.prepareSwitchToIncognito()
         }
         settingsModel = ActiveModelsRepository.get(SettingsModel::class, this)
-        adblockModel = ActiveModelsRepository.get(AdblockModel::class, this)
         tabsModel = ActiveModelsRepository.get(TabsModel::class, this)
         autoUpdateModel = ActiveModelsRepository.get(AutoUpdateModel::class, this)
         uiHandler = Handler()
@@ -1501,7 +1499,10 @@ class MainActivity : AppCompatActivity(), ActionBar.Callback {
         }
 
         override fun isAd(url: Uri, acceptHeader: String?, baseUri: Uri): Boolean? {
-            return adblockModel.isAd(url, acceptHeader, baseUri)
+            // Bloqueur de pub natif EasyList retiré (dépendance com.github.truefedex:ad-block
+            // exigeait compileSdk 36). Le blocage par mots-clés/domaines DP-FLIX
+            // (isDpFlixBlockedHost/isDpFlixBlockedResource) reste actif et indépendant.
+            return false
         }
 
         override fun isAdBlockingEnabled(): Boolean {
