@@ -200,6 +200,10 @@ fun FilmsSeriesScreen(
     // le BackHandler ci-dessous puisse lui demander de reculer dans l'historique du site,
     // et pour que le curseur virtuel (si actif) puisse lui envoyer des taps simulés.
     val webViewRef = remember { mutableStateOf<WebView?>(null) }
+    // Référence au CursorLayout TV (posée plus bas, § moteur TvFlix) — permet au
+    // BackHandler de lui rendre la main de force (voir doc du BackHandler ci-dessous).
+    val cursorLayoutRef = remember { mutableStateOf<CursorLayout?>(null) }
+
 
     // Fix (13 août 2026) : navigation persistante de la WebView à travers les allers-
     // retours vers « Mes téléchargements ». Auparavant, ouvrir cet écran (bouton
@@ -267,6 +271,19 @@ fun FilmsSeriesScreen(
 
     BackHandler {
         val webView = webViewRef.value
+        // Échappatoire garantie (28/08/2026, inspirée de TV Bro — MainActivity
+        // .handleBackNavigation() : chez eux, Retour repasse TOUJOURS en mode curseur
+        // en priorité absolue si on n'y était pas déjà). TvFlix n'a pas d'état "mode
+        // navigation directe" explicite comme TV Bro — le D-pad est juste dérouté vers
+        // la page tant qu'un champ (visible ou caché) fait croire à un clavier système
+        // affiché (§ CursorLayout.isSoftwareKeyboardVisible). On ne peut donc pas savoir
+        // avec certitude qu'on est "coincé", alors on reprend la main sans condition,
+        // sans risque : enlever le focus de la WebView + le redonner au CursorLayout ne
+        // gêne en rien le retour dans l'historique du site juste en dessous.
+        if (useTvFlix && showVirtualCursor) {
+            webView?.clearFocus()
+            cursorLayoutRef.value?.requestFocus()
+        }
         when {
             showStreamsDialog -> showStreamsDialog = false
             webView != null && webView.canGoBack() -> webView.goBack()
@@ -382,6 +399,7 @@ fun FilmsSeriesScreen(
                             webView.setLayerType(View.LAYER_TYPE_SOFTWARE, null)
                         }
                     },
+                    onCursorLayoutCreated = { cursorLayout -> cursorLayoutRef.value = cursorLayout },
                     onFullscreenChanged = { fullscreen ->
                         isPageFullscreen = fullscreen
                         // Règle non négociable : jamais de flèche/dialogue en plein écran.
@@ -1257,6 +1275,7 @@ private fun LockedWebView(
     savedState: Bundle? = null,
     onSaveState: (Bundle) -> Unit = {},
     onWebViewCreated: (WebView) -> Unit,
+    onCursorLayoutCreated: (CursorLayout?) -> Unit = {},
     onFullscreenChanged: (Boolean) -> Unit,
     onPageTitleChanged: (String?) -> Unit = {},
     onRendererGone: () -> Unit = {},
@@ -1746,6 +1765,7 @@ private fun LockedWebView(
                 }
                 cursor.addView(webView)
                 tvCursorLayout = cursor
+                onCursorLayoutCreated(cursor)
                 onWebViewCreated(webView)
                 cursor
             } else {

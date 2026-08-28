@@ -92,6 +92,16 @@ class CursorLayout @JvmOverloads constructor(
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (!cursorEnabled || cursorDrawer == null) return super.dispatchKeyEvent(event)
 
+        // Échappatoire garantie (28/08/2026) : le bouton Menu DP-FLIX doit rester
+        // utilisable dans TOUS les cas, y compris quand isSoftwareKeyboardVisible()
+        // pense (à tort ou à raison) qu'un clavier est affiché — sinon un champ caché/
+        // auto-focus sur une page (voir README-cursor-ime-guard-2-4-5.md) peut bloquer
+        // le curseur ET le menu en même temps, sans aucun moyen de s'en sortir.
+        if (event.keyCode == KeyEvent.KEYCODE_MENU) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onMenuIconClicked?.invoke()
+            return true
+        }
+
         // Inspiré de TV Bro (DPADNavigationEventsAdapter.isSoftwareKeyboardVisible) :
         // tant que le clavier système est affiché (barre d'adresse/recherche en cours de
         // saisie), le D-pad ne doit PAS être capté par le curseur virtuel. Sans ce garde-fou,
@@ -100,11 +110,6 @@ class CursorLayout @JvmOverloads constructor(
         // d'adresse semblait "ne pas réagir" alors que le D-pad ne lui arrivait jamais.
         if (isSoftwareKeyboardVisible()) {
             return super.dispatchKeyEvent(event)
-        }
-
-        if (event.keyCode == KeyEvent.KEYCODE_MENU) {
-            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onMenuIconClicked?.invoke()
-            return true
         }
 
         if (event.keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
