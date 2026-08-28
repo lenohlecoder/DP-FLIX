@@ -380,6 +380,10 @@ class WebViewWebEngine(val tab: WebTabState) : WebEngine, CursorDrawerDelegate.C
         }
     }
 
+    override fun onWebViewRenderProcessGone(didCrash: Boolean) {
+        callback?.onWebViewRenderProcessGone(didCrash)
+    }
+
     companion object {
         init {
             WebEngineFactory.registerProvider(WebEngineProvider("WebView", object : WebEngineProviderCallback {

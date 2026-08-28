@@ -121,7 +121,7 @@ private val DPFLIX_AD_REDIRECT_HOSTS = setOf(
     "melbet.ci", "1xlite-83442.com"
 )
 
-class MainActivity : AppCompatActivity(), ActionBar.Callback {
+open class MainActivity : AppCompatActivity(), ActionBar.Callback {
     companion object {
         private val TAG = MainActivity::class.java.simpleName
         const val VOICE_SEARCH_REQUEST_CODE = 10001
@@ -1536,7 +1536,7 @@ class MainActivity : AppCompatActivity(), ActionBar.Callback {
             )
         }
 
-        override fun onBlockedAd(uri: Uri) {
+        override fun onBlockedAd(uri: String) {
             Log.i(TAG, "onBlockedAd: $uri")
             if (!config.adBlockEnabled) return
             if (dpFlixLockedMode) {

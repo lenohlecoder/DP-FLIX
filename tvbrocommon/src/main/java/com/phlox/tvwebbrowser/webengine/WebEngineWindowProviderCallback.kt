@@ -34,6 +34,7 @@ interface WebEngineWindowProviderCallback {
     fun isDialogsBlockingEnabled(): Boolean
     fun shouldBlockNewWindow(dialog: Boolean, userGesture: Boolean): Boolean
     fun onBlockedAd(uri: String)
+    fun onWebViewRenderProcessGone(didCrash: Boolean)
     fun onBlockedDialog(newTab: Boolean)
     fun onCreateWindow(dialog: Boolean, userGesture: Boolean): View?
     fun closeWindow(internalRepresentation: Any)
