@@ -6,7 +6,7 @@ android {
         buildConfigField("Boolean", "BUILT_IN_AUTO_UPDATE", "false")
         buildConfigField("String", "FLAVOR_appstore", "\"generic\"")
         buildConfigField("String", "FLAVOR_webengine", "\"webview\"")
-        buildConfigField("Int", "VERSION_CODE", "69")
+        buildConfigField("int", "VERSION_CODE", "69")
         buildConfigField("String", "VERSION_NAME", "\"2.1.6\"")
     }
     buildFeatures { viewBinding = true; buildConfig = true }
