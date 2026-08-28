@@ -120,6 +120,7 @@ dependencies {
 
     // Module TV : WebView desktop + curseur D-pad (Films & Séries, mode TV)
     implementation(project(":tvflix"))
+    implementation(project(":tvbro"))
 
 }
 

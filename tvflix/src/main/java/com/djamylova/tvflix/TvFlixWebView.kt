@@ -91,7 +91,9 @@ class TvFlixWebView @JvmOverloads constructor(
 
             useWideViewPort = true
             loadWithOverviewMode = true
-            layoutAlgorithm = WebSettings.LayoutAlgorithm.TEXT_AUTOSIZING
+            // Mise en page stable pour TV/viewport desktop. TEXT_AUTOSIZING peut
+            // déclencher des recalculs coûteux sur les SPA/pages longues.
+            layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
 
             builtInZoomControls = true
             displayZoomControls = false
@@ -110,13 +112,7 @@ class TvFlixWebView @JvmOverloads constructor(
             // Évite le mode « mobile » lié à la taille de police système
             textZoom = 100
 
-            if (TvFlixCompat.isLowEndDevice(context)) {
-                @Suppress("DEPRECATION")
-                setRenderPriority(WebSettings.RenderPriority.LOW)
-                try {
-                    layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
-                } catch (e: Exception) { /* ignore */ }
-            }
+            // Ne pas abaisser artificiellement la priorité de rendu du WebView.
         }
 
         // Force une densité « desktop-like » pour le layout initial si possible

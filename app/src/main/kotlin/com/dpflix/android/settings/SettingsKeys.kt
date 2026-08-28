@@ -42,4 +42,11 @@ internal object SettingsKeys {
     // Verrouillage strict de domaine (whitelist) — optionnel, désactivé par défaut.
     // Voir [GeneralSettings.strictDomainLock] + icône réglages Films & Séries.
     val STRICT_DOMAIN_LOCK = booleanPreferencesKey("general_strict_domain_lock")
+    // Mots-clés de domaines publicitaires à bloquer par stream dans le navigateur TV Bro.
+    // Les valeurs sont des fragments de hostname, pas des URLs.
+    val TVBRO_BLOCKED_KEYWORDS_1 = stringSetPreferencesKey("tvbro_blocked_keywords_1")
+    val TVBRO_BLOCKED_KEYWORDS_2 = stringSetPreferencesKey("tvbro_blocked_keywords_2")
+    val TVBRO_BLOCKED_KEYWORDS_3 = stringSetPreferencesKey("tvbro_blocked_keywords_3")
+    val TVBRO_BLOCKED_KEYWORDS_4 = stringSetPreferencesKey("tvbro_blocked_keywords_4")
+    val TVBRO_BLOCKED_KEYWORDS_5 = stringSetPreferencesKey("tvbro_blocked_keywords_5")
 }

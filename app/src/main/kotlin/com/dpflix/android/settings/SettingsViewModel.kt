@@ -225,6 +225,26 @@ class SettingsViewModel(
         }
     }
 
+    /** Enregistre les mots-clés hostname à bloquer par le navigateur TV Bro pour un stream. */
+    fun setTvBroBlockedKeywords(streamIndex: Int, values: Set<String>) {
+        val cleaned = values.mapNotNull { raw ->
+            raw.trim().lowercase().replace(Regex("[^a-z0-9._-]"), "")
+                .takeIf { it.length >= 3 }
+        }.toSet()
+        viewModelScope.launch {
+            appRepository.settings.updateGeneralSettings { current ->
+                when (streamIndex) {
+                    1 -> current.copy(tvBroBlockedKeywords1 = cleaned)
+                    2 -> current.copy(tvBroBlockedKeywords2 = cleaned)
+                    3 -> current.copy(tvBroBlockedKeywords3 = cleaned)
+                    4 -> current.copy(tvBroBlockedKeywords4 = cleaned)
+                    5 -> current.copy(tvBroBlockedKeywords5 = cleaned)
+                    else -> current
+                }
+            }
+        }
+    }
+
     // --- §5.1 Lecteur (étape 6e) ---
     // Toutes ces valeurs sont globales à l'app (voir la doc de `PlayerSettings`) et ne
     // prennent effet que sur la prochaine lecture ouverte : `PlayerController` (5b/5c)

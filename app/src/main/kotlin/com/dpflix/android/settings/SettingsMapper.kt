@@ -48,6 +48,11 @@ fun Preferences.toGeneralSettings(): GeneralSettings = GeneralSettings(
     extraAllowedDomains = this[SettingsKeys.EXTRA_ALLOWED_DOMAINS]
         ?: GeneralSettings.DEFAULT_EXTRA_ALLOWED_DOMAINS,
     strictDomainLock = this[SettingsKeys.STRICT_DOMAIN_LOCK] ?: false,
+    tvBroBlockedKeywords1 = this[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_1] ?: emptySet(),
+    tvBroBlockedKeywords2 = this[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_2] ?: emptySet(),
+    tvBroBlockedKeywords3 = this[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_3] ?: emptySet(),
+    tvBroBlockedKeywords4 = this[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_4] ?: emptySet(),
+    tvBroBlockedKeywords5 = this[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_5] ?: emptySet(),
     lastSeenInfosVersion = this[SettingsKeys.LAST_SEEN_INFOS_VERSION] ?: 0
 )
 
@@ -82,5 +87,10 @@ fun GeneralSettings.writeTo(prefs: MutablePreferences) {
     // (ce dernier cas, lui, n'écrit jamais cette clé — voir [toGeneralSettings]).
     prefs[SettingsKeys.EXTRA_ALLOWED_DOMAINS] = extraAllowedDomains
     prefs[SettingsKeys.STRICT_DOMAIN_LOCK] = strictDomainLock
+    prefs[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_1] = tvBroBlockedKeywords1
+    prefs[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_2] = tvBroBlockedKeywords2
+    prefs[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_3] = tvBroBlockedKeywords3
+    prefs[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_4] = tvBroBlockedKeywords4
+    prefs[SettingsKeys.TVBRO_BLOCKED_KEYWORDS_5] = tvBroBlockedKeywords5
     prefs[SettingsKeys.LAST_SEEN_INFOS_VERSION] = lastSeenInfosVersion
 }

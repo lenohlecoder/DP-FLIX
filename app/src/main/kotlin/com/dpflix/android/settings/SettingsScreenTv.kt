@@ -1,8 +1,12 @@
 package com.dpflix.android.settings
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Arrangement
@@ -10,18 +14,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,14 +41,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.background
@@ -201,9 +200,7 @@ fun SettingsScreenTv(
                         uiState = uiState,
                         onRefresh = viewModel::refreshDiagnostics
                     )
-                    SettingsSection.UserGuide -> UserGuideSectionBodyTv(
-                        firstItemFocusRequester = firstItemFocusRequester
-                    )
+                    SettingsSection.UserGuide -> UserGuideSectionBodyTv()
                     else -> ComingSoonSectionTv(pendingStepLabel = current.pendingStepLabelTv())
                 }
             }
@@ -344,6 +341,11 @@ private fun GeneralSectionBodyTv(
             onSave = onFilmsSeriesUrl3Changed
         )
 
+        TvBroBlockedKeywordsSettingsTv(
+            generalSettings = uiState.generalSettings,
+            onSave = { stream, keywords -> viewModel.setTvBroBlockedKeywords(stream, keywords) }
+        )
+
         ResetSettingTv(onRequestReset = onRequestReset)
     }
 }
@@ -446,6 +448,92 @@ private fun FilmsSeriesUrlSettingTv(title: String, currentUrl: String?, defaultU
             )
             TextButton(onClick = { onSave(draft) }) {
                 M3Text(text = "Enregistrer", color = DpFlixColors.Red)
+            }
+        }
+    }
+}
+
+
+@Composable
+private fun TvBroBlockedKeywordsSettingsTv(
+    generalSettings: GeneralSettings,
+    onSave: (Int, Set<String>) -> Unit
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+        Text(
+            text = "Protection Web TV Bro",
+            color = DpFlixColors.OnBackground,
+            fontSize = 22.sp
+        )
+        Text(
+            text = "Ajoutez des mots-clés de domaine à bloquer. Exemple : 1xbet bloque tout hostname contenant 1xbet. Séparez plusieurs entrées par des virgules.",
+            color = DpFlixColors.OnBackground,
+            fontSize = 16.sp
+        )
+        val values = listOf(
+            1 to generalSettings.tvBroBlockedKeywords1,
+            2 to generalSettings.tvBroBlockedKeywords2,
+            3 to generalSettings.tvBroBlockedKeywords3,
+            4 to generalSettings.tvBroBlockedKeywords4,
+            5 to generalSettings.tvBroBlockedKeywords5
+        )
+        values.forEach { (stream, keywords) ->
+            TvBroKeywordSettingTv(
+                stream = stream,
+                keywords = keywords,
+                automatic = stream != 1 && stream != 3,
+                onSave = { onSave(stream, it) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun TvBroKeywordSettingTv(
+    stream: Int,
+    keywords: Set<String>,
+    automatic: Boolean,
+    onSave: (Set<String>) -> Unit
+) {
+    var draft by remember(keywords) { mutableStateOf(keywords.sorted().joinToString(", ")) }
+    SettingBlockTv(
+        title = "Stream $stream — domaines / mots-clés bloqués",
+        subtitle = if (automatic) {
+            "Protection automatique TV Bro/DP-FLIX conservée + vos règles manuelles. Ces mots-clés s'appliquent aussi aux iframes et ressources Web."
+        } else {
+            "Stream $stream : aucun blocage automatique DP-FLIX. Seules vos règles manuelles sont utilisées ; n'ajoutez pas le domaine légitime du site."
+        }
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val keyboardController = LocalSoftwareKeyboardController.current
+
+            OutlinedTextField(
+                value = draft,
+                onValueChange = { draft = it },
+                singleLine = false,
+                label = { M3Text("Mots-clés, ex. 1xbet, melbet") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { focusState ->
+                        if (focusState.isFocused) {
+                            keyboardController?.show()
+                        }
+                    },
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Text,
+                    imeAction = ImeAction.Done
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { keyboardController?.hide() }
+                )
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(onClick = { onSave(draft.split(',').map { it.trim() }.filter { it.isNotEmpty() }.toSet()) }) {
+                    M3Text(text = "Enregistrer", color = DpFlixColors.Red)
+                }
+                TextButton(onClick = { draft = ""; onSave(emptySet()) }) {
+                    M3Text(text = "Tout effacer")
+                }
             }
         }
     }
@@ -1293,21 +1381,9 @@ private fun AccessStatusBannerTv(accessRepository: AccessRepository) {
     }
 }
 
-/**
- * Équivalent TV de `UserGuideSectionBody` (mobile, `SettingsScreen.kt`) — même contenu
- * partagé ([UserGuideTopic]/[userGuideContentFor]), reconstruit en `tv-material3` avec
- * gestion du focus D-pad (ajouté le 28/08/2026 : absent jusqu'ici du fichier TV, donc
- * invisible sur TV bien que présent côté mobile depuis son ajout — voir la doc de
- * [SettingsScreenTv] pour l'explication générale de ce risque de désynchronisation).
- *
- * Navigation interne (liste ↔ détail) identique au mobile : un [BackHandler] local revient
- * d'abord au sujet, avant que le [BackHandler] de [SettingsScreenTv] ne revienne à la
- * liste des sections. [firstItemFocusRequester] est réutilisé pour la liste ET pour le
- * bouton retour du détail (un seul des deux composé à la fois), comme le reste de ce
- * fichier.
- */
+
 @Composable
-private fun UserGuideSectionBodyTv(firstItemFocusRequester: FocusRequester) {
+private fun UserGuideSectionBodyTv() {
     var selectedTopic by remember { mutableStateOf<UserGuideTopic?>(null) }
 
     BackHandler(enabled = selectedTopic != null) {
@@ -1316,139 +1392,93 @@ private fun UserGuideSectionBodyTv(firstItemFocusRequester: FocusRequester) {
 
     val topic = selectedTopic
     if (topic == null) {
-        UserGuideTopicListTv(
-            firstItemFocusRequester = firstItemFocusRequester,
-            onSelect = { selectedTopic = it }
-        )
-    } else {
-        UserGuideTopicDetailTv(
-            topic = topic,
-            firstItemFocusRequester = firstItemFocusRequester,
-            onBack = { selectedTopic = null }
-        )
-    }
-}
-
-@Composable
-private fun UserGuideTopicListTv(
-    firstItemFocusRequester: FocusRequester,
-    onSelect: (UserGuideTopic) -> Unit
-) {
-    val topics = UserGuideTopic.entries.toList()
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        item {
-            Text(
-                text = "Choisissez une section pour afficher uniquement les consignes qui la concernent.",
-                color = DpFlixColors.OnBackgroundMuted,
-                fontSize = 16.sp,
-                modifier = Modifier.padding(bottom = 8.dp)
-            )
-        }
-        items(topics, key = { it.name }) { topic ->
-            Button(
-                onClick = { onSelect(topic) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .let { if (topic == topics.first()) it.focusRequester(firstItemFocusRequester) else it }
-            ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(horizontal = 48.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            item {
+                Text(
+                    text = "Choisissez une rubrique pour afficher les consignes correspondantes.",
+                    color = DpFlixColors.OnBackgroundMuted,
+                    fontSize = 17.sp,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+            }
+            items(UserGuideTopic.entries.toList(), key = { it.name }) { item ->
+                var focused by remember(item.name) { mutableStateOf(false) }
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    androidx.compose.material3.Icon(
-                        imageVector = topic.icon,
-                        contentDescription = null
-                    )
-                    Column(modifier = Modifier.padding(start = 16.dp)) {
-                        Text(text = topic.title, fontSize = 18.sp)
-                        Text(
-                            text = topic.subtitle,
-                            color = DpFlixColors.OnBackgroundMuted,
-                            fontSize = 14.sp
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun UserGuideTopicDetailTv(
-    topic: UserGuideTopic,
-    firstItemFocusRequester: FocusRequester,
-    onBack: () -> Unit
-) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Button(
-            onClick = onBack,
-            modifier = Modifier
-                .padding(horizontal = 48.dp, vertical = 8.dp)
-                .focusRequester(firstItemFocusRequester)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Retour"
-                )
-                Text(text = topic.title, modifier = Modifier.padding(start = 12.dp), fontSize = 18.sp)
-            }
-        }
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 48.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp)
-        ) {
-            userGuideContentFor(topic).forEach { block ->
-                UserGuideBlockTv(
-                    title = block.title,
-                    body = block.body,
-                    imageRes = block.imageRes,
-                    imageCaption = block.imageCaption
-                )
-            }
-            Spacer(modifier = Modifier.height(24.dp))
-        }
-    }
-}
-
-@Composable
-private fun UserGuideBlockTv(
-    title: String,
-    body: String,
-    imageRes: Int? = null,
-    imageCaption: String? = null
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(text = title, fontSize = 20.sp)
-        Text(
-            text = body,
-            color = DpFlixColors.OnBackgroundMuted,
-            fontSize = 16.sp
-        )
-        if (imageRes != null) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Image(
-                    painter = painterResource(id = imageRes),
-                    contentDescription = imageCaption ?: title,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp)),
-                    contentScale = ContentScale.FillWidth
-                )
-                if (!imageCaption.isNullOrBlank()) {
-                    Text(
-                        text = imageCaption,
-                        color = DpFlixColors.OnBackgroundMuted,
-                        fontSize = 14.sp
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(DpFlixColors.Surface)
+                        .border(
+                            width = if (focused) 3.dp else 0.dp,
+                            color = DpFlixColors.OnBackground
+                        )
+                        .clickable { selectedTopic = item }
+                        .onFocusChanged { focused = it.isFocused }
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = item.icon,
+                        contentDescription = null,
+                        tint = DpFlixColors.OnBackground,
+                        modifier = Modifier.padding(end = 16.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(item.title, color = DpFlixColors.OnBackground, fontSize = 20.sp)
+                        Text(item.subtitle, color = DpFlixColors.OnBackgroundMuted, fontSize = 15.sp)
+                    }
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                        contentDescription = "Ouvrir",
+                        tint = DpFlixColors.OnBackgroundMuted
                     )
                 }
+            }
+        }
+    } else {
+        Column(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { selectedTopic = null }
+                    .padding(horizontal = 48.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, "Retour", tint = DpFlixColors.OnBackground)
+                Spacer(Modifier.width(12.dp))
+                Text(topic.title, color = DpFlixColors.OnBackground, fontSize = 24.sp)
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 56.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                userGuideContentFor(topic).forEach { block ->
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(block.title, color = DpFlixColors.OnBackground, fontSize = 20.sp)
+                        Text(block.body, color = DpFlixColors.OnBackgroundMuted, fontSize = 16.sp)
+                        if (block.imageRes != null) {
+                            Image(
+                                painter = painterResource(block.imageRes),
+                                contentDescription = block.imageCaption ?: block.title,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.FillWidth
+                            )
+                            if (!block.imageCaption.isNullOrBlank()) {
+                                Text(block.imageCaption!!, color = DpFlixColors.OnBackgroundMuted, fontSize = 13.sp)
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
             }
         }
     }

@@ -76,6 +76,10 @@
             release échoue. tools:node="merge" fusionne avec l'entrée fournie par la librairie
             au lieu de la dupliquer.
         -->
+        <receiver
+            android:name=".filmsseries.download.TvBroDownloadReceiver"
+            android:exported="false" />
+
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"

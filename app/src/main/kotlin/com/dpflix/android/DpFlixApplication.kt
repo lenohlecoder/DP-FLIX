@@ -1,8 +1,8 @@
 package com.dpflix.android
 
-import android.app.Application
 import android.util.Log
 import com.dpflix.android.di.AppContainer
+import com.phlox.tvwebbrowser.TVBro
 import com.dpflix.android.settings.DiagnosticSystemMonitor
 import java.io.File
 import java.io.PrintWriter
@@ -19,7 +19,7 @@ import java.util.Locale
  * [Thread.setDefaultUncaughtExceptionHandler] écrit la stack dans
  * `filesDir/last_crash.txt` puis délègue à l'handler système (app 100 % offline).
  */
-class DpFlixApplication : Application() {
+class DpFlixApplication : TVBro() {
 
     lateinit var container: AppContainer
         private set

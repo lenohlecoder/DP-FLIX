@@ -66,6 +66,13 @@ data class GeneralSettings(
      */
     val strictDomainLock: Boolean = false,
 
+    /** Mots-clés de hostname bloqués manuellement, propres à chaque stream TV Bro. */
+    val tvBroBlockedKeywords1: Set<String> = emptySet(),
+    val tvBroBlockedKeywords2: Set<String> = emptySet(),
+    val tvBroBlockedKeywords3: Set<String> = emptySet(),
+    val tvBroBlockedKeywords4: Set<String> = emptySet(),
+    val tvBroBlockedKeywords5: Set<String> = emptySet(),
+
     /**
      * Dernière [CompanionStatus.infosVersion] consultée via la cloche (site compagnon).
      * Badge rouge sur l'accueil tant que status.infosVersion > cette valeur.

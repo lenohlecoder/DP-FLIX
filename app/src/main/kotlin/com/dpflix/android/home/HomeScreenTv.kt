@@ -16,8 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Search
@@ -49,9 +47,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
@@ -78,19 +73,19 @@ import com.dpflix.android.ui.theme.DpFlixColors
  * IDs de chaîne.
  *
  * ## Grilles D-pad : `LazyColumn`/`LazyRow` (Compose Foundation standard)
- * Catégories empilées verticalement (`LazyColumn`), chaînes de chaque catégorie
- * défilant horizontalement (`LazyRow` imbriqué). Les composants `TvLazyColumn`/`TvLazyRow`
+ * Écran initial centré sur les catégories (`LazyColumn`), puis une catégorie sélectionnée
+ * ouvre ses chaînes dans une rangée horizontale (`LazyRow`). La recherche reste un accès
+ * direct aux résultats correspondants. Les composants `TvLazyColumn`/`TvLazyRow`
  * de `tv-foundation`, utilisés jusqu'à l'étape 10, ont été dépréciés puis retirés par
  * Google : depuis Compose Foundation 1.7+ (stable en 1.8+), `LazyColumn`/`LazyRow`
  * intègrent nativement le même comportement (faire défiler la liste pour garder l'élément
  * focus visible au D-pad) — voir la doc officielle "Create scrollable layouts for TV".
  *
  * ## Focus initial
- * Posé sur la toute première carte/ligne focusable dès que les données sont prêtes
- * (`LaunchedEffect(firstChannelFocusRequester, uiState.categories)`, recréé à chaque
- * changement de page liste/détail/recherche — voir la doc de [firstChannelFocusRequester]
- * plus bas) — même mécanique que partout ailleurs côté TV depuis l'étape 2b (rien n'est
- * focus par défaut sur Android TV).
+ * Posé sur la toute première carte de chaîne de la première catégorie non vide dès que
+ * les données arrivent (`LaunchedEffect` déclenché une seule fois, via
+ * `hasRequestedInitialFocus`) — même mécanique que partout ailleurs côté TV depuis
+ * l'étape 2b (rien n'est focus par défaut sur Android TV).
  *
  * ## Mini-lecteur retiré (27 juillet 2026), réintégré (8 août 2026)
  * Le mini-aperçu (§4.4 "Zone haute") avait été supprimé côté TV pour la même raison que
@@ -179,10 +174,11 @@ fun HomeScreenTv(
     val filmsSeriesFocusRequester = remember { FocusRequester() }
     val filmDownloadsFocusRequester = remember { FocusRequester() }
     val settingsFocusRequester = remember { FocusRequester() }
+    val firstCategoryFocusRequester = remember { FocusRequester() }
+    val firstChannelFocusRequester = remember { FocusRequester() }
+    var hasRequestedInitialFocus by remember { mutableStateOf(false) }
+    var selectedCategoryName by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
-
-    var openCategoryName by remember { mutableStateOf<String?>(null) }
-    BackHandler(enabled = openCategoryName != null) { openCategoryName = null }
 
     // Mini-lecteur (§ réintégration 8 août 2026) : même garde-fou que côté mobile — voir
     // la doc de classe ci-dessus et celle de [HomeScreen] pour le détail complet.
@@ -204,12 +200,6 @@ fun HomeScreenTv(
     var searchQuery by remember { mutableStateOf("") }
     val searchFieldFocusRequester = remember { FocusRequester() }
 
-    // Recréé à chaque changement de "page" (liste de catégories ↔ détail d'une
-    // catégorie ↔ résultats de recherche), comme le `FocusRequester` par section de
-    // `SettingsScreenTv` (7e) : `requestFocus()` doit toujours cibler le sous-arbre
-    // Compose fraîchement composé.
-    val firstChannelFocusRequester = remember(openCategoryName, searchActive) { FocusRequester() }
-
     val filteredCategories = remember(uiState.categories, searchQuery) {
         val query = searchQuery.trim()
         if (query.isEmpty()) {
@@ -228,6 +218,11 @@ fun HomeScreenTv(
     fun closeSearch() {
         searchActive = false
         searchQuery = ""
+    }
+
+    BackHandler(enabled = selectedCategoryName != null) {
+        selectedCategoryName = null
+        hasRequestedInitialFocus = false
     }
 
     MaterialTheme {
@@ -332,32 +327,14 @@ fun HomeScreenTv(
                     searchActive && filteredCategories.isEmpty() -> EmptyStateTv(
                         text = "Aucune chaîne ne correspond à « $searchQuery »."
                     )
-                    searchActive -> Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        SearchResultsGridTv(
-                            categories = filteredCategories,
-                            selectedChannelId = preview?.id,
-                            firstChannelFocusRequester = firstChannelFocusRequester,
-                            onChannelClick = { channel ->
-                                val goFullscreen = viewModel.onChannelClicked(channel)
-                                if (goFullscreen) {
-                                    viewModel.suspendPreviewPlayback()
-                                    pendingFullscreenChannelId = channel.id
-                                }
-                            }
-                        )
-                    }
                     else -> Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                        val openCategory = filteredCategories.firstOrNull { it.name == openCategoryName }
-                        if (openCategory != null) {
-                            CategoryChannelsScreenTv(
-                                category = openCategory,
+                        if (searchActive) {
+                            ChannelCategoryListTv(
+                                categories = filteredCategories,
                                 selectedChannelId = preview?.id,
+                                listState = listState,
                                 firstChannelFocusRequester = firstChannelFocusRequester,
-                                onBack = { openCategoryName = null },
                                 onChannelClick = { channel ->
-                                    // Même logique que mobile : 1er OK = mini-aperçu, 2e OK
-                                    // (même chaîne) = plein écran. Le mini-lecteur TV a été
-                                    // réintégré volontairement — ne pas le court-circuiter.
                                     val goFullscreen = viewModel.onChannelClicked(channel)
                                     if (goFullscreen) {
                                         viewModel.suspendPreviewPlayback()
@@ -366,12 +343,31 @@ fun HomeScreenTv(
                                 }
                             )
                         } else {
-                            ChannelCategoryPickerListTv(
-                                categories = filteredCategories,
-                                listState = listState,
-                                firstCategoryFocusRequester = firstChannelFocusRequester,
-                                onCategoryClick = { category -> openCategoryName = category.name }
-                            )
+                            val selectedCategory = uiState.categories.firstOrNull { it.name == selectedCategoryName }
+                            if (selectedCategory == null) {
+                                ChannelCategoryMenuTv(
+                                    categories = filteredCategories,
+                                    firstCategoryFocusRequester = firstCategoryFocusRequester,
+                                    onSelectCategory = { name ->
+                                        selectedCategoryName = name
+                                        hasRequestedInitialFocus = false
+                                    }
+                                )
+                            } else {
+                                ChannelCategoryListTv(
+                                    categories = listOf(selectedCategory),
+                                    selectedChannelId = preview?.id,
+                                    listState = listState,
+                                    firstChannelFocusRequester = firstChannelFocusRequester,
+                                    onChannelClick = { channel ->
+                                        val goFullscreen = viewModel.onChannelClicked(channel)
+                                        if (goFullscreen) {
+                                            viewModel.suspendPreviewPlayback()
+                                            pendingFullscreenChannelId = channel.id
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -389,152 +385,141 @@ fun HomeScreenTv(
         }
     }
 
-    // Recréé pour chaque nouveau [firstChannelFocusRequester] (voir sa doc) : `try/catch`
-    // comme `SettingsScreenTv` (7e) — rien à focus tant que les catégories ne sont pas
-    // encore chargées (IllegalStateException, pas une erreur).
-    LaunchedEffect(firstChannelFocusRequester, uiState.categories) {
-        if (uiState.categories.any { it.channels.isNotEmpty() }) {
-            try {
+    if (!hasRequestedInitialFocus && uiState.categories.any { it.channels.isNotEmpty() }) {
+        LaunchedEffect(selectedCategoryName, searchActive, uiState.categories) {
+            if (searchActive || selectedCategoryName != null) {
                 firstChannelFocusRequester.requestFocus()
-            } catch (e: IllegalStateException) {
-                // Rien à focus pour l'instant — pas une erreur.
+            } else {
+                firstCategoryFocusRequester.requestFocus()
+            }
+            hasRequestedInitialFocus = true
+        }
+    }
+}
+
+@Composable
+private fun ChannelCategoryMenuTv(
+    categories: List<ChannelCategory>,
+    firstCategoryFocusRequester: FocusRequester,
+    onSelectCategory: (String) -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 48.dp, vertical = 24.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp)
+    ) {
+        item {
+            Text(
+                text = "Catégories",
+                color = DpFlixColors.OnBackground,
+                fontSize = 26.sp,
+                modifier = Modifier.padding(bottom = 4.dp)
+            )
+        }
+        items(categories.filter { it.channels.isNotEmpty() }, key = { it.name }) { category ->
+            var focused by remember(category.name) { mutableStateOf(false) }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(DpFlixColors.Surface)
+                    .border(
+                        width = if (focused) 3.dp else 0.dp,
+                        color = DpFlixColors.OnBackground
+                    )
+                    .onFocusChanged { focused = it.isFocused }
+                    .clickable { onSelectCategory(category.name) }
+                    .then(
+                        if (category == categories.firstOrNull { it.channels.isNotEmpty() })
+                            Modifier.focusRequester(firstCategoryFocusRequester)
+                        else Modifier
+                    )
+                    .padding(horizontal = 24.dp, vertical = 22.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = category.name.ifBlank { "Sans catégorie" },
+                        color = DpFlixColors.OnBackground,
+                        fontSize = 22.sp
+                    )
+                    Text(
+                        text = "${category.channels.size} chaîne${if (category.channels.size > 1) "s" else ""}",
+                        color = DpFlixColors.OnBackgroundMuted,
+                        fontSize = 15.sp
+                    )
+                }
+                Text(
+                    text = "›",
+                    color = DpFlixColors.OnBackground,
+                    fontSize = 32.sp
+                )
             }
         }
     }
 }
 
-/**
- * Liste des catégories (§4.4, remplace au 28/08/2026 les rangées horizontales par
- * catégorie — port du même changement mobile, voir la doc de [HomeScreenTv]) : une ligne
- * focusable par catégorie non vide (nom + nombre de chaînes + chevron), même esprit que
- * l'app de référence "Televizio" fournie par l'utilisateur côté mobile. Valider une
- * catégorie ouvre [CategoryChannelsScreenTv].
- */
 @Composable
-private fun ChannelCategoryPickerListTv(
+private fun ChannelCategoryListTv(
     categories: List<ChannelCategory>,
+    selectedChannelId: String?,
     listState: LazyListState,
-    firstCategoryFocusRequester: FocusRequester,
-    onCategoryClick: (ChannelCategory) -> Unit
+    firstChannelFocusRequester: FocusRequester,
+    onChannelClick: (Channel) -> Unit
 ) {
-    val nonEmptyCategories = categories.filter { it.channels.isNotEmpty() }
+    // Calculé une fois ici plutôt que dans chaque rangée : c'est la SEULE carte de tout
+    // l'écran qui doit porter le FocusRequester initial (voir la doc de [HomeScreenTv]).
+    val firstFocusableChannelId = categories.firstOrNull { it.channels.isNotEmpty() }
+        ?.channels?.firstOrNull()?.id
+
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(28.dp)
     ) {
-        items(nonEmptyCategories, key = { it.name }) { category ->
-            Button(
-                onClick = { onCategoryClick(category) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 48.dp)
-                    .let { if (category == nonEmptyCategories.first()) it.focusRequester(firstCategoryFocusRequester) else it }
-            ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = category.name.ifBlank { "Sans catégorie" },
-                        fontSize = 20.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(text = "${category.channels.size}", fontSize = 16.sp)
-                        Icon(
-                            imageVector = Icons.Filled.ChevronRight,
-                            contentDescription = null,
-                            modifier = Modifier.padding(start = 4.dp)
-                        )
-                    }
-                }
+        items(categories, key = { it.name }) { category ->
+            if (category.channels.isNotEmpty()) {
+                CategoryRowTv(
+                    category = category,
+                    selectedChannelId = selectedChannelId,
+                    firstFocusableChannelId = firstFocusableChannelId,
+                    firstChannelFocusRequester = firstChannelFocusRequester,
+                    onChannelClick = onChannelClick
+                )
             }
         }
     }
 }
 
-/**
- * Écran détail d'une catégorie (§4.4, ajout du 28/08/2026) : ouvert depuis
- * [ChannelCategoryPickerListTv], grille des chaînes de cette catégorie
- * ([ChannelCardTv] réutilisée telle quelle) + bouton retour focusable en tête — le retour
- * télécommande ([BackHandler] dans [HomeScreenTv]) fait la même chose.
- */
+/** Une rangée horizontale (§4.4 "style Netflix"), défilement D-pad via `LazyRow`. */
 @Composable
-private fun CategoryChannelsScreenTv(
+private fun CategoryRowTv(
     category: ChannelCategory,
     selectedChannelId: String?,
+    firstFocusableChannelId: String?,
     firstChannelFocusRequester: FocusRequester,
-    onBack: () -> Unit,
     onChannelClick: (Channel) -> Unit
 ) {
-    Column(modifier = Modifier.fillMaxSize()) {
-        Button(
-            onClick = onBack,
-            modifier = Modifier
-                .padding(horizontal = 48.dp, vertical = 8.dp)
-                .focusRequester(firstChannelFocusRequester)
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
-                Text(
-                    text = category.name.ifBlank { "Sans catégorie" },
-                    modifier = Modifier.padding(start = 12.dp),
-                    fontSize = 18.sp
-                )
-            }
-        }
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(minSize = 160.dp),
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 40.dp, vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+    Column {
+        Text(
+            text = category.name.ifBlank { "Sans catégorie" },
+            color = DpFlixColors.OnBackground,
+            fontSize = 20.sp,
+            modifier = Modifier.padding(horizontal = 48.dp, vertical = 8.dp)
+        )
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 48.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             items(category.channels, key = { it.id }) { channel ->
                 ChannelCardTv(
                     channel = channel,
                     isSelected = channel.id == selectedChannelId,
-                    focusRequester = null,
+                    focusRequester = if (channel.id == firstFocusableChannelId) firstChannelFocusRequester else null,
                     onClick = { onChannelClick(channel) }
                 )
             }
-        }
-    }
-}
-
-/**
- * Résultats de recherche (§ port du même changement mobile, 28/08/2026) : grille plate de
- * toutes les chaînes correspondantes, toutes catégories confondues — à la différence de
- * [ChannelCategoryPickerListTv]/[CategoryChannelsScreenTv], qui groupent par catégorie.
- */
-@Composable
-private fun SearchResultsGridTv(
-    categories: List<ChannelCategory>,
-    selectedChannelId: String?,
-    firstChannelFocusRequester: FocusRequester,
-    onChannelClick: (Channel) -> Unit
-) {
-    val channels = remember(categories) { categories.flatMap { it.channels } }
-    val firstChannelId = channels.firstOrNull()?.id
-    LazyVerticalGrid(
-        columns = GridCells.Adaptive(minSize = 160.dp),
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(horizontal = 40.dp, vertical = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        items(channels, key = { it.id }) { channel ->
-            ChannelCardTv(
-                channel = channel,
-                isSelected = channel.id == selectedChannelId,
-                focusRequester = if (channel.id == firstChannelId) firstChannelFocusRequester else null,
-                onClick = { onChannelClick(channel) }
-            )
         }
     }
 }

@@ -14,6 +14,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.Choreographer
 import android.view.ViewConfiguration
 import android.view.WindowManager
 
@@ -94,6 +95,14 @@ class CursorDrawer(
     // ——— Handlers ———
     private val hideHandler = Handler(Looper.getMainLooper())
     private val longPressHandler = Handler(Looper.getMainLooper())
+    /** Cadence de mouvement synchronisée avec les frames Android. */
+    private val choreographer: Choreographer = Choreographer.getInstance()
+    private var frameScheduled = false
+    /** Le scroll WebView est volontairement moins fréquent que le rendu du curseur. */
+    private var lastEdgeScrollUptime = 0L
+    private var pendingEdgeScrollX = 0
+    private var pendingEdgeScrollY = 0
+    private val edgeScrollIntervalMs = 32L
 
     private val hideRunnable = Runnable {
         isVisible = false
@@ -157,7 +166,10 @@ class CursorDrawer(
                     dispatchMotionEvent(scrollHackCoords.x, scrollHackCoords.y, MotionEvent.ACTION_CANCEL)
                     scrollHackStarted = false
                 }
+                pendingEdgeScrollX = 0
+                pendingEdgeScrollY = 0
                 scheduleHide()
+                stopFrameLoop()
                 return
             }
 
@@ -168,7 +180,7 @@ class CursorDrawer(
             val maxY = (surface.height - 1).toFloat().coerceAtLeast(0f)
             if (maxX <= 0f || maxY <= 0f) {
                 // Layout pas encore prêt (vieilles TV parfois lentes)
-                surface.postDelayed(this, FRAME_INTERVAL_MS)
+                scheduleNextFrame()
                 return
             }
             cursorX = (cursorX + cursorSpeed.x).coerceIn(0f, maxX)
@@ -191,7 +203,17 @@ class CursorDrawer(
             }
 
             if (dx != 0 || dy != 0) {
-                scrollContentBy(dx, dy)
+                pendingEdgeScrollX += dx
+                pendingEdgeScrollY += dy
+                val nowScroll = SystemClock.uptimeMillis()
+                if (nowScroll - lastEdgeScrollUptime >= edgeScrollIntervalMs) {
+                    val sx = pendingEdgeScrollX
+                    val sy = pendingEdgeScrollY
+                    pendingEdgeScrollX = 0
+                    pendingEdgeScrollY = 0
+                    lastEdgeScrollUptime = nowScroll
+                    scrollContentBy(sx, sy)
+                }
             }
 
             // Même comportement que TV Bro : un MOVE n'est injecté que pendant
@@ -203,7 +225,7 @@ class CursorDrawer(
 
             isVisible = true
             surface.invalidate()
-            surface.postDelayed(this, FRAME_INTERVAL_MS)
+            scheduleNextFrame()
         }
     }
 
@@ -278,8 +300,29 @@ class CursorDrawer(
         hideHandler.postDelayed(hideRunnable, CURSOR_HIDE_DELAY)
     }
 
+    private val frameCallback = Choreographer.FrameCallback {
+        if (frameScheduled) cursorUpdateRunnable.run()
+    }
+
+    private fun startFrameLoop() {
+        if (frameScheduled) return
+        frameScheduled = true
+        lastCursorUpdate = SystemClock.uptimeMillis()
+        choreographer.postFrameCallback(frameCallback)
+    }
+
+    private fun stopFrameLoop() {
+        if (!frameScheduled) return
+        frameScheduled = false
+        choreographer.removeFrameCallback(frameCallback)
+    }
+
+    private fun scheduleNextFrame() {
+        if (frameScheduled) choreographer.postFrameCallback(frameCallback)
+    }
+
     private fun stopMovement() {
-        surface.removeCallbacks(cursorUpdateRunnable)
+        stopFrameLoop()
         cursorDirection.set(0, 0)
         cursorSpeed.set(0f, 0f)
     }
@@ -514,9 +557,7 @@ class CursorDrawer(
                 // Redémarrage propre : la boucle était arrêtée, donc personne d'autre
                 // n'a pu écrire lastCursorUpdate récemment — c'est le seul moment où
                 // handleDirection doit encore l'initialiser lui-même.
-                lastCursorUpdate = SystemClock.uptimeMillis()
-                surface.removeCallbacks(cursorUpdateRunnable)
-                surface.post(cursorUpdateRunnable)
+                startFrameLoop()
             }
             // Si la boucle tournait déjà (ex : on ajoute une deuxième direction pour
             // former une diagonale pendant que la première est encore maintenue), on
@@ -850,7 +891,6 @@ class CursorDrawer(
         /** Cadence fixe de la boucle de déplacement (~60 fps). Avant ce fix, la
          *  boucle tournait via post() sans délai, donc à une vitesse dépendant
          *  entièrement de la charge du thread UI — irrégulière selon le device. */
-        private const val FRAME_INTERVAL_MS = 16L
 
         /** Plafond du delta-temps utilisé pour l'accélération. Sans lui, un
          *  décrochage du thread UI (rendu WebView, GC...) produisait un dTime

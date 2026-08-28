@@ -11,9 +11,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven { url = uri("https://jitpack.io") }
     }
 }
 
 rootProject.name = "DP-Flix"
 include(":app")
 include(":tvflix")
+
+include(":tvbrocommon")
+include(":tvbro")
