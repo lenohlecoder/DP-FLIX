@@ -567,7 +567,7 @@ open class WebViewEx(context: Context, val callback: Callback, val jsInterface: 
                     INTERNAL_SCHEME_WARNING_DOMAIN -> {
                         when (uri.getQueryParameter("type")) {
                             INTERNAL_SCHEME_WARNING_DOMAIN_TYPE_CERT -> {
-                                val data = context.assets.open("pages/warning-certificate.html").bufferedReader().use { it.readText() }
+                                val data = runCatching { context.assets.open("pages/warning-certificate.html").bufferedReader().use { it.readText() } }.getOrElse { "<html><body><h1>Security warning</h1><p>This connection is not secure.</p></body></html>" }
                                 loadDataWithBaseURL("file:///android_asset/", data, "text/html", "UTF-8", uri.getQueryParameter("url"))
                             }
                         }
