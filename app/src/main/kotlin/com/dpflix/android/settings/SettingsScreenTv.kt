@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -165,7 +166,8 @@ fun SettingsScreenTv(
                         onFilmsSeriesUrlChanged = viewModel::setFilmsSeriesUrl,
                         onFilmsSeriesUrl2Changed = viewModel::setFilmsSeriesUrl2,
                         onFilmsSeriesUrl3Changed = viewModel::setFilmsSeriesUrl3,
-                        onRequestReset = viewModel::requestReset
+                        onRequestReset = viewModel::requestReset,
+                        onSetTvBroBlockedKeywords = viewModel::setTvBroBlockedKeywords
                     )
                     SettingsSection.Player -> PlayerSectionBodyTv(
                         uiState = uiState,
@@ -294,7 +296,8 @@ private fun GeneralSectionBodyTv(
     onFilmsSeriesUrlChanged: (String?) -> Unit,
     onFilmsSeriesUrl2Changed: (String?) -> Unit,
     onFilmsSeriesUrl3Changed: (String?) -> Unit,
-    onRequestReset: () -> Unit
+    onRequestReset: () -> Unit,
+    onSetTvBroBlockedKeywords: (Int, Set<String>) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -343,7 +346,7 @@ private fun GeneralSectionBodyTv(
 
         TvBroBlockedKeywordsSettingsTv(
             generalSettings = uiState.generalSettings,
-            onSave = { stream, keywords -> viewModel.setTvBroBlockedKeywords(stream, keywords) }
+            onSave = onSetTvBroBlockedKeywords
         )
 
         ResetSettingTv(onRequestReset = onRequestReset)

@@ -768,17 +768,17 @@ object DiagnosticSystemMonitor {
                 cursorViews.firstOrNull()?.let {
                     append(" · visible=${it.cursorEnabled}")
                     append(" · position=")
-                    append(format1(it.getCursorX()))
+                    append(format1(it.getCursorX().toDouble()))
                     append(",")
-                    append(format1(it.getCursorY()))
+                    append(format1(it.getCursorY().toDouble()))
                     append(" · focus=")
                     append(if (it.hasFocus()) "CursorLayout" else "autre")
                 }
                 tvBroCursorViews.firstOrNull()?.let {
                     append(" · TVBroCursor=true")
                     reflectBoolean(it, "isCursorEnabled")?.let { enabled -> append(" · visible=$enabled") }
-                    reflectFloat(it, "getCursorX")?.let { x -> append(" · x=${format1(x)}") }
-                    reflectFloat(it, "getCursorY")?.let { y -> append(" · y=${format1(y)}") }
+                    reflectFloat(it, "getCursorX")?.let { x -> append(" · x=${format1(x.toDouble())}") }
+                    reflectFloat(it, "getCursorY")?.let { y -> append(" · y=${format1(y.toDouble())}") }
                     append(" · focus=")
                     append(if (it.hasFocus()) "CursorLayout" else "autre")
                 }

@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import com.dpflix.android.DpFlixApplication
 import com.dpflix.android.filmsseries.stream.DetectedStream
+import com.dpflix.android.filmsseries.stream.StreamSniffer
 import com.dpflix.android.filmsseries.stream.StreamType
 
 /**
