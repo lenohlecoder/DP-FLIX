@@ -1200,6 +1200,7 @@ private fun DiagnosticSectionBodyTv(uiState: SettingsUiState, onRefresh: () -> U
             onViewReport = { showSystemReport = true },
             onClearReport = DiagnosticSystemMonitor::clearReport
         )
+        LastCrashViewerTv()
     }
 
     if (showSystemReport) {
@@ -1484,5 +1485,46 @@ private fun UserGuideSectionBodyTv() {
                 Spacer(Modifier.height(24.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun LastCrashViewerTv() {
+    val context = LocalContext.current
+    var showCrashLog by remember { mutableStateOf(false) }
+    var crashLogContent by remember { mutableStateOf<String?>(null) }
+
+    androidx.compose.material3.HorizontalDivider()
+    Text("Dernier crash", color = DpFlixColors.OnBackground, fontSize = 26.sp)
+    Text("Trace technique du dernier plantage de l'application, si disponible.", color = DpFlixColors.OnBackgroundMuted, fontSize = 16.sp)
+    SettingBlockTv(
+        title = "Dernier crash enregistré",
+        subtitle = "Lecture seule, écrit automatiquement lors d'un plantage."
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = {
+                crashLogContent = runCatching {
+                    java.io.File(context.filesDir, com.dpflix.android.DpFlixApplication.CRASH_FILE_NAME)
+                        .takeIf { it.exists() }?.readText()
+                }.getOrNull()
+                showCrashLog = true
+            }) { Text("Afficher") }
+            Spacer(modifier = Modifier.width(12.dp))
+            TextButton(onClick = {
+                runCatching {
+                    java.io.File(context.filesDir, com.dpflix.android.DpFlixApplication.CRASH_FILE_NAME).delete()
+                }
+                crashLogContent = null
+            }) { M3Text("Effacer") }
+        }
+    }
+
+    if (showCrashLog) {
+        AlertDialog(
+            onDismissRequest = { showCrashLog = false },
+            title = { M3Text("Dernier crash") },
+            text = { M3Text(crashLogContent ?: "Aucun crash enregistré.") },
+            confirmButton = { TextButton(onClick = { showCrashLog = false }) { M3Text("Fermer") } }
+        )
     }
 }
