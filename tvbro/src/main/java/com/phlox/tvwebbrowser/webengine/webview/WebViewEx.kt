@@ -433,7 +433,7 @@ open class WebViewEx(context: Context, val callback: Callback, val jsInterface: 
                 super.onPageFinished(view, url)
                 Log.d(TAG, "onPageFinished url: $url")
                 callback.onPageFinished(url)
-                evaluateJavascript(getGenericJSInjects(), null)
+                runCatching { evaluateJavascript(getGenericJSInjects(), null) }
             }
 
             override fun onLoadResource(view: WebView, url: String) {
