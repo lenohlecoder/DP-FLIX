@@ -130,12 +130,12 @@ class CursorDrawer(
             lastCursorUpdate = now
 
             val speedCap = maxSpeedBaselinePx * (maxSpeedPercent / 100f)
-            // Coefficient de montée en vitesse relevé (0.065 → 0.11) : avec l'ancienne
-            // valeur, il fallait ~1,5s d'appui continu pour atteindre speedCap, ce qui
-            // donnait une impression de lenteur/mollesse au début de chaque mouvement.
-            // Avec 0.11 le plein régime est atteint en ~0,8-0,9s, sans sauter d'un coup
-            // (la progression reste linéaire frame par frame, donc pas de à-coup).
-            val accelerationFactor = 0.11f * (accelerationPercent / 100f) * dTime
+            // Coefficient de montée en vitesse rabaissé le 26/08/2026 (0.11 → 0.05),
+            // combiné à la baisse de maxSpeedBaselinePx/recommendedMaxSpeedPercent : le
+            // curseur montait trop vite en régime pour rester fluide/synchronisé avec la
+            // télécommande. La progression reste linéaire frame par frame (pas de à-coup),
+            // seule la pente est plus douce.
+            val accelerationFactor = 0.05f * (accelerationPercent / 100f) * dTime
 
             cursorSpeed.x = bound(
                 cursorSpeed.x + bound(cursorDirection.x.toFloat(), 1f) * accelerationFactor,
@@ -220,12 +220,11 @@ class CursorDrawer(
         cursorRadius = (size.x / 100f).coerceIn(16f, 40f)
         cursorRadiusPressed = cursorRadius * 0.75f
         strokeWidth = (size.x / 400f).coerceIn(2f, 5f)
-        // Vitesse de croisière relevée (ex : /20 → /14, plafond 96 → 140) : le
-        // curseur atteignait sa vitesse max trop tôt en pratique (surtout sur
-        // écrans larges où le calcul plafonnait déjà à 96px), ce qui le rendait
-        // perceptiblement lent pour traverser l'écran. Le plancher est aussi
-        // relevé (28 → 40) pour les petits écrans.
-        maxSpeedBaselinePx = (size.x / 14f).coerceIn(40f, 140f)
+        // Vitesse de croisière rabaissée le 26/08/2026 (/14 → /26, plafond 140 → 70) :
+        // retour terrain TV, le curseur restait trop rapide/saccadé une fois combiné à
+        // recommendedMaxSpeedPercent (voir TvFlixCompat). Plancher légèrement réduit
+        // (40 → 22) pour rester cohérent sur petits écrans.
+        maxSpeedBaselinePx = (size.x / 26f).coerceIn(22f, 70f)
         scrollStartPadding = size.x / 15
     }
 

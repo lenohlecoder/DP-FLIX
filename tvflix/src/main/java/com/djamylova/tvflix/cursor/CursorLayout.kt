@@ -11,6 +11,8 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import com.djamylova.tvflix.TvFlixCompat
 
 /**
@@ -64,7 +66,9 @@ class CursorLayout @JvmOverloads constructor(
         TvFlixCompat.applyBestLayerType(this, preferHardware = true)
         isFocusable = true
         isFocusableInTouchMode = true
-        descendantFocusability = FOCUS_BLOCK_DESCENDANTS
+        // Le parent intercepte le D-pad dans dispatchKeyEvent(), mais le WebView
+        // doit pouvoir donner le focus à un champ HTML pour afficher le clavier TV.
+        descendantFocusability = FOCUS_AFTER_DESCENDANTS
 
         if (!isInEditMode) {
             cursorDrawer = CursorDrawer(context, this).also { drawer ->
@@ -88,6 +92,16 @@ class CursorLayout @JvmOverloads constructor(
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (!cursorEnabled || cursorDrawer == null) return super.dispatchKeyEvent(event)
 
+        // Inspiré de TV Bro (DPADNavigationEventsAdapter.isSoftwareKeyboardVisible) :
+        // tant que le clavier système est affiché (barre d'adresse/recherche en cours de
+        // saisie), le D-pad ne doit PAS être capté par le curseur virtuel. Sans ce garde-fou,
+        // les flèches gauche/droite dans le champ de texte ou la sélection des suggestions du
+        // clavier étaient à la place interprétées comme un déplacement du curseur — la barre
+        // d'adresse semblait "ne pas réagir" alors que le D-pad ne lui arrivait jamais.
+        if (isSoftwareKeyboardVisible()) {
+            return super.dispatchKeyEvent(event)
+        }
+
         if (event.keyCode == KeyEvent.KEYCODE_MENU) {
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) onMenuIconClicked?.invoke()
             return true
@@ -104,6 +118,15 @@ class CursorLayout @JvmOverloads constructor(
         }
 
         return if (cursorDrawer!!.dispatchKeyEvent(event)) true else super.dispatchKeyEvent(event)
+    }
+
+    /** Vrai si l'IME (clavier système) est actuellement affiché au-dessus de cette surface. */
+    private fun isSoftwareKeyboardVisible(): Boolean {
+        return try {
+            ViewCompat.getRootWindowInsets(rootView)?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        } catch (e: Exception) {
+            false
+        }
     }
 
     fun setMenuIconBoundsInWindow(bounds: RectF?) {
@@ -159,6 +182,11 @@ class CursorLayout @JvmOverloads constructor(
 
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         if (!cursorEnabled || cursorDrawer == null) {
+            return super.dispatchGenericMotionEvent(event)
+        }
+
+        // Même garde-fou clavier système que dispatchKeyEvent ci-dessus.
+        if (isSoftwareKeyboardVisible()) {
             return super.dispatchGenericMotionEvent(event)
         }
 
