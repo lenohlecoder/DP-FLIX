@@ -34,7 +34,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -257,7 +256,9 @@ private fun XtreamFormStepTv(
             value = form.password,
             onValueChange = { value -> onFormChange { it.copy(password = value) } },
             label = "Mot de passe",
-            visualTransformation = PasswordVisualTransformation(),
+            // Fix (30 août 2026, § demande utilisateur) : mot de passe visible pendant la
+            // saisie (pas de masquage) pour éviter les erreurs de frappe sans clavier
+            // physique fiable — voir même choix sur LockScreen (code d'accès).
             focusRequester = passwordFocusRequester,
             modifier = Modifier.focusProperties {
                 up = usernameFocusRequester

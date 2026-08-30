@@ -32,7 +32,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.dpflix.android.ui.DpFlixBackground
@@ -153,16 +152,23 @@ fun LockScreen(
                     OutlinedTextField(
                         value = code,
                         onValueChange = {
-                            // restent valides quelle que soit la casse saisie
-                            // grâce au fallback dans redeemCode().
-                            code = it
+                            // Fix (30 août 2026, § demande utilisateur) : un copier-coller
+                            // du code fourni par l'administrateur ramène parfois un espace
+                            // (fin de ligne, espace de fin) qui était jusqu'ici considéré
+                            // comme un caractère du code et faisait échouer l'activation.
+                            // Le code n'a jamais d'espace en son sein (format @XXXXY) : on
+                            // filtre donc tous les espaces dès la saisie, pas seulement en
+                            // fin/début de chaîne.
+                            code = it.filterNot { c -> c.isWhitespace() }
                             error = null
                             successMessage = null
                         },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         label = { Text("Code d'activation") },
-                        visualTransformation = PasswordVisualTransformation(),
+                        // Fix (30 août 2026, § demande utilisateur) : code visible pendant
+                        // la saisie (pas de masquage façon mot de passe), pour repérer
+                        // une erreur de frappe/copier-coller immédiatement.
                         keyboardOptions = KeyboardOptions(
                             keyboardType = KeyboardType.Ascii,
                             imeAction = ImeAction.Done
