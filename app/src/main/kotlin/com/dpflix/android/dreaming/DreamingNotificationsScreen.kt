@@ -62,7 +62,13 @@ fun DreamingNotificationsScreen(
             error = null
             runCatching { repository.fetch() }
                 .onSuccess { response -> items = response.items.filter { repository.isVisibleNow(it) } }
-                .onFailure { error = it.message ?: "Impossible de charger les notifications." }
+                .onFailure {
+                    // DEBUG TEMPORAIRE (30 août 2026) : affiche la vraie exception
+                    // (classe + message + cause) au lieu du texte générique, le temps
+                    // de diagnostiquer pourquoi list-notifications échoue sur l'appareil
+                    // alors que la fonction répond correctement depuis un navigateur.
+                    error = "${it::class.qualifiedName}: ${it.message} (cause: ${it.cause?.let { c -> c::class.simpleName + ": " + c.message }})"
+                }
             loading = false
         }
     }
