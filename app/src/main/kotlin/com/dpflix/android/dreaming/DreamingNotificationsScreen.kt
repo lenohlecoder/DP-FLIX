@@ -22,6 +22,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.Button
 import androidx.compose.runtime.Composable
@@ -84,35 +85,46 @@ fun DreamingNotificationsScreen(
     // réellement sélectionnée, et jouait donc toujours items.first() quelle que
     // soit la carte mise en avant par le D-pad. La sélection appartient à chaque
     // carte (voir DreamingNotificationCard).
-    // Fix (30 août 2026) : cet écran (et DreamingNotificationPopup ci-dessous) n'était
-    // enveloppé dans aucun MaterialTheme — ni le sien, ni celui de HomeScreen (qui ne
-    // couvre que sa propre composition, pas ces écrans sœurs dans le NavHost). Sans
-    // DpFlixTheme, Text()/Icon() retombaient sur le noir par défaut de Material3, sur
-    // fond de fenêtre lui-même noir (android:windowBackground, voir themes.xml) : tout
-    // devenait invisible dès qu'il n'y avait aucune image de carte pour "remplir"
-    // visuellement l'écran (typiquement liste vide "Aucune notification pour le
-    // moment.") — d'où l'écran totalement noir signalé quand aucune annonce n'est
-    // publiée.
+    // Fix (30 août 2026, correctif initial) : cet écran (et DreamingNotificationPopup
+    // ci-dessous) n'était enveloppé dans aucun MaterialTheme.
+    // Fix (30 août 2026, correctif complémentaire — le premier était insuffisant) :
+    // MaterialTheme (donc DpFlixTheme, qui n'est qu'un MaterialTheme(colorScheme=...))
+    // fournit une palette de couleurs mais NE positionne PAS LocalContentColor, la
+    // couleur par défaut utilisée par Text()/Icon() quand aucune couleur explicite
+    // n'est passée — seul un Surface (ou un composant qui en contient un, comme Card)
+    // le fait. Les cartes d'annonces (DreamingNotificationCard, dans un Card) étaient
+    // donc déjà correctement colorées, mais le titre "Notifications", l'icône et le
+    // texte "Aucune notification pour le moment." vivent dans un simple Column sans
+    // Surface : ils retombaient toujours sur le noir par défaut de Compose, sur fond de
+    // fenêtre lui-même noir (android:windowBackground, voir themes.xml) — d'où l'écran
+    // resté totalement noir malgré le premier correctif. Un Surface explicite (couleur
+    // de fond du thème) autour du Column règle cela pour tous les Text/Icon internes
+    // d'un coup, sans avoir à passer une couleur explicite à chacun.
     DpFlixTheme {
-        Column(modifier.fillMaxSize().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Notifications, null)
-                Spacer(Modifier.size(8.dp))
-                Text("Notifications", style = MaterialTheme.typography.headlineSmall)
-            }
-            Spacer(Modifier.height(12.dp))
-            when {
-                loading -> Text("Chargement…")
-                error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
-                items.isEmpty() -> Text("Aucune notification pour le moment.")
-                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    itemsIndexed(items, key = { _, it -> it.id }) { index, item ->
-                        DreamingNotificationCard(
-                            item = item,
-                            repository = repository,
-                            onPlay = onPlay,
-                            focusRequester = if (index == 0) firstCardFocus else null
-                        )
+        Surface(
+            modifier = modifier.fillMaxSize(),
+            color = MaterialTheme.colorScheme.background
+        ) {
+            Column(Modifier.fillMaxSize().padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Notifications, null)
+                    Spacer(Modifier.size(8.dp))
+                    Text("Notifications", style = MaterialTheme.typography.headlineSmall)
+                }
+                Spacer(Modifier.height(12.dp))
+                when {
+                    loading -> Text("Chargement…")
+                    error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                    items.isEmpty() -> Text("Aucune notification pour le moment.")
+                    else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        itemsIndexed(items, key = { _, it -> it.id }) { index, item ->
+                            DreamingNotificationCard(
+                                item = item,
+                                repository = repository,
+                                onPlay = onPlay,
+                                focusRequester = if (index == 0) firstCardFocus else null
+                            )
+                        }
                     }
                 }
             }
