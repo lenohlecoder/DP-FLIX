@@ -43,6 +43,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.dpflix.android.ui.theme.DpFlixTheme
 import kotlinx.coroutines.launch
 
 @Composable
@@ -62,13 +63,7 @@ fun DreamingNotificationsScreen(
             error = null
             runCatching { repository.fetch() }
                 .onSuccess { response -> items = response.items.filter { repository.isVisibleNow(it) } }
-                .onFailure {
-                    // DEBUG TEMPORAIRE (30 août 2026) : affiche la vraie exception
-                    // (classe + message + cause) au lieu du texte générique, le temps
-                    // de diagnostiquer pourquoi list-notifications échoue sur l'appareil
-                    // alors que la fonction répond correctement depuis un navigateur.
-                    error = "${it::class.qualifiedName}: ${it.message} (cause: ${it.cause?.let { c -> c::class.simpleName + ": " + c.message }})"
-                }
+                .onFailure { error = it.message ?: "Impossible de charger les notifications." }
             loading = false
         }
     }
@@ -89,25 +84,36 @@ fun DreamingNotificationsScreen(
     // réellement sélectionnée, et jouait donc toujours items.first() quelle que
     // soit la carte mise en avant par le D-pad. La sélection appartient à chaque
     // carte (voir DreamingNotificationCard).
-    Column(modifier.fillMaxSize().padding(16.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Notifications, null)
-            Spacer(Modifier.size(8.dp))
-            Text("Notifications", style = MaterialTheme.typography.headlineSmall)
-        }
-        Spacer(Modifier.height(12.dp))
-        when {
-            loading -> Text("Chargement…")
-            error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
-            items.isEmpty() -> Text("Aucune notification pour le moment.")
-            else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                itemsIndexed(items, key = { _, it -> it.id }) { index, item ->
-                    DreamingNotificationCard(
-                        item = item,
-                        repository = repository,
-                        onPlay = onPlay,
-                        focusRequester = if (index == 0) firstCardFocus else null
-                    )
+    // Fix (30 août 2026) : cet écran (et DreamingNotificationPopup ci-dessous) n'était
+    // enveloppé dans aucun MaterialTheme — ni le sien, ni celui de HomeScreen (qui ne
+    // couvre que sa propre composition, pas ces écrans sœurs dans le NavHost). Sans
+    // DpFlixTheme, Text()/Icon() retombaient sur le noir par défaut de Material3, sur
+    // fond de fenêtre lui-même noir (android:windowBackground, voir themes.xml) : tout
+    // devenait invisible dès qu'il n'y avait aucune image de carte pour "remplir"
+    // visuellement l'écran (typiquement liste vide "Aucune notification pour le
+    // moment.") — d'où l'écran totalement noir signalé quand aucune annonce n'est
+    // publiée.
+    DpFlixTheme {
+        Column(modifier.fillMaxSize().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Notifications, null)
+                Spacer(Modifier.size(8.dp))
+                Text("Notifications", style = MaterialTheme.typography.headlineSmall)
+            }
+            Spacer(Modifier.height(12.dp))
+            when {
+                loading -> Text("Chargement…")
+                error != null -> Text(error!!, color = MaterialTheme.colorScheme.error)
+                items.isEmpty() -> Text("Aucune notification pour le moment.")
+                else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    itemsIndexed(items, key = { _, it -> it.id }) { index, item ->
+                        DreamingNotificationCard(
+                            item = item,
+                            repository = repository,
+                            onPlay = onPlay,
+                            focusRequester = if (index == 0) firstCardFocus else null
+                        )
+                    }
                 }
             }
         }
@@ -173,36 +179,42 @@ fun DreamingNotificationPopup(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Card(modifier = modifier.padding(16.dp).focusable(), elevation = CardDefaults.cardElevation(10.dp)) {
-        Box(Modifier.fillMaxWidth()) {
-            Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                val image = item.images.firstOrNull()
-                if (image != null) {
-                    AsyncImage(
-                        model = repository.imageUrl(image),
-                        contentDescription = item.titre,
-                        modifier = Modifier.fillMaxWidth().height(210.dp),
-                        contentScale = ContentScale.Crop
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
-                Text(item.titre, style = MaterialTheme.typography.headlineSmall)
-                Spacer(Modifier.height(8.dp))
-                Text(item.texte)
-                if (item.videoUrl.isNotBlank()) {
-                    Spacer(Modifier.height(14.dp))
-                    Button(onClick = { onPlay(item.videoUrl) }) {
-                        Icon(Icons.Default.PlayArrow, null)
-                        Spacer(Modifier.size(6.dp))
-                        Text(item.actionLabel.ifBlank { "Regarder" })
+    // Fix (30 août 2026) : même cause que DreamingNotificationsScreen ci-dessus — ce
+    // popup est affiché en frère de HomeScreen dans DpFlixNavHost (pas à l'intérieur de
+    // son DpFlixTheme), donc sans thème propre il héritait du même risque de texte noir
+    // sur fond noir.
+    DpFlixTheme {
+        Card(modifier = modifier.padding(16.dp).focusable(), elevation = CardDefaults.cardElevation(10.dp)) {
+            Box(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    val image = item.images.firstOrNull()
+                    if (image != null) {
+                        AsyncImage(
+                            model = repository.imageUrl(image),
+                            contentDescription = item.titre,
+                            modifier = Modifier.fillMaxWidth().height(210.dp),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(Modifier.height(12.dp))
+                    }
+                    Text(item.titre, style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(8.dp))
+                    Text(item.texte)
+                    if (item.videoUrl.isNotBlank()) {
+                        Spacer(Modifier.height(14.dp))
+                        Button(onClick = { onPlay(item.videoUrl) }) {
+                            Icon(Icons.Default.PlayArrow, null)
+                            Spacer(Modifier.size(6.dp))
+                            Text(item.actionLabel.ifBlank { "Regarder" })
+                        }
                     }
                 }
-            }
-            IconButton(onClick = {
-                state.dismiss(item.id)
-                onDismiss()
-            }, modifier = Modifier.align(Alignment.TopEnd)) {
-                Icon(Icons.Default.Close, contentDescription = "Fermer")
+                IconButton(onClick = {
+                    state.dismiss(item.id)
+                    onDismiss()
+                }, modifier = Modifier.align(Alignment.TopEnd)) {
+                    Icon(Icons.Default.Close, contentDescription = "Fermer")
+                }
             }
         }
     }
