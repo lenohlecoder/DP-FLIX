@@ -78,7 +78,11 @@
         -->
         <receiver
             android:name=".filmsseries.download.TvBroDownloadReceiver"
-            android:exported="false" />
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.dpflix.android.ACTION_TV_BRO_DOWNLOAD" />
+            </intent-filter>
+        </receiver>
 
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
