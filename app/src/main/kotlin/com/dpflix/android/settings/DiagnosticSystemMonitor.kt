@@ -114,14 +114,22 @@ object DiagnosticSystemMonitor {
         val timeNs: Long
     )
 
-    private data class CursorStats(
-        var last: CursorSample? = null,
-        var lastSampleMs: Long = 0L,
-        var lastReportMs: Long = 0L,
+    private data class FrameStats(
         var frameCount: Long = 0L,
         var frameDtSumNs: Long = 0L,
         var frameDtMaxNs: Long = 0L,
-        var slowFrames: Long = 0L,
+        var slowFrames: Long = 0L
+    )
+
+    /**
+     * Statistiques de vitesse pour UNE source de curseur (DP-FLIX ou TV Bro).
+     * [lastView] permet de détecter qu'une référence de vue a changé (Activity
+     * recréée/reprise, WebView recréé) afin de ne jamais calculer une vitesse
+     * entre deux échantillons appartenant à des instances différentes.
+     */
+    private data class CursorSpeedStats(
+        var last: CursorSample? = null,
+        var lastView: View? = null,
         var cursorSpeedSum: Double = 0.0,
         var cursorSpeedMax: Double = 0.0,
         var cursorSamples: Long = 0L
@@ -172,10 +180,22 @@ object DiagnosticSystemMonitor {
     private var frameCallbackInstalled = false
     private var frameLastNs = 0L
     private var lastUiSampleMs = 0L
+    private var lastCursorRefreshMs = 0L
 
-    private val cursorStats = CursorStats()
+    private val frameStats = FrameStats()
+    private val dpFlixCursorStats = CursorSpeedStats()
+    private val tvBroCursorStats = CursorSpeedStats()
     private val cursorViews = ArrayList<CursorLayout>()
     private val tvBroCursorViews = ArrayList<View>()
+
+    // Champs de réflexion TV Bro mis en cache par Class pour éviter de refaire une
+    // recherche de champ à chaque frame. Une résolution ratée (champ renommé dans une
+    // future version de TV Bro) reste mémorisée à null pour cette Class : pas de retry
+    // coûteux à chaque frame, mais rien n'est jamais mis en cache de façon permanente
+    // au niveau de l'instance (voir reflectTvBroCursorPosition).
+    private var reflectedForClass: Class<*>? = null
+    private var reflectedDelegateField: java.lang.reflect.Field? = null
+    private var reflectedPositionField: java.lang.reflect.Field? = null
 
     private val activityCallbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityCreated(activity: Activity, savedInstanceState: android.os.Bundle?) {
@@ -215,12 +235,12 @@ object DiagnosticSystemMonitor {
             if (previous > 0L) {
                 val dtNs = frameTimeNanos - previous
                 if (dtNs > 0L) {
-                    cursorStats.frameCount++
-                    cursorStats.frameDtSumNs += dtNs
-                    if (dtNs > cursorStats.frameDtMaxNs) cursorStats.frameDtMaxNs = dtNs
+                    frameStats.frameCount++
+                    frameStats.frameDtSumNs += dtNs
+                    if (dtNs > frameStats.frameDtMaxNs) frameStats.frameDtMaxNs = dtNs
 
                     // > 1.5 frame interval sur une cible 60 Hz = frame possiblement ratée.
-                    if (dtNs > 25_000_000L) cursorStats.slowFrames++
+                    if (dtNs > 25_000_000L) frameStats.slowFrames++
                 }
             }
 
@@ -560,7 +580,6 @@ object DiagnosticSystemMonitor {
 
         _state.value = State()
         resetCursorStats()
-        tvBroCursorViews.clear()
     }
 
     private fun addEvent(event: Event) {
@@ -596,17 +615,26 @@ object DiagnosticSystemMonitor {
     }
 
     private fun resetCursorStats() {
-        cursorStats.last = null
-        cursorStats.lastSampleMs = 0L
-        cursorStats.lastReportMs = 0L
-        cursorStats.frameCount = 0L
-        cursorStats.frameDtSumNs = 0L
-        cursorStats.frameDtMaxNs = 0L
-        cursorStats.slowFrames = 0L
-        cursorStats.cursorSpeedSum = 0.0
-        cursorStats.cursorSpeedMax = 0.0
-        cursorStats.cursorSamples = 0L
+        lastCursorRefreshMs = 0L
+
+        frameStats.frameCount = 0L
+        frameStats.frameDtSumNs = 0L
+        frameStats.frameDtMaxNs = 0L
+        frameStats.slowFrames = 0L
+
+        resetCursorSpeedStats(dpFlixCursorStats)
+        resetCursorSpeedStats(tvBroCursorStats)
+
         cursorViews.clear()
+        tvBroCursorViews.clear()
+    }
+
+    private fun resetCursorSpeedStats(stats: CursorSpeedStats) {
+        stats.last = null
+        stats.lastView = null
+        stats.cursorSpeedSum = 0.0
+        stats.cursorSpeedMax = 0.0
+        stats.cursorSamples = 0L
     }
 
     /**
@@ -647,79 +675,132 @@ object DiagnosticSystemMonitor {
         }
     }
 
-    private fun reflectFloat(view: View, method: String): Float? =
-        runCatching { view.javaClass.methods.firstOrNull { it.name == method && it.parameterTypes.isEmpty() }?.invoke(view) as? Number }
-            .getOrNull()?.toFloat()
-
     private fun reflectBoolean(view: View, method: String): Boolean? =
         runCatching { view.javaClass.methods.firstOrNull { it.name == method && it.parameterTypes.isEmpty() }?.invoke(view) as? Boolean }
             .getOrNull()
 
+    /**
+     * Résout et met en cache les champs de réflexion TV Bro pour une Class donnée.
+     * Appelé à chaque échantillonnage mais ne refait la recherche de champ que si la
+     * Class a changé (jamais en pratique, une seule version de CursorLayout par build).
+     * Un échec de résolution (champ absent) est mémorisé à null pour cette Class afin
+     * de ne pas retenter une réflexion coûteuse à chaque frame — mais n'empêche jamais
+     * une instance nouvellement initialisée d'être lue au prochain appel réussi.
+     */
+    private fun ensureTvBroReflection(cls: Class<*>) {
+        if (reflectedForClass === cls) return
+
+        reflectedForClass = cls
+        reflectedDelegateField = null
+        reflectedPositionField = null
+
+        runCatching {
+            val delegateField = cls.getDeclaredField("cursorDrawerDelegate")
+                .apply { isAccessible = true }
+            val positionField = delegateField.type.getDeclaredField("cursorPosition")
+                .apply { isAccessible = true }
+            reflectedDelegateField = delegateField
+            reflectedPositionField = positionField
+        }
+    }
+
+    /**
+     * Lit la position réelle du curseur TV Bro : CursorLayout n'expose pas
+     * getCursorX()/getCursorY(), la position vit dans
+     * cursorDrawerDelegate.cursorPosition (PointF) sur CursorDrawerDelegate.
+     *
+     * Tolérant par construction :
+     * - cursorDrawerDelegate est `lateinit` ; s'il n'est pas encore initialisé
+     *   (Activity TV Bro tout juste créée), l'accès lève une exception attrapée par
+     *   runCatching → retourne null pour cet appel, sans jamais planter le diagnostic.
+     * - Rien n'est mis en cache au niveau de l'instance : chaque appel relit l'état
+     *   réel de [view], donc un curseur initialisé entre deux échantillonnages est
+     *   détecté dès l'échantillonnage suivant.
+     */
+    private fun reflectTvBroCursorPosition(view: View): Pair<Float, Float>? {
+        ensureTvBroReflection(view.javaClass)
+
+        val delegateField = reflectedDelegateField ?: return null
+        val positionField = reflectedPositionField ?: return null
+
+        return runCatching {
+            val delegate = delegateField.get(view) ?: return@runCatching null
+            val position = positionField.get(delegate) as? android.graphics.PointF
+                ?: return@runCatching null
+            position.x to position.y
+        }.getOrNull()
+    }
+
     private fun sampleCursors(frameTimeNs: Long) {
         val nowMs = SystemClock.elapsedRealtime()
 
-        if (nowMs - cursorStats.lastSampleMs >= CURSOR_SAMPLE_MS) {
-            cursorStats.lastSampleMs = nowMs
+        if (nowMs - lastCursorRefreshMs >= CURSOR_SAMPLE_MS) {
+            lastCursorRefreshMs = nowMs
             refreshCursorViews()
         }
 
-        if (cursorViews.isEmpty()) return
-
-        cursorViews.forEachIndexed { index, cursor ->
-            if (!cursor.isAttachedToWindow) return@forEachIndexed
-
-            val x = cursor.getCursorX()
-            val y = cursor.getCursorY()
-            val previous = cursorStats.last
-            val current = CursorSample(x, y, frameTimeNs)
-
-            if (previous != null) {
-                val dtNs = current.timeNs - previous.timeNs
-                if (dtNs > 0L) {
-                    val dx = current.x - previous.x
-                    val dy = current.y - previous.y
-                    val distance = kotlin.math.sqrt(
-                        (dx * dx + dy * dy).toDouble()
-                    )
-                    val speedPxPerSecond = distance * 1_000_000_000.0 / dtNs
-
-                    cursorStats.cursorSpeedSum += speedPxPerSecond
-                    cursorStats.cursorSpeedMax =
-                        maxOf(cursorStats.cursorSpeedMax, speedPxPerSecond)
-                    cursorStats.cursorSamples++
-
-                    // Si plusieurs CursorLayout existent, on ne mélange pas leurs vitesses
-                    // dans le même événement. L'écran TV attendu en possède normalement un.
-                    if (index == 0 && nowMs - cursorStats.lastReportMs >= 1_000L) {
-                        cursorStats.lastReportMs = nowMs
-                    }
-                }
+        // Curseur DP-FLIX (com.djamylova.tvflix) : jamais gaté par la présence du
+        // curseur TV Bro, ni l'inverse.
+        if (cursorViews.isNotEmpty()) {
+            cursorViews.forEach { cursor ->
+                if (!cursor.isAttachedToWindow) return@forEach
+                accumulateCursorSample(
+                    stats = dpFlixCursorStats,
+                    view = cursor,
+                    x = cursor.getCursorX(),
+                    y = cursor.getCursorY(),
+                    timeNs = frameTimeNs
+                )
             }
-
-            cursorStats.last = current
         }
 
+        // Curseur TV Bro (com.phlox.tvwebbrowser) : toujours échantillonné, indépendamment
+        // de cursorViews — c'est le cas normal une fois que TV Bro pilote l'écran stream.
         tvBroCursorViews.firstOrNull()?.let { cursor ->
-            val x = reflectFloat(cursor, "getCursorX")
-            val y = reflectFloat(cursor, "getCursorY")
-            if (x != null && y != null) {
-                val previous = cursorStats.last
-                val current = CursorSample(x, y, frameTimeNs)
-                if (previous != null) {
-                    val dtNs = current.timeNs - previous.timeNs
-                    if (dtNs > 0L) {
-                        val dx = current.x - previous.x
-                        val dy = current.y - previous.y
-                        val distance = kotlin.math.sqrt((dx * dx + dy * dy).toDouble())
-                        val speed = distance * 1_000_000_000.0 / dtNs
-                        cursorStats.cursorSpeedSum += speed
-                        cursorStats.cursorSpeedMax = maxOf(cursorStats.cursorSpeedMax, speed)
-                        cursorStats.cursorSamples++
-                    }
-                }
-                cursorStats.last = current
+            if (!cursor.isAttachedToWindow) return@let
+            val position = reflectTvBroCursorPosition(cursor) ?: return@let
+            accumulateCursorSample(
+                stats = tvBroCursorStats,
+                view = cursor,
+                x = position.first,
+                y = position.second,
+                timeNs = frameTimeNs
+            )
+        }
+    }
+
+    /**
+     * Accumule un échantillon de vitesse pour une source de curseur donnée.
+     * Si [view] diffère de la dernière vue connue pour ces stats (Activity recréée/
+     * reprise, WebView recréé), l'échantillon précédent est ignoré : il ne sert jamais
+     * de référence pour calculer une vitesse entre deux instances différentes.
+     */
+    private fun accumulateCursorSample(
+        stats: CursorSpeedStats,
+        view: View,
+        x: Float,
+        y: Float,
+        timeNs: Long
+    ) {
+        val current = CursorSample(x, y, timeNs)
+        val previous = if (stats.lastView === view) stats.last else null
+
+        if (previous != null) {
+            val dtNs = current.timeNs - previous.timeNs
+            if (dtNs > 0L) {
+                val dx = current.x - previous.x
+                val dy = current.y - previous.y
+                val distance = kotlin.math.sqrt((dx * dx + dy * dy).toDouble())
+                val speed = distance * 1_000_000_000.0 / dtNs
+
+                stats.cursorSpeedSum += speed
+                stats.cursorSpeedMax = maxOf(stats.cursorSpeedMax, speed)
+                stats.cursorSamples++
             }
         }
+
+        stats.last = current
+        stats.lastView = view
     }
 
     /**
@@ -728,75 +809,111 @@ object DiagnosticSystemMonitor {
      */
     private fun publishCursorWindow(nowMs: Long) {
         if (!running.get()) return
-        if (cursorStats.frameCount == 0L && cursorStats.cursorSamples == 0L) return
+        if (frameStats.frameCount == 0L &&
+            dpFlixCursorStats.cursorSamples == 0L &&
+            tvBroCursorStats.cursorSamples == 0L
+        ) {
+            return
+        }
 
         val frameAvgMs =
-            if (cursorStats.frameCount > 0L) {
-                cursorStats.frameDtSumNs.toDouble() /
-                    cursorStats.frameCount.toDouble() /
+            if (frameStats.frameCount > 0L) {
+                frameStats.frameDtSumNs.toDouble() /
+                    frameStats.frameCount.toDouble() /
                     NS_PER_MS.toDouble()
             } else {
                 0.0
             }
-
-        val frameMaxMs = cursorStats.frameDtMaxNs.toDouble() / NS_PER_MS.toDouble()
-
-        val cursorAvgSpeed =
-            if (cursorStats.cursorSamples > 0L) {
-                cursorStats.cursorSpeedSum / cursorStats.cursorSamples
-            } else {
-                0.0
-            }
-
-        val cursorMaxSpeed = cursorStats.cursorSpeedMax
-
-        val hasJank = cursorStats.slowFrames > 0L
+        val frameMaxMs = frameStats.frameDtMaxNs.toDouble() / NS_PER_MS.toDouble()
+        val hasJank = frameStats.slowFrames > 0L
         val status = if (hasJank) Status.WARNING else Status.SUCCESS
+        val jankCause = if (hasJank) {
+            "Le thread UI a présenté au moins une frame > 25 ms pendant la fenêtre."
+        } else {
+            null
+        }
 
-        record(
-            area = "Curseur / Fluidité",
-            action = "Fenêtre de mesure 1 s",
-            status = status,
-            detail = buildString {
-                append("frames=${cursorStats.frameCount}")
-                append(" · dt moyen=${format1(frameAvgMs)} ms")
-                append(" · dt max=${format1(frameMaxMs)} ms")
-                append(" · frames lentes=${cursorStats.slowFrames}")
-                append(" · vitesse moyenne=${format1(cursorAvgSpeed)} px/s")
-                append(" · vitesse max=${format1(cursorMaxSpeed)} px/s")
+        // dt/frames lentes décrivent le thread UI dans son ensemble : le même préfixe
+        // apparaît dans les deux rapports, chacun étant ensuite complété par la vitesse
+        // et la position propres à sa source.
+        fun frameDetailPrefix() = buildString {
+            append("frames=${frameStats.frameCount}")
+            append(" · dt moyen=${format1(frameAvgMs)} ms")
+            append(" · dt max=${format1(frameMaxMs)} ms")
+            append(" · frames lentes=${frameStats.slowFrames}")
+        }
 
-                cursorViews.firstOrNull()?.let {
-                    append(" · visible=${it.cursorEnabled}")
+        cursorViews.firstOrNull()?.let { cursor ->
+            val avgSpeed =
+                if (dpFlixCursorStats.cursorSamples > 0L) {
+                    dpFlixCursorStats.cursorSpeedSum / dpFlixCursorStats.cursorSamples
+                } else {
+                    0.0
+                }
+
+            record(
+                area = "Curseur / DP-FLIX",
+                action = "Fenêtre de mesure 1 s",
+                status = status,
+                detail = buildString {
+                    append(frameDetailPrefix())
+                    append(" · vitesse moyenne=${format1(avgSpeed)} px/s")
+                    append(" · vitesse max=${format1(dpFlixCursorStats.cursorSpeedMax)} px/s")
+                    append(" · visible=${cursor.cursorEnabled}")
                     append(" · position=")
-                    append(format1(it.getCursorX().toDouble()))
+                    append(format1(cursor.getCursorX().toDouble()))
                     append(",")
-                    append(format1(it.getCursorY().toDouble()))
+                    append(format1(cursor.getCursorY().toDouble()))
                     append(" · focus=")
-                    append(if (it.hasFocus()) "CursorLayout" else "autre")
-                }
-                tvBroCursorViews.firstOrNull()?.let {
-                    append(" · TVBroCursor=true")
-                    reflectBoolean(it, "isCursorEnabled")?.let { enabled -> append(" · visible=$enabled") }
-                    reflectFloat(it, "getCursorX")?.let { x -> append(" · x=${format1(x.toDouble())}") }
-                    reflectFloat(it, "getCursorY")?.let { y -> append(" · y=${format1(y.toDouble())}") }
-                    append(" · focus=")
-                    append(if (it.hasFocus()) "CursorLayout" else "autre")
-                }
-            },
-            cause = if (hasJank) {
-                "Le thread UI a présenté au moins une frame > 25 ms pendant la fenêtre."
-            } else {
-                null
-            }
-        )
+                    append(if (cursor.hasFocus()) "CursorLayout" else "autre")
+                },
+                cause = jankCause
+            )
+        }
 
-        cursorStats.frameCount = 0L
-        cursorStats.frameDtSumNs = 0L
-        cursorStats.frameDtMaxNs = 0L
-        cursorStats.slowFrames = 0L
-        cursorStats.cursorSpeedSum = 0.0
-        cursorStats.cursorSpeedMax = 0.0
-        cursorStats.cursorSamples = 0L
+        tvBroCursorViews.firstOrNull()?.let { cursor ->
+            val avgSpeed =
+                if (tvBroCursorStats.cursorSamples > 0L) {
+                    tvBroCursorStats.cursorSpeedSum / tvBroCursorStats.cursorSamples
+                } else {
+                    0.0
+                }
+
+            record(
+                area = "Curseur / TV Bro",
+                action = "Fenêtre de mesure 1 s",
+                status = status,
+                detail = buildString {
+                    append(frameDetailPrefix())
+                    append(" · vitesse moyenne=${format1(avgSpeed)} px/s")
+                    append(" · vitesse max=${format1(tvBroCursorStats.cursorSpeedMax)} px/s")
+                    reflectBoolean(cursor, "getCursorEnabled")
+                        ?.let { enabled -> append(" · visible=$enabled") }
+                    reflectTvBroCursorPosition(cursor)?.let { (x, y) ->
+                        append(" · position=")
+                        append(format1(x.toDouble()))
+                        append(",")
+                        append(format1(y.toDouble()))
+                    }
+                    append(" · focus=")
+                    append(if (cursor.hasFocus()) "CursorLayout" else "autre")
+                },
+                cause = jankCause
+            )
+        }
+
+        frameStats.frameCount = 0L
+        frameStats.frameDtSumNs = 0L
+        frameStats.frameDtMaxNs = 0L
+        frameStats.slowFrames = 0L
+
+        dpFlixCursorStats.cursorSpeedSum = 0.0
+        dpFlixCursorStats.cursorSpeedMax = 0.0
+        dpFlixCursorStats.cursorSamples = 0L
+
+        tvBroCursorStats.cursorSpeedSum = 0.0
+        tvBroCursorStats.cursorSpeedMax = 0.0
+        tvBroCursorStats.cursorSamples = 0L
     }
 
     private fun attachActivity(activity: Activity) {
