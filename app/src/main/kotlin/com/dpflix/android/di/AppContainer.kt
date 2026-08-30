@@ -1,8 +1,14 @@
 package com.dpflix.android.di
 
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import com.dpflix.android.db.AppDatabase
+import com.dpflix.android.companion.CompanionConfig
 import com.dpflix.android.companion.CompanionRepository
+import com.dpflix.android.dreaming.DreamingNotificationPoller
+import com.dpflix.android.dreaming.DreamingNotificationRepository
+import com.dpflix.android.dreaming.DreamingNotificationState
 import com.dpflix.android.filmsseries.download.FilmDownloadManager
 import com.dpflix.android.network.XtreamClient
 import com.dpflix.android.repository.AppRepository
@@ -12,6 +18,10 @@ import com.dpflix.android.repository.ReplayRepository
 import com.dpflix.android.repository.SettingsRepository
 import com.dpflix.android.access.AccessRepository
 import com.dpflix.android.settings.SettingsDataStore
+import com.dpflix.android.tv.TvMainActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * Conteneur d'instances manuel (§7 étape 6a) : construit et détient la base Room (4a),
@@ -71,4 +81,45 @@ class AppContainer(context: Context) {
      * naviguer vers le verrouillage.
      */
     val activePlayerHolder = com.dpflix.android.player.ActivePlayerHolder()
+
+    // --- Dreaming (annonces/notifications poussées depuis le site compagnon) ---
+    // Branchement (30 août 2026) : le module com.dpflix.android.dreaming (repository,
+    // état local, poller, écrans) était déjà entièrement codé mais jamais instancié ni
+    // démarré nulle part — voir la doc de [DreamingNotificationPoller].
+    //
+    // Même réutilisation de CompanionConfig.BASE_URL que companion/CompanionCodesApi :
+    // une seule source de vérité pour l'URL du site, pas de second endroit à mettre à
+    // jour si le site change d'adresse.
+    val dreamingRepository = DreamingNotificationRepository(CompanionConfig.BASE_URL)
+    val dreamingState = DreamingNotificationState(context.applicationContext)
+
+    // Scope dédié plutôt qu'un scope injecté depuis l'Activity (voir DreamingNotificationPoller.start) :
+    // même raisonnement que repositoryScope (AccessRepository) et scope (FilmDownloadManager,
+    // DiagnosticSystemMonitor) ci-dessus — le poller doit continuer à tourner tant que le
+    // process vit, indépendamment de l'Activity actuellement affichée (TV ou mobile).
+    private val dreamingScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    private val dreamingPoller = DreamingNotificationPoller(
+        context = context.applicationContext,
+        repository = dreamingRepository,
+        state = dreamingState
+    )
+
+    init {
+        // Intent de contenu de la notification système : ramène directement sur l'écran
+        // TV (seul point d'entrée pour l'instant, voir la doc de DpFlixTvNavHost — le
+        // module Dreaming n'a pas été demandé côté mobile). EXTRA_OPEN_DREAMING permet à
+        // TvMainActivity de savoir qu'il faut ouvrir l'écran Notifications au lancement
+        // plutôt que de retomber sur la navigation normale (Splash → ... → Home).
+        val contentIntent = PendingIntent.getActivity(
+            context.applicationContext,
+            0,
+            Intent(context.applicationContext, TvMainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(TvMainActivity.EXTRA_OPEN_DREAMING, true)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        dreamingPoller.start(dreamingScope, contentIntent)
+    }
 }

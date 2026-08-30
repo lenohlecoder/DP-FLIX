@@ -50,6 +50,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.tv.material3.Button
 import androidx.tv.material3.MaterialTheme
 import androidx.tv.material3.Text
+import com.dpflix.android.dreaming.DreamingNotificationRepository
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ChannelCategory
 import com.dpflix.android.filmsseries.FilmsSeriesStreamPickerTv
@@ -144,10 +145,12 @@ import com.dpflix.android.ui.theme.DpFlixColors
 @Composable
 fun HomeScreenTv(
     appRepository: AppRepository,
+    dreamingRepository: DreamingNotificationRepository,
     onNavigateToSettings: () -> Unit,
     onNavigateToFilmsSeries: (streamIndex: Int) -> Unit,
     onNavigateToFilmDownloads: () -> Unit,
     onNavigateToInfos: () -> Unit,
+    onNavigateToDreaming: () -> Unit,
     onNavigateToPlayerFullscreen: (channelId: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -165,6 +168,19 @@ fun HomeScreenTv(
     LaunchedEffect(Unit) {
         remoteInfosVersion = appRepository.companion.getStatus()?.infosVersion
     }
+
+    // Badge Dreaming (30 août 2026) : nombre d'annonces actuellement actives/en cours,
+    // même logique que le badge Infos ci-dessus mais sans notion de "vu" persistée côté
+    // réglages — Dreaming a déjà son propre mécanisme de suivi par notification
+    // (DreamingNotificationState.isDismissed/isSystemNotified), pas besoin d'un second.
+    var dreamingVisibleCount by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        runCatching { dreamingRepository.fetch() }
+            .onSuccess { response ->
+                dreamingVisibleCount = response.items.count { dreamingRepository.isVisibleNow(it) }
+            }
+    }
+    val dreamingFocusRequester = remember { FocusRequester() }
 
     // Sélecteur "Stream 1"/"Stream 2" (French-Stream, 08/08) — voir la doc équivalente
     // côté mobile (HomeScreen.kt).
@@ -265,6 +281,16 @@ fun HomeScreenTv(
                         ) {
                             Text(
                                 if (showInfosBadge) "Infos ●" else "Infos"
+                            )
+                        }
+                        Button(
+                            onClick = onNavigateToDreaming,
+                            modifier = Modifier
+                                .focusRequester(dreamingFocusRequester)
+                                .padding(start = 12.dp)
+                        ) {
+                            Text(
+                                if (dreamingVisibleCount > 0) "Notifications ($dreamingVisibleCount)" else "Notifications"
                             )
                         }
                         Button(

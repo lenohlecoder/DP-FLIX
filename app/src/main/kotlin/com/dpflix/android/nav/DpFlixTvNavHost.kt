@@ -36,6 +36,12 @@ import com.dpflix.android.filmsseries.FilmsSeriesScreenTv
 import com.dpflix.android.player.LocalFilmPlayerScreen
 import com.dpflix.android.companion.InfosWebViewScreen
 import com.dpflix.android.companion.StartupVideoScreen
+import com.dpflix.android.dreaming.DreamingNotification
+import com.dpflix.android.dreaming.DreamingNotificationPopup
+import com.dpflix.android.dreaming.DreamingNotificationRepository
+import com.dpflix.android.dreaming.DreamingNotificationState
+import com.dpflix.android.dreaming.DreamingNotificationsScreen
+import com.dpflix.android.dreaming.DreamingPlayerScreen
 import com.dpflix.android.home.HomeScreenTv
 import com.dpflix.android.model.Channel
 import com.dpflix.android.model.ReplayProgram
@@ -79,9 +85,19 @@ fun DpFlixTvNavHost(
     appRepository: AppRepository,
     accessRepository: AccessRepository,
     activePlayerHolder: com.dpflix.android.player.ActivePlayerHolder,
+    dreamingRepository: DreamingNotificationRepository,
+    dreamingState: DreamingNotificationState,
+    openDreamingOnStart: Boolean = false,
     navController: NavHostController = rememberNavController()
 ) {
     // Fix (25 juillet 2026) — même correctif transitions que mobile (pas de double ExoPlayer).
+
+    // Branchement Dreaming (30 août 2026) : consommé une seule fois — voir la doc de
+    // TvMainActivity.EXTRA_OPEN_DREAMING. Un `var` local plutôt que le paramètre directement
+    // dans le LaunchedEffect(Home) ci-dessous : sans ça, un retour ultérieur sur Home (ex.
+    // après avoir fermé Notifications) rouvrirait Notifications en boucle, puisque
+    // openDreamingOnStart resterait vrai pendant toute la durée de vie de l'Activity.
+    var pendingOpenDreaming by remember { mutableStateOf(openDreamingOnStart) }
 
     // Gardes de session partagées (ON_START, réveil échéance, Lock + release lecteur).
     AccessSessionGuards(
@@ -204,21 +220,88 @@ fun DpFlixTvNavHost(
         }
 
         composable(DpFlixDestination.Home.route) {
-            HomeScreenTv(
-                appRepository = appRepository,
-                onNavigateToSettings = { navController.navigate(DpFlixDestination.Settings.route) },
-                onNavigateToFilmsSeries = { streamIndex ->
-                    navController.navigate(DpFlixDestination.FilmsSeries.createRoute(streamIndex))
-                },
-                onNavigateToFilmDownloads = {
-                    navController.navigate(DpFlixDestination.FilmDownloads.route)
-                },
-                onNavigateToInfos = {
-                    navController.navigate(DpFlixDestination.CompanionInfos.route)
-                },
-                onNavigateToPlayerFullscreen = { channelId ->
-                    navController.navigate(DpFlixDestination.PlayerFullscreen.createRoute(channelId))
+            // Popup Dreaming (30 août 2026) : une seule vérification à l'arrivée sur
+            // l'accueil (pas de re-poll continu ici — DreamingNotificationPoller,
+            // démarré une fois pour tout le process par AppContainer, s'en charge déjà
+            // pour la notification système ; ceci ne couvre que l'affichage in-app
+            // pendant que l'utilisateur est déjà sur l'accueil).
+            var dreamingPopupItem by remember { mutableStateOf<DreamingNotification?>(null) }
+            LaunchedEffect(Unit) {
+                runCatching { dreamingRepository.fetch() }
+                    .onSuccess { response ->
+                        dreamingPopupItem = response.items
+                            .filter { dreamingRepository.isVisibleNow(it) }
+                            .filterNot { dreamingState.isDismissed(it.id) }
+                            .maxByOrNull { it.priority }
+                    }
+            }
+            LaunchedEffect(pendingOpenDreaming) {
+                if (pendingOpenDreaming) {
+                    pendingOpenDreaming = false
+                    navController.navigate(DpFlixDestination.DreamingNotifications.route)
                 }
+            }
+
+            Box(modifier = Modifier.fillMaxSize()) {
+                HomeScreenTv(
+                    appRepository = appRepository,
+                    dreamingRepository = dreamingRepository,
+                    onNavigateToSettings = { navController.navigate(DpFlixDestination.Settings.route) },
+                    onNavigateToFilmsSeries = { streamIndex ->
+                        navController.navigate(DpFlixDestination.FilmsSeries.createRoute(streamIndex))
+                    },
+                    onNavigateToFilmDownloads = {
+                        navController.navigate(DpFlixDestination.FilmDownloads.route)
+                    },
+                    onNavigateToInfos = {
+                        navController.navigate(DpFlixDestination.CompanionInfos.route)
+                    },
+                    onNavigateToDreaming = {
+                        navController.navigate(DpFlixDestination.DreamingNotifications.route)
+                    },
+                    onNavigateToPlayerFullscreen = { channelId ->
+                        navController.navigate(DpFlixDestination.PlayerFullscreen.createRoute(channelId))
+                    }
+                )
+
+                dreamingPopupItem?.let { item ->
+                    DreamingNotificationPopup(
+                        item = item,
+                        repository = dreamingRepository,
+                        state = dreamingState,
+                        onPlay = { url ->
+                            dreamingPopupItem = null
+                            navController.navigate(DpFlixDestination.DreamingPlayer.createRoute(url))
+                        },
+                        onDismiss = { dreamingPopupItem = null },
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+            }
+        }
+
+        composable(DpFlixDestination.DreamingNotifications.route) {
+            DreamingNotificationsScreen(
+                repository = dreamingRepository,
+                onPlay = { url ->
+                    navController.navigate(DpFlixDestination.DreamingPlayer.createRoute(url))
+                }
+            )
+        }
+
+        composable(
+            route = DpFlixDestination.DreamingPlayer.route,
+            arguments = listOf(
+                navArgument(DpFlixDestination.DreamingPlayer.ARG_URL) {
+                    type = NavType.StringType
+                    defaultValue = ""
+                }
+            )
+        ) { backStackEntry ->
+            val url = backStackEntry.arguments?.getString(DpFlixDestination.DreamingPlayer.ARG_URL).orEmpty()
+            DreamingPlayerScreen(
+                url = url,
+                onBack = { navController.popBackStack() }
             )
         }
 

@@ -31,12 +31,25 @@ class TvMainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val container = (application as DpFlixApplication).container
+        // Branchement Dreaming (30 août 2026) : tap sur la notification système postée par
+        // DreamingNotificationPoller pendant que l'app est fermée/en arrière-plan → relance
+        // cette Activity avec cet extra, lu une seule fois par DpFlixTvNavHost pour ouvrir
+        // directement l'écran Notifications plutôt que de retomber sur le flux normal
+        // (Splash → verrou → StartupVideo → Home).
+        val openDreaming = intent?.getBooleanExtra(EXTRA_OPEN_DREAMING, false) == true
         setContent {
             DpFlixTvNavHost(
                 appRepository = container.appRepository,
                 accessRepository = container.accessRepository,
-                activePlayerHolder = container.activePlayerHolder
+                activePlayerHolder = container.activePlayerHolder,
+                dreamingRepository = container.dreamingRepository,
+                dreamingState = container.dreamingState,
+                openDreamingOnStart = openDreaming
             )
         }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_DREAMING = "open_dreaming"
     }
 }

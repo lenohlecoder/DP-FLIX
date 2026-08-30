@@ -164,6 +164,31 @@ sealed class DpFlixDestination(val route: String) {
                 Uri.encode(program.title)
     }
 
+    /**
+     * Écran "Notifications" du module Dreaming (branchement 30 août 2026) — liste des
+     * annonces/programmes publiés depuis le site compagnon (voir [DreamingNotificationsScreen][
+     * com.dpflix.android.dreaming.DreamingNotificationsScreen]). Pas d'argument : l'écran
+     * va chercher lui-même le contenu via [com.dpflix.android.dreaming.DreamingNotificationRepository],
+     * comme [CompanionInfos] pour les infos.
+     */
+    object DreamingNotifications : DpFlixDestination("dreaming_notifications")
+
+    /**
+     * Lecture plein écran d'une URL externe publiée par une notification Dreaming
+     * (ex. lien direct d'un direct/programme annoncé) — pendant de [PlayerFullscreen]
+     * mais SANS résolution de chaîne Xtream : contrairement à [PlayerFullscreen]/
+     * [PlayerFullscreenReplay], la vidéo à lire est déjà connue en entier (une simple
+     * URL HTTPS validée côté site, voir `_shared/notifications.js` → `safeHttpsUrl`),
+     * il n'y a donc rien à résoudre côté base de données. [url] est transporté encodé
+     * ([Uri.encode]) pour les mêmes raisons que `channelId`/`programTitle` ci-dessus
+     * (peut contenir `/`, `?`, `&`...).
+     */
+    object DreamingPlayer : DpFlixDestination("dreaming_player?url={url}") {
+        const val ARG_URL = "url"
+
+        fun createRoute(url: String): String = "dreaming_player?$ARG_URL=${Uri.encode(url)}"
+    }
+
     companion object {
         const val ARG_CHANNEL_ID = PlayerFullscreen.ARG_CHANNEL_ID
         const val ARG_STREAM_INDEX = FilmsSeries.ARG_STREAM_INDEX
