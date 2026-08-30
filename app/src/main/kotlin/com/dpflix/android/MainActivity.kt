@@ -28,12 +28,26 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         val container = (application as DpFlixApplication).container
+        // Branchement Dreaming (30 août 2026, § demande utilisateur) : tap sur la
+        // notification système postée par DreamingNotificationPoller pendant que l'app
+        // est fermée/en arrière-plan → relance cette Activity avec cet extra, lu une
+        // seule fois par DpFlixNavHost pour ouvrir directement l'écran Notifications
+        // plutôt que de retomber sur le flux normal (Splash → verrou → StartupVideo →
+        // Home). Même mécanique que côté TV (voir TvMainActivity).
+        val openDreaming = intent?.getBooleanExtra(EXTRA_OPEN_DREAMING, false) == true
         setContent {
             DpFlixNavHost(
                 appRepository = container.appRepository,
                 accessRepository = container.accessRepository,
-                activePlayerHolder = container.activePlayerHolder
+                activePlayerHolder = container.activePlayerHolder,
+                dreamingRepository = container.dreamingRepository,
+                dreamingState = container.dreamingState,
+                openDreamingOnStart = openDreaming
             )
         }
+    }
+
+    companion object {
+        const val EXTRA_OPEN_DREAMING = "open_dreaming"
     }
 }

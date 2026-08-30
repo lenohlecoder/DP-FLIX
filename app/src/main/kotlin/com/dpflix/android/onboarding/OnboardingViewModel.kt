@@ -93,7 +93,12 @@ class OnboardingViewModel(
             val credentials = XtreamCredentials(
                 serverUrl = form.serverUrl.trim(),
                 username = form.username.trim(),
-                password = form.password
+                // Fix (30 août 2026, § demande utilisateur) : le mot de passe n'était pas
+                // trimé comme les deux autres champs — un espace de fin (fréquent lors
+                // d'un copier-coller depuis le message du fournisseur) était alors
+                // considéré comme un caractère du mot de passe, faisant échouer
+                // l'authentification Xtream.
+                password = form.password.trim()
             )
 
             when (val authResult = xtreamClient.authenticate(credentials)) {

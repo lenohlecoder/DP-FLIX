@@ -3,6 +3,7 @@ package com.dpflix.android
 import android.app.Application
 import android.util.Log
 import com.dpflix.android.di.AppContainer
+import com.dpflix.android.dreaming.DreamingNotificationManager
 import com.dpflix.android.settings.DiagnosticSystemMonitor
 import java.io.File
 import java.io.PrintWriter
@@ -27,6 +28,10 @@ class DpFlixApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         installCrashLogger()
+        // Créé avant AppContainer (dont l'init démarre déjà le poller Dreaming) pour que
+        // le canal existe dans les réglages système dès le premier lancement, pas
+        // seulement à la première notification effectivement affichée.
+        DreamingNotificationManager.ensureChannel(this)
         container = AppContainer(this)
         DiagnosticSystemMonitor.initialize(this)
     }
