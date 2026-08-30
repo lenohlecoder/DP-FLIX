@@ -1,6 +1,8 @@
 package com.dpflix.android.dreaming
 
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,12 +23,12 @@ class DreamingNotificationRepository(
     private val base = baseUrl.trimEnd('/')
     private val json = Json { ignoreUnknownKeys = true }
 
-    suspend fun fetch(): DreamingNotificationResponse {
+    suspend fun fetch(): DreamingNotificationResponse = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url("$base/.netlify/functions/list-notifications")
             .get()
             .build()
-        return client.newCall(request).execute().use { response ->
+        client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) error("Dreaming HTTP ${response.code}")
             json.decodeFromString<DreamingNotificationResponse>(response.body?.string().orEmpty())
         }
