@@ -6,11 +6,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
@@ -100,12 +103,25 @@ fun DreamingNotificationsScreen(
     // resté totalement noir malgré le premier correctif. Un Surface explicite (couleur
     // de fond du thème) autour du Column règle cela pour tous les Text/Icon internes
     // d'un coup, sans avoir à passer une couleur explicite à chacun.
+    // Fix (30 août 2026, correctif n°3) : édge-to-edge (decorFitsSystemWindows = false,
+    // voir MainActivity/themes.xml) signifie que le système ne réserve plus la place
+    // des barres de statut/navigation — c'est à chaque écran d'ajouter lui-même le
+    // padding nécessaire. HomeScreen l'obtient via DpFlixBackground (qui applique déjà
+    // windowInsetsPadding(WindowInsets.systemBars) autour de son content), mais cet
+    // écran n'a jamais eu ce traitement : le Row titre "Notifications" se dessinait donc
+    // partiellement sous la barre de statut, d'où le titre rogné signalé une fois le
+    // texte enfin visible.
     DpFlixTheme {
         Surface(
             modifier = modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
-            Column(Modifier.fillMaxSize().padding(16.dp)) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(16.dp)
+            ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Default.Notifications, null)
                     Spacer(Modifier.size(8.dp))
