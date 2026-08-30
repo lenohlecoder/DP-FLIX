@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -1207,7 +1208,14 @@ private fun DiagnosticSectionBodyTv(uiState: SettingsUiState, onRefresh: () -> U
         AlertDialog(
             onDismissRequest = { showSystemReport = false },
             title = { M3Text("Rapport du diagnostic système") },
-            text = { M3Text(systemState.report ?: "Aucun rapport disponible.") },
+            text = {
+                M3Text(
+                    text = systemState.report ?: "Aucun rapport disponible.",
+                    modifier = Modifier
+                        .heightIn(max = 480.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            },
             confirmButton = { TextButton(onClick = { showSystemReport = false }) { M3Text("Fermer") } },
             dismissButton = { if (systemState.report != null) TextButton(onClick = DiagnosticSystemMonitor::clearReport) { M3Text("Effacer") } }
         )
