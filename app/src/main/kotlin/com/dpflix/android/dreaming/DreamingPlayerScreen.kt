@@ -49,6 +49,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import java.time.Instant
 
 /**
  * Lecture plein écran de l'URL transportée par [com.dpflix.android.nav.DpFlixDestination.DreamingPlayer]
@@ -75,11 +76,32 @@ import androidx.media3.ui.PlayerView
 fun DreamingPlayerScreen(
     url: String,
     onBack: () -> Unit,
+    startAt: String = "",
+    endAt: String = "",
     modifier: Modifier = Modifier
 ) {
     BackHandler { onBack() }
 
     val rootFocusRequester = remember { FocusRequester() }
+
+    // Rattrapage (30 août 2026) : startAt/endAt viennent de la notification Dreaming
+    // d'origine (voir DpFlixDestination.DreamingPlayer). endAt dépassé => on ne lance
+    // même pas le lecteur, on l'indique clairement (option 1 retenue : message dédié
+    // plutôt qu'un lecteur qui resterait bloqué sur STATE_ENDED sans explication).
+    // Sinon, seekPositionMs calcule de combien avancer dans le fichier pour retomber
+    // "en direct" : seekTo(maintenant − startAt). Ce calcul ne dépend pas du transport
+    // (mp4 statique ou HLS) : la seule exigence est que le serveur accepte les requêtes
+    // Range, ce que gèrent nativement Netlify/S3/CDN classiques et, côté lecteur,
+    // DefaultHttpDataSource (déjà utilisé ci-dessous).
+    val now = remember { Instant.now() }
+    val endInstant = remember(endAt) { endAt.takeIf { it.isNotBlank() }?.let(DreamingDateUtils::parseInstant) }
+    val programEnded = endInstant != null && !now.isBefore(endInstant)
+    val seekPositionMs = remember(startAt) {
+        startAt.takeIf { it.isNotBlank() }
+            ?.let(DreamingDateUtils::parseInstant)
+            ?.let { start -> java.time.Duration.between(start, now).toMillis() }
+            ?.takeIf { it > 0 }
+    }
 
     Box(
         modifier = modifier
@@ -103,9 +125,16 @@ fun DreamingPlayerScreen(
                 color = Color.White,
                 modifier = Modifier.align(Alignment.Center)
             )
+        } else if (programEnded) {
+            Text(
+                text = "Programme terminé.",
+                color = Color.White,
+                modifier = Modifier.align(Alignment.Center)
+            )
         } else if (isDirectDreamingVideoUrl(url)) {
             DreamingDirectVideoPlayer(
                 url = url,
+                startPositionMs = seekPositionMs,
                 onEnded = onBack,
                 modifier = Modifier.fillMaxSize()
             )
@@ -139,6 +168,7 @@ private fun isDirectDreamingVideoUrl(url: String): Boolean {
 private fun DreamingDirectVideoPlayer(
     url: String,
     onEnded: () -> Unit,
+    startPositionMs: Long? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -165,6 +195,11 @@ private fun DreamingDirectVideoPlayer(
             .build()
             .apply {
                 setMediaItem(MediaItem.fromUri(Uri.parse(url)))
+                // Rattrapage : positionne la lecture à "maintenant − startAt" avant même
+                // prepare(), pour éviter un flash au tout début du fichier suivi d'un saut.
+                if (startPositionMs != null && startPositionMs > 0) {
+                    seekTo(startPositionMs)
+                }
                 prepare()
                 playWhenReady = true
             }

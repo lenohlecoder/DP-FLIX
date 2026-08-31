@@ -53,7 +53,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun DreamingNotificationsScreen(
     repository: DreamingNotificationRepository,
-    onPlay: (String) -> Unit,
+    onPlay: (DreamingNotification) -> Unit,
     modifier: Modifier = Modifier
 ) {
     var items by remember { mutableStateOf<List<DreamingNotification>>(emptyList()) }
@@ -152,7 +152,7 @@ fun DreamingNotificationsScreen(
 private fun DreamingNotificationCard(
     item: DreamingNotification,
     repository: DreamingNotificationRepository,
-    onPlay: (String) -> Unit,
+    onPlay: (DreamingNotification) -> Unit,
     focusRequester: FocusRequester? = null
 ) {
     Card(
@@ -161,7 +161,7 @@ private fun DreamingNotificationCard(
             .focusable()
             .onPreviewKeyEvent { event ->
                 if (event.type == KeyEventType.KeyDown && (event.key == Key.DirectionCenter || event.key == Key.Enter)) {
-                    if (item.videoUrl.isNotBlank()) { onPlay(item.videoUrl); true } else false
+                    if (item.videoUrl.isNotBlank()) { onPlay(item); true } else false
                 } else false
             },
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
@@ -184,7 +184,7 @@ private fun DreamingNotificationCard(
             }
             if (item.videoUrl.isNotBlank()) {
                 Spacer(Modifier.height(10.dp))
-                Button(onClick = { onPlay(item.videoUrl) }) {
+                Button(onClick = { onPlay(item) }) {
                     Icon(Icons.Default.PlayArrow, null)
                     Spacer(Modifier.size(6.dp))
                     Text(item.actionLabel.ifBlank { "Regarder" })
@@ -203,7 +203,7 @@ fun DreamingNotificationPopup(
     item: DreamingNotification,
     repository: DreamingNotificationRepository,
     state: DreamingNotificationState,
-    onPlay: (String) -> Unit,
+    onPlay: (DreamingNotification) -> Unit,
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -230,7 +230,7 @@ fun DreamingNotificationPopup(
                     Text(item.texte)
                     if (item.videoUrl.isNotBlank()) {
                         Spacer(Modifier.height(14.dp))
-                        Button(onClick = { onPlay(item.videoUrl) }) {
+                        Button(onClick = { onPlay(item) }) {
                             Icon(Icons.Default.PlayArrow, null)
                             Spacer(Modifier.size(6.dp))
                             Text(item.actionLabel.ifBlank { "Regarder" })

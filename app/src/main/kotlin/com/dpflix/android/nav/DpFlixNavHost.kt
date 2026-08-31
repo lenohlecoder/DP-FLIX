@@ -304,9 +304,15 @@ fun DpFlixNavHost(
                         item = item,
                         repository = dreamingRepository,
                         state = dreamingState,
-                        onPlay = { url ->
+                        onPlay = { item ->
                             dreamingPopupItem = null
-                            navController.navigate(DpFlixDestination.DreamingPlayer.createRoute(url))
+                            navController.navigate(
+                                DpFlixDestination.DreamingPlayer.createRoute(
+                                    url = item.videoUrl,
+                                    startAt = item.startAt,
+                                    endAt = item.endAt.orEmpty()
+                                )
+                            )
                         },
                         onDismiss = { dreamingPopupItem = null },
                         modifier = Modifier.align(Alignment.Center)
@@ -318,8 +324,14 @@ fun DpFlixNavHost(
         composable(DpFlixDestination.DreamingNotifications.route) {
             DreamingNotificationsScreen(
                 repository = dreamingRepository,
-                onPlay = { url ->
-                    navController.navigate(DpFlixDestination.DreamingPlayer.createRoute(url))
+                onPlay = { item ->
+                    navController.navigate(
+                        DpFlixDestination.DreamingPlayer.createRoute(
+                            url = item.videoUrl,
+                            startAt = item.startAt,
+                            endAt = item.endAt.orEmpty()
+                        )
+                    )
                 }
             )
         }
@@ -330,12 +342,24 @@ fun DpFlixNavHost(
                 navArgument(DpFlixDestination.DreamingPlayer.ARG_URL) {
                     type = NavType.StringType
                     defaultValue = ""
+                },
+                navArgument(DpFlixDestination.DreamingPlayer.ARG_START_AT) {
+                    type = NavType.StringType
+                    defaultValue = ""
+                },
+                navArgument(DpFlixDestination.DreamingPlayer.ARG_END_AT) {
+                    type = NavType.StringType
+                    defaultValue = ""
                 }
             )
         ) { backStackEntry ->
             val url = backStackEntry.arguments?.getString(DpFlixDestination.DreamingPlayer.ARG_URL).orEmpty()
+            val startAt = backStackEntry.arguments?.getString(DpFlixDestination.DreamingPlayer.ARG_START_AT).orEmpty()
+            val endAt = backStackEntry.arguments?.getString(DpFlixDestination.DreamingPlayer.ARG_END_AT).orEmpty()
             DreamingPlayerScreen(
                 url = url,
+                startAt = startAt,
+                endAt = endAt,
                 onBack = { navController.popBackStack() }
             )
         }

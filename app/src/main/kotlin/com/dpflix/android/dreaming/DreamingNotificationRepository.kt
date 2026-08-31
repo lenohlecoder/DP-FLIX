@@ -7,8 +7,6 @@ import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
 
 /**
  * Accès public au flux Dreaming du site DP-Flix.
@@ -39,15 +37,9 @@ class DreamingNotificationRepository(
 
     fun isVisibleNow(item: DreamingNotification, now: Instant = Instant.now()): Boolean {
         if (!item.active) return false
-        val start = parseInstant(item.startAt) ?: return true
-        val end = item.endAt?.let(::parseInstant)
+        val start = DreamingDateUtils.parseInstant(item.startAt) ?: return true
+        val end = item.endAt?.let(DreamingDateUtils::parseInstant)
         return !now.isBefore(start) && (end == null || now.isBefore(end))
-    }
-
-    private fun parseInstant(value: String): Instant? = try {
-        OffsetDateTime.parse(value).toInstant()
-    } catch (_: Exception) {
-        try { Instant.parse(value) } catch (_: Exception) { null }
     }
 }
 

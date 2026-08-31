@@ -182,11 +182,25 @@ sealed class DpFlixDestination(val route: String) {
      * il n'y a donc rien à résoudre côté base de données. [url] est transporté encodé
      * ([Uri.encode]) pour les mêmes raisons que `channelId`/`programTitle` ci-dessus
      * (peut contenir `/`, `?`, `&`...).
+     *
+     * [ARG_START_AT]/[ARG_END_AT] (30 août 2026) : transportent désormais `startAt`/
+     * `endAt` de la [com.dpflix.android.dreaming.DreamingNotification] d'origine, pour
+     * permettre à [com.dpflix.android.dreaming.DreamingPlayerScreen] de rattraper le
+     * direct (seekTo(maintenant − startAt)) ou d'afficher "Programme terminé" si
+     * endAt est déjà dépassé, plutôt que de toujours reprendre au tout début du fichier.
+     * Optionnels (chaîne vide = absent) : une notification peut ne pas avoir de endAt.
      */
-    object DreamingPlayer : DpFlixDestination("dreaming_player?url={url}") {
+    object DreamingPlayer : DpFlixDestination(
+        "dreaming_player?url={url}&startAt={startAt}&endAt={endAt}"
+    ) {
         const val ARG_URL = "url"
+        const val ARG_START_AT = "startAt"
+        const val ARG_END_AT = "endAt"
 
-        fun createRoute(url: String): String = "dreaming_player?$ARG_URL=${Uri.encode(url)}"
+        fun createRoute(url: String, startAt: String = "", endAt: String = ""): String =
+            "dreaming_player?$ARG_URL=${Uri.encode(url)}" +
+                "&$ARG_START_AT=${Uri.encode(startAt)}" +
+                "&$ARG_END_AT=${Uri.encode(endAt)}"
     }
 
     companion object {
